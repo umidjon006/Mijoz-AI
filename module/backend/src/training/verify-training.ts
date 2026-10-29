@@ -8,10 +8,15 @@
  *   2. (ixtiyoriy) ARCHETYPES konstantalari ildizdagi `archetypes.json` bilan
  *      bir xil — drift bo'lsa darhol ko'rinadi;
  *   3. har bir demo profil vendor `profileSchema` dan o'tadi;
- *   4. (ixtiyoriy) `../sales-copilot` mavjud bo'lsa — vendor sxema va asosiy
+ *   4. holat mashinasi: g'alaba / yutqazish / timeout yo'llari, qizil chiziq
+ *      blokirovkasi, ballar 0..100, determinizm, immutable holat;
+ *   5. persona-card: arxetip + profildan deterministik yig'iladi, matnlar
+ *      faqat profildan keladi;
+ *   6. (ixtiyoriy) `../sales-copilot` mavjud bo'lsa — vendor sxema va asosiy
  *      repodagi `profileSchema` bir xil namunalarni qabul/rad qiladi;
- *   5. RLS izolyatsiyasi: A biznes yaratgan qatorlar B biznes ostida
- *      KO'RINMAYDI va `withTenant` ishlatilmasa umuman o'qilmaydi.
+ *   7. RLS izolyatsiyasi: A biznes yaratgan qatorlar B biznes ostida
+ *      KO'RINMAYDI va `withTenant` ishlatilmasa umuman o'qilmaydi;
+ *   8. `state` va `persona_card` jsonb round-trip (DB ga yozib, qaytib o'qish).
  *
  * DIQQAT: bu fayl `harness/` dan HECH NARSA import qilmaydi (modul chegarasi).
  * DB ulanishi faqat env orqali keladi, shuning uchun host repoda ham
@@ -26,7 +31,10 @@ import { Pool, type PoolClient } from 'pg';
 import { z } from 'zod';
 
 import { ARCHETYPES, ARCHETYPE_KEYS, archetypeSchema, getArchetype } from './archetypes.js';
-import { profileSchema } from './profile-schema.js';
+import { applyTurn, initialState, simulate } from './engine.js';
+import { buildPersonaCard, personaCardSchema } from './persona.js';
+import { profileSchema, type BusinessProfile } from './profile-schema.js';
+import { trainingStateSchema, type TrainingState, type TurnSignalsInput } from './state.js';
 import type { WithTenant } from './ports.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -180,12 +188,306 @@ function verifyDemoProfiles(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Asosiy repo bilan sxema taqqoslash (ixtiyoriy)
+// 3. Deterministik holat mashinasi
+// ---------------------------------------------------------------------------
+function assertDeepEqual(actual: unknown, expected: unknown, msg: string): void {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a !== b) throw new Error(`${msg}\n       kutilgan: ${b}\n       kelgan:   ${a}`);
+}
+
+function verifyEngine(): void {
+  console.log('\n[3] Holat mashinasi (deterministik)');
+
+  check('initialState arxetip initialState ga teng', () => {
+    for (const key of ARCHETYPE_KEYS) {
+      const a = ARCHETYPES[key];
+      const st = initialState(a);
+      assertDeepEqual(
+        { patience: st.patience, trust: st.trust, interest: st.interest },
+        a.initialState,
+        `${key}: boshlang'ich ballar`,
+      );
+      assertEqual(st.status, 'active', `${key}: status`);
+      assertEqual(st.outcome, null, `${key}: outcome`);
+      assertEqual(st.turn, 0, `${key}: turn`);
+      trainingStateSchema.parse(st);
+    }
+  });
+
+  check('g\'alaba yo\'li: ready_buyer rozi bo\'ladi', () => {
+    const a = getArchetype('ready_buyer');
+    const { state } = simulate(a, [
+      { gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, gaveSpecifics: true, askedToClose: true },
+    ]);
+    assertEqual(state.outcome, 'won', 'outcome');
+    assertEqual(state.endReason, 'agreed', 'endReason');
+    assertEqual(state.status, 'ended', 'status');
+    assertEqual(state.objectionsResolved, a.objections.count, 'yechilgan e\'tirozlar');
+    assert(state.trust >= a.win.minTrust, `trust ${state.trust} < minTrust ${a.win.minTrust}`);
+  });
+
+  check('e\'tiroz yechilmasa rozilik bo\'lmaydi', () => {
+    const a = getArchetype('negotiator');
+    // Ishonch yetarli, lekin e'tirozlar ochiq qoldirilgan.
+    const { state } = simulate(a, [
+      { gaveSpecifics: true, empathy: true, askedToClose: true },
+      { gaveSpecifics: true, empathy: true, askedToClose: true },
+    ]);
+    assertEqual(state.outcome, null, 'outcome');
+    assert(state.pendingObjection, 'javobsiz e\'tiroz qolishi kerak edi');
+  });
+
+  check('yutqazish yo\'li: sabr tugaydi', () => {
+    const a = getArchetype('negotiator');
+    const { state } = simulate(
+      a,
+      Array.from({ length: a.maxTurns }, () => ({ ignoredCustomer: true })),
+    );
+    assertEqual(state.outcome, 'lost', 'outcome');
+    assertEqual(state.endReason, 'patience_exhausted', 'endReason');
+    assert(state.patience < a.lose.patienceBelow, `patience ${state.patience}`);
+    assert(state.turn < a.maxTurns, 'maxTurns dan oldin tugashi kerak edi');
+  });
+
+  check('timeout yo\'li: hech qachon yopmasa maxTurns da tugaydi', () => {
+    const a = getArchetype('ready_buyer');
+    const turns: TurnSignalsInput[] = [
+      { empathy: true },
+      { addressedObjection: true, empathy: true },
+      ...Array.from({ length: a.maxTurns + 5 }, () => ({ empathy: true })),
+    ];
+    const { state } = simulate(a, turns);
+    assertEqual(state.outcome, 'timeout', 'outcome');
+    assertEqual(state.endReason, 'max_turns', 'endReason');
+    assertEqual(state.turn, a.maxTurns, 'turn');
+  });
+
+  check('info_seeker: ehtiyoj ochilmasa g\'alaba yo\'q', () => {
+    const a = getArchetype('info_seeker');
+    const before = simulate(a, [
+      { gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, gaveSpecifics: true, empathy: true, askedToClose: true },
+    ]);
+    assertEqual(before.state.needDiscovered, false, 'needDiscovered');
+    assertEqual(before.state.outcome, null, 'ehtiyojsiz outcome');
+    assert(
+      before.state.trust >= a.win.minTrust,
+      `test to'g'ri bo'lishi uchun trust yetarli bo'lishi kerak: ${before.state.trust}`,
+    );
+
+    // Ochuvchi savoldan keyin g'alaba mumkin.
+    const after = applyTurn(a, before.state, {
+      askedDiscoveryQuestion: true,
+      empathy: true,
+      askedToClose: true,
+    });
+    assertEqual(after.state.needDiscovered, true, 'needDiscovered');
+    assertEqual(after.state.outcome, 'won', 'outcome');
+  });
+
+  check('problematic: e\'tirozlar yechilmasa ham keyingi qadam g\'alaba beradi', () => {
+    const a = getArchetype('problematic');
+    const nextStep = a.win.acceptedNextSteps?.[0];
+    assert(nextStep, 'acceptedNextSteps bo\'sh');
+    const { state } = simulate(a, [
+      { gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, empathy: true, proposedNextStep: nextStep },
+    ]);
+    assertEqual(state.outcome, 'won', 'outcome');
+    assertEqual(state.endReason, 'next_step_agreed', 'endReason');
+    assertEqual(state.agreedNextStep, nextStep, 'agreedNextStep');
+    assert(
+      state.objectionsResolved < a.objections.count,
+      'test ma\'nosi: e\'tirozlar to\'liq yechilmagan bo\'lishi kerak',
+    );
+  });
+
+  check('qizil chiziq g\'alabani bloklaydi', () => {
+    const a = getArchetype('ready_buyer');
+    const built = simulate(a, [
+      { gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, gaveSpecifics: true },
+    ]);
+    const after = applyTurn(a, built.state, {
+      brokeRedLine: true,
+      gaveSpecifics: true,
+      empathy: true,
+      askedToClose: true,
+    });
+    assertEqual(after.state.redLineBroken, true, 'redLineBroken');
+    assert(
+      after.state.trust >= a.win.minTrust,
+      `test ma'nosi: trust hamon yetarli bo'lishi kerak (${after.state.trust})`,
+    );
+    assertEqual(after.state.outcome, null, 'outcome g\'alaba bo\'lmasligi kerak');
+  });
+
+  check('ballar 0..100 oralig\'idan chiqmaydi', () => {
+    for (const key of ARCHETYPE_KEYS) {
+      const a = ARCHETYPES[key];
+      const turns: TurnSignalsInput[] = Array.from({ length: a.maxTurns }, (_, i) =>
+        i % 2 === 0
+          ? { gaveSpecifics: true, empathy: true, addressedObjection: true, askedDiscoveryQuestion: true }
+          : { ignoredCustomer: true, repeatedSelf: true, pressured: true },
+      );
+      const { results } = simulate(a, turns);
+      for (const r of results) {
+        for (const field of ['patience', 'trust', 'interest'] as const) {
+          const v = r.state[field];
+          assert(
+            Number.isInteger(v) && v >= 0 && v <= 100,
+            `${key}.${field} = ${v} (0..100 butun son bo'lishi kerak)`,
+          );
+        }
+        trainingStateSchema.parse(r.state);
+      }
+    }
+  });
+
+  check('determinizm: bir xil kirish = bir xil natija', () => {
+    const a = getArchetype('problematic');
+    const turns: TurnSignalsInput[] = [
+      { gaveSpecifics: true },
+      { addressedObjection: true, empathy: true },
+      { repeatedSelf: true },
+      { addressedObjection: true, gaveSpecifics: true, askedToClose: true },
+    ];
+    const first = simulate(a, turns);
+    const second = simulate(a, turns);
+    assertDeepEqual(second.state, first.state, 'yakuniy holat');
+    assertDeepEqual(
+      second.results.map((r) => r.events),
+      first.results.map((r) => r.events),
+      'hodisalar',
+    );
+  });
+
+  check('applyTurn kirish holatini o\'zgartirmaydi', () => {
+    const a = getArchetype('negotiator');
+    const start = Object.freeze(initialState(a));
+    const snapshot = JSON.stringify(start);
+    const result = applyTurn(a, start, { gaveSpecifics: true });
+    assertEqual(JSON.stringify(start), snapshot, 'kirish holati');
+    assert(result.state !== start, 'yangi obyekt qaytarilishi kerak');
+  });
+
+  check('tugagan sessiya o\'zgarmaydi', () => {
+    const a = getArchetype('ready_buyer');
+    const { state } = simulate(a, [
+      { gaveSpecifics: true, empathy: true },
+      { addressedObjection: true, gaveSpecifics: true, askedToClose: true },
+    ]);
+    assertEqual(state.status, 'ended', 'status');
+    const again = applyTurn(a, state, { gaveSpecifics: true, askedToClose: true });
+    assertDeepEqual(again.state, state, 'holat');
+    assertEqual(again.events[0]?.code, 'already_ended', 'hodisa');
+  });
+
+  check('e\'tirozlar bittadan ko\'tariladi', () => {
+    const a = getArchetype('problematic');
+    const { results } = simulate(
+      a,
+      Array.from({ length: 3 }, () => ({ empathy: true, gaveSpecifics: true })),
+    );
+    for (const r of results) {
+      assert(r.state.objectionsRaised - r.state.objectionsResolved <= 1, 'birdan ko\'p ochiq e\'tiroz');
+    }
+    const indexes = results.map((r) => r.raisedObjectionIndex).filter((i) => i !== null);
+    assertDeepEqual(indexes, [0], 'faqat birinchi navbatda yangi e\'tiroz (keyin javobsiz turadi)');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 4. Persona-card
+// ---------------------------------------------------------------------------
+function verifyPersona(): void {
+  console.log('\n[4] Persona-card');
+  const profiles = Object.entries(loadDemoProfiles()).map(
+    ([name, raw]) => [name, profileSchema.parse(raw)] as const,
+  );
+
+  for (const [name, profile] of profiles) {
+    check(`persona: "${name}" uchun 4 arxetip ham to'g'ri yig'iladi`, () => {
+      for (const key of ARCHETYPE_KEYS) {
+        const a = ARCHETYPES[key];
+        const card = buildPersonaCard({ archetype: a, profile, seed: `seed-${name}-${key}` });
+        personaCardSchema.parse(card);
+
+        assertEqual(card.archetypeKey, key, 'archetypeKey');
+        assertEqual(card.goal, profile.customerProblem, 'goal profildan kelishi kerak');
+
+        // E'tirozlar soni arxetipdan, matni esa FAQAT profildan.
+        assertEqual(
+          card.objectionQueue.length,
+          Math.min(a.objections.count, profile.commonObjections.length),
+          'objectionQueue uzunligi',
+        );
+        for (const obj of card.objectionQueue) {
+          assert(
+            profile.commonObjections.includes(obj),
+            `"${obj}" profildagi commonObjections da yo'q (soha so'zi kodda qolgan?)`,
+          );
+        }
+        assertEqual(new Set(card.objectionQueue).size, card.objectionQueue.length, 'takroriy e\'tiroz');
+
+        // Yashirin ehtiyoj faqat kerakli arxetipda.
+        assertEqual(card.hiddenNeed !== null, a.hiddenNeed, 'hiddenNeed');
+        assertEqual(card.revealTriggers.length > 0, a.hiddenNeed, 'revealTriggers');
+
+        assertDeepEqual(card.behaviorRules, a.behaviorRules, 'behaviorRules');
+        assertDeepEqual(card.acceptedNextSteps, a.win.acceptedNextSteps ?? [], 'acceptedNextSteps');
+        assertDeepEqual(card.redLines, profile.redLines, 'redLines');
+      }
+    });
+  }
+
+  check('persona determinizm: bir xil urug\' = bir xil kard', () => {
+    const first = profiles[0];
+    assert(first, 'demo profil yo\'q');
+    const a = getArchetype('problematic');
+    const one = buildPersonaCard({ archetype: a, profile: first[1], seed: 'bir-xil-urug' });
+    const two = buildPersonaCard({ archetype: a, profile: first[1], seed: 'bir-xil-urug' });
+    assertDeepEqual(two, one, 'kard');
+  });
+
+  check('persona: boshqa urug\' boshqa tartib beradi', () => {
+    const first = profiles[0];
+    assert(first, 'demo profil yo\'q');
+    const a = getArchetype('problematic');
+    const base = JSON.stringify(
+      buildPersonaCard({ archetype: a, profile: first[1], seed: 'urug-0' }).objectionQueue,
+    );
+    let different = false;
+    for (let i = 1; i <= 10 && !different; i += 1) {
+      const other = JSON.stringify(
+        buildPersonaCard({ archetype: a, profile: first[1], seed: `urug-${i}` }).objectionQueue,
+      );
+      if (other !== base) different = true;
+    }
+    assert(different, '10 xil urug\'da ham tartib o\'zgarmadi');
+  });
+
+  check('persona: profil bo\'lmasa neytral zahira ishlatiladi', () => {
+    for (const key of ARCHETYPE_KEYS) {
+      const card = buildPersonaCard({ archetype: ARCHETYPES[key], profile: null, seed: 'bosh' });
+      personaCardSchema.parse(card);
+      assert(card.objectionQueue.length > 0, `${key}: zahira e'tirozlar yo'q`);
+      assertDeepEqual(card.redLines, [], `${key}: redLines`);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 5. Asosiy repo bilan sxema taqqoslash (ixtiyoriy)
 // ---------------------------------------------------------------------------
 type ZodLike = { safeParse: (input: unknown) => { success: boolean } };
 
 async function verifyAgainstMainRepo(): Promise<void> {
-  console.log('\n[3] Asosiy repo (`../sales-copilot`) bilan taqqoslash');
+  console.log('\n[5] Asosiy repo (`../sales-copilot`) bilan taqqoslash');
   const mainRepo = resolve(projectRoot, '../sales-copilot');
   const profileFile = resolve(mainRepo, 'backend/src/business/profile.ts');
 
@@ -216,7 +518,7 @@ async function verifyAgainstMainRepo(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 4. RLS izolyatsiyasi
+// 6. RLS izolyatsiyasi
 // ---------------------------------------------------------------------------
 function appUrl(): string {
   const port = process.env.POSTGRES_PORT ?? '55433';
@@ -260,7 +562,7 @@ function createWithTenant(pool: Pool): WithTenant<PoolClient> {
 const INITIAL_STATE = { patience: 50, trust: 50, interest: 50 };
 
 async function verifyRls(): Promise<void> {
-  console.log('\n[4] RLS izolyatsiyasi');
+  console.log('\n[6] RLS izolyatsiyasi');
 
   if (process.env.SKIP_DB === '1') {
     skip('RLS testlari', 'SKIP_DB=1');
@@ -404,6 +706,79 @@ async function verifyRls(): Promise<void> {
       assert(threw, 'CHECK ishlamadi');
     });
 
+    // --- state / persona_card jsonb round-trip + to'liq sessiya yozish -----
+    await checkAsync('to\'liq sessiya DB ga yozilib, o\'zgarishsiz qaytib o\'qiladi', async () => {
+      const archetype = getArchetype('negotiator');
+      const profiles = Object.values(loadDemoProfiles());
+      const rawProfile = profiles[0];
+      assert(rawProfile, 'demo profil yo\'q');
+      const profile: BusinessProfile = profileSchema.parse(rawProfile);
+
+      const seed = randomUUID();
+      const card = buildPersonaCard({ archetype, profile, seed });
+      const turns: TurnSignalsInput[] = [
+        { gaveSpecifics: true, empathy: true },
+        { addressedObjection: true, gaveSpecifics: true },
+        { addressedObjection: true, gaveSpecifics: true, empathy: true },
+        { addressedObjection: true, gaveSpecifics: true, empathy: true, askedToClose: true },
+      ];
+      const { state: finalState, results } = simulate(archetype, turns);
+      assertEqual(finalState.outcome, 'won', 'simulyatsiya natijasi');
+
+      const readBack = await withTenant(bizA, async (tx) => {
+        const inserted = await tx.query<{ id: string }>(
+          `insert into training_session
+             (business_id, user_id, seat_id, archetype_key, persona_card, state, status, outcome, end_reason, turn_count)
+           values ($1, $2, null, $3, $4, $5, 'ended', $6, $7, $8)
+           returning id`,
+          [
+            bizA,
+            userA,
+            archetype.key,
+            JSON.stringify(card),
+            JSON.stringify(finalState),
+            finalState.outcome,
+            finalState.endReason,
+            finalState.turn,
+          ],
+        );
+        const sessionRow = inserted.rows[0];
+        assert(sessionRow, 'sessiya yozilmadi');
+
+        for (const [i, r] of results.entries()) {
+          await tx.query(
+            `insert into training_turn (session_id, business_id, seq, speaker, text, state_after)
+             values ($1, $2, $3, 'seller', $4, $5)`,
+            [sessionRow.id, bizA, i + 1, `sotuvchi navbati #${i + 1}`, JSON.stringify(r.state)],
+          );
+        }
+
+        const res = await tx.query<{
+          persona_card: unknown;
+          state: unknown;
+          turn_count: number;
+          outcome: string | null;
+          turns: string;
+        }>(
+          `select s.persona_card, s.state, s.turn_count, s.outcome,
+                  (select count(*)::text from training_turn t where t.session_id = s.id) as turns
+             from training_session s where s.id = $1`,
+          [sessionRow.id],
+        );
+        return res.rows[0];
+      });
+
+      assert(readBack, 'sessiya qaytib o\'qilmadi');
+      assertEqual(Number(readBack.turns), results.length, 'yozilgan turn soni');
+      assertEqual(readBack.turn_count, finalState.turn, 'turn_count');
+      assertEqual(readBack.outcome, 'won', 'outcome');
+
+      // jsonb -> zod: shakl saqlanib qolganini sxema bilan tasdiqlaymiz.
+      const stateBack: TrainingState = trainingStateSchema.parse(readBack.state);
+      assertDeepEqual(stateBack, finalState, 'state jsonb round-trip');
+      assertDeepEqual(personaCardSchema.parse(readBack.persona_card), card, 'persona_card round-trip');
+    });
+
     await checkAsync('turn (session_id, seq) unikal', async () => {
       let threw = false;
       try {
@@ -431,10 +806,12 @@ async function verifyRls(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
-  console.log('verify-training — AI mijoz trenajyori, Step 1 tekshiruvi');
+  console.log('verify-training — AI mijoz trenajyori, Step 1-2 tekshiruvi');
 
   verifyArchetypes();
   verifyDemoProfiles();
+  verifyEngine();
+  verifyPersona();
   await verifyAgainstMainRepo();
 
   try {

@@ -3,9 +3,9 @@
 Bu papka (`module/`) — **drop-in modul**. `harness/` papkasi BERILMAYDI va
 kerak emas: modul hech qachon undan import qilmaydi.
 
-Hozirgi holat: **Step 1 — faqat poydevor** (arxetiplar, portlar, profil
-sxemasi, DB jadvallari, RLS, verify). Endpoint, LLM, STT/TTS, baholash va
-frontend keyingi qadamlarda.
+Hozirgi holat: **Step 1-2** — poydevor (arxetiplar, portlar, profil sxemasi,
+DB jadvallari, RLS, verify) + **deterministik holat mashinasi va persona-card**.
+Endpoint, LLM chaqiruvlari, STT/TTS, baholash va frontend keyingi qadamlarda.
 
 ---
 
@@ -14,6 +14,9 @@ frontend keyingi qadamlarda.
 | Modul fayli | Asosiy repodagi joyi |
 | --- | --- |
 | `backend/src/training/archetypes.ts` | `backend/src/training/archetypes.ts` |
+| `backend/src/training/state.ts` | `backend/src/training/state.ts` |
+| `backend/src/training/engine.ts` | `backend/src/training/engine.ts` |
+| `backend/src/training/persona.ts` | `backend/src/training/persona.ts` |
 | `backend/src/training/ports.ts` | `backend/src/training/ports.ts` |
 | `backend/src/training/verify-training.ts` | `backend/src/training/verify-training.ts` |
 | `backend/src/training/demo-profiles.json` | `backend/src/training/demo-profiles.json` (faqat dev/test; haqiqiy ma'lumot kelganda o'chiriladi) |
@@ -36,8 +39,8 @@ export * from './training.js';
 (modul standalone ishlashi uchun). Integratsiyada:
 
 1. faylni **o'chirib tashlang**;
-2. uni import qilgan joylarda (`ports.ts`, `verify-training.ts`) importni
-   almashtiring:
+2. uni import qilgan joylarda (`ports.ts`, `persona.ts`, `verify-training.ts`)
+   importni almashtiring:
 
 ```ts
 // oldin
@@ -102,6 +105,42 @@ export const trainingDeps: TrainingDeps = {
 };
 ```
 
+## 4b. Holat mashinasi va persona-card (Step 2)
+
+Bu qism **to'liq deterministik va LLM'siz** — shuning uchun integratsiyada
+hech narsa ulash kerak emas, shunchaki ko'chiriladi. Lekin Step 3 da
+endpoint yozganda shu shartnomaga tayaniladi:
+
+| Fayl | Nima beradi |
+| --- | --- |
+| `state.ts` | `trainingStateSchema` (= `training_session.state` ustunining shakli), `turnSignalsSchema`, outcome/endReason enum'lari |
+| `engine.ts` | `initialState(archetype)`, `applyTurn(archetype, state, signals)`, `simulate(...)`, `ENGINE_RULES` |
+| `persona.ts` | `buildPersonaCard({ archetype, profile, seed })` (= `persona_card` ustuni), `objectionText(card, index)` |
+
+Step 3 da bir navbat quyidagicha ishlaydi (tartib muhim):
+
+1. sotuvchi matni keladi -> **LLM/analizator** faqat `TurnSignals` ni ajratib
+   beradi (`turnSignalsSchema` bilan validatsiya qilinadi);
+2. `applyTurn(...)` **kodda** yangi holatni va hodisalarni hisoblaydi —
+   g'alaba/yutqazish qarori LLM'da EMAS;
+3. `result.raisedObjectionIndex` bo'lsa, mijoz aytadigan e'tiroz matni
+   `objectionText(card, index)` dan olinadi (ya'ni profildan, kodda emas);
+4. **LLM** faqat mijozning javob matnini yozadi (persona-card + yangi holat
+   asosida);
+5. `training_turn` ga seller va customer navbatlari, `training_session.state`
+   ga yangi holat yoziladi (hammasi bitta `withTenant` tranzaksiyasida).
+
+Muhim xususiyatlar:
+
+- `applyTurn` kirish holatini **o'zgartirmaydi** (immutable), yangi obyekt
+  qaytaradi — optimistik qayta urinish xavfsiz;
+- `buildPersonaCard` urug' (seed) bo'yicha deterministik — urug' sifatida
+  `training_session.id` ni bering, keyin sessiyani qayta o'ynash mumkin;
+- profil `null` bo'lsa kard neytral zahira matnlar bilan to'ladi (ilova
+  yiqilmaydi), lekin mashq sifati tushadi — profilni to'ldirishni talab qiling;
+- koeffitsiyentlarni sozlash kerak bo'lsa faqat `ENGINE_RULES` ni
+  o'zgartiring, mantiqni emas.
+
 ## 5. DB migratsiyasi
 
 1. `backend/src/db/schema/training.ts` ni joyiga qo'ying (2 va 3-bo'limdan
@@ -138,7 +177,7 @@ xato ham chiqmaydi.
 
 ## 7. Checklist
 
-- [ ] `backend/src/training/*` va `backend/src/db/schema/training.ts` ko'chirildi
+- [ ] `backend/src/training/*` (archetypes, state, engine, persona, ports, verify) va `backend/src/db/schema/training.ts` ko'chirildi
 - [ ] `profile-schema.ts` o'chirildi, import `business/profile.js` ga o'tdi
 - [ ] `host-tables.ts` o'chirildi, FK'lar haqiqiy sxemalarga ulandi
 - [ ] sxema barrel'iga `export * from './training.js'` qo'shildi
@@ -150,11 +189,12 @@ xato ham chiqmaydi.
 
 ## 8. Keyingi qadamlar
 
-- **TODO (Step 2)**: deterministik holat mashinasi (patience/trust/interest,
-  e'tirozlar, yashirin ehtiyoj, win/lose qoidalari), persona-card generatsiya,
-  `persona_card` va `state` jsonb strukturasi.
+- **BAJARILDI (Step 2)**: deterministik holat mashinasi
+  (patience/trust/interest, e'tirozlar, yashirin ehtiyoj, win/lose/timeout),
+  persona-card, `state` va `persona_card` jsonb strukturasi — 4b bo'limga
+  qarang.
 - **TODO (Step 3)**: Fastify endpoint'lar (`POST /training/sessions`,
-  `POST /training/sessions/:id/turns`), zod validatsiya, rate-limit, cost
-  hisobi (`cost_usd`).
+  `POST /training/sessions/:id/turns`), `TrainerLlm` orqali mijoz matni va
+  signal ajratish, zod validatsiya, rate-limit, cost hisobi (`cost_usd`).
 - **TODO (Step 4)**: STT/TTS (ovozli mashq) chok'lari.
 - **TODO (Step 5)**: baholash/scoring va frontend (React/Vite) ekranlari.

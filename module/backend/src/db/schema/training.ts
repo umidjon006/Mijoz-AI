@@ -22,25 +22,22 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import { ARCHETYPE_KEYS } from '../../training/archetypes.js';
+import type { PersonaCard } from '../../training/persona.js';
+import type { TrainingState } from '../../training/state.js';
 // INTEGRATSIYA: `host-tables.js` o'rniga asosiy repodagi sxemalarni import qiling.
 import { appUser, business, seat } from './host-tables.js';
 
 const keyList = ARCHETYPE_KEYS.map((key) => `'${key}'`).join(', ');
 
-/** Sessiya holati (deterministik mantiq — Step 2 da to'ldiriladi). */
-export interface TrainingSessionState {
-  patience: number;
-  trust: number;
-  interest: number;
-  /** Yechilgan e'tirozlar soni / yashirin ehtiyoj ochildimi va h.k. */
-  objectionsRaised?: number;
-  objectionsResolved?: number;
-  needDiscovered?: boolean;
-  flags?: Record<string, boolean | number | string>;
-}
+/**
+ * `state` ustunining shakli — yagona manba `training/state.ts`
+ * (`trainingStateSchema`). Deterministik holat mashinasi shu obyektni
+ * qaytaradi, DB esa aynan shuni saqlaydi.
+ */
+export type TrainingSessionState = TrainingState;
 
-/** AI mijoz tomonidan o'ynaladigan persona (Step 2). */
-export type TrainingPersonaCard = Record<string, unknown>;
+/** `persona_card` ustunining shakli — `training/persona.ts` dagi sxema. */
+export type TrainingPersonaCard = PersonaCard;
 
 export const trainingSession = pgTable(
   'training_session',

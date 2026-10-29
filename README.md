@@ -1,4 +1,4 @@
-# sotuv-trener — AI mijoz trenajyori (Step 1: poydevor)
+# sotuv-trener — AI mijoz trenajyori (Step 1-2)
 
 Sotuvchilar mashq qiladigan **AI mijoz simulyatori**. Keyinchalik mavjud
 multi-tenant SaaS (`sales-copilot`: Fastify + Drizzle + PostgreSQL + RLS + zod
@@ -24,6 +24,9 @@ sotuv-trener/
   module/
     backend/src/training/
       archetypes.ts              # zod sxema + 4 arxetip (tiplangan konstantalar)
+      state.ts                   # TrainingState + TurnSignals zod sxemalari
+      engine.ts                  # deterministik holat mashinasi (win/lose/timeout)
+      persona.ts                 # persona-card: arxetip + profil => rol (LLM'siz)
       ports.ts                   # TrainingContext, TrainerLlm, WithTenant, GetBusinessProfile
       profile-schema.ts          # vendor profileSchema (integratsiyada o'chiriladi)
       demo-profiles.json         # dev/test ma'lumoti
@@ -83,6 +86,32 @@ npm run db:init && npm run verify:training
 $PGBIN/pg_ctl -D "$PGDATA" -m fast stop   # tugatgandan keyin
 ```
 
+## Holat mashinasi (Step 2) qisqacha
+
+`engine.ts` — mashqning butun deterministik mantig'i. LLM hech qachon
+"yutdim/yutqazdim" demaydi va ballarni o'zgartirmaydi.
+
+- **Kirish:** `TurnSignals` — sotuvchi navbatda nima qilgani
+  (`addressedObjection`, `gaveSpecifics`, `askedDiscoveryQuestion`, `empathy`,
+  `repeatedSelf`, `ignoredCustomer`, `pressured`, `brokeRedLine`,
+  `askedToClose`, `proposedNextStep`). Step 3 da bu obyekt sotuvchi matnidan
+  ajratib olinadi — lekin hisob-kitob hamon kodda.
+- **Holat:** `TrainingState` (patience/trust/interest + e'tirozlar hisobi +
+  `needDiscovered` + `agreedNextStep` + `redLineBroken` + outcome).
+  Aynan shu obyekt `training_session.state` jsonb ustuniga yoziladi.
+- **Qoidalar:** `ENGINE_RULES` — barcha koeffitsiyentlar bir joyda, mantiq
+  o'zgartirilmaydi.
+- **Yakun tartibi:** avval yutqazish (`patience < lose.patienceBelow`), keyin
+  g'alaba (`win.type` + `minTrust` + e'tirozlar + yashirin ehtiyoj + yopish),
+  keyin `maxTurns` (timeout). Qizil chiziq buzilsa g'alaba imkonsiz.
+- **Immutable va deterministik:** bir xil (arxetip + holat + signallar) har
+  doim bir xil natija; kirish holati hech qachon o'zgartirilmaydi.
+
+`persona.ts` — arxetip (xarakter) + `business.profile` (faktlar) =>
+persona-card. LLM'siz, urug' (sessiya id) bo'yicha deterministik, shuning
+uchun sessiyani qayta o'ynash mumkin. Kardagi hamma matn profildan keladi —
+kodda hech qanday soha so'zi yo'q.
+
 ## Verify nimani tekshiradi
 
 1. 4 arxetip `archetypeSchema` dan o'tadi, kalitlar unikal, `hiddenNeed`
@@ -90,13 +119,21 @@ $PGBIN/pg_ctl -D "$PGDATA" -m fast stop   # tugatgandan keyin
 2. kodagi `ARCHETYPES` ildizdagi `archetypes.json` bilan bir xil (drift yo'q);
 3. har bir demo profil vendor `profileSchema` dan o'tadi, noto'g'ri enum rad
    etiladi;
-4. `../sales-copilot` mavjud bo'lsa — vendor sxema va asosiy repodagi
+4. holat mashinasi: g'alaba / yutqazish / timeout yo'llari, e'tiroz yechilmasa
+   rozilik yo'q, `info_seeker` ehtiyoj ochilmasa yutmaydi, `problematic`
+   keyingi qadam bilan yutadi, qizil chiziq g'alabani bloklaydi, ballar
+   0..100, determinizm, immutable holat;
+5. persona-card: 4 arxetip × 3 demo profil, e'tiroz matnlari faqat profildan,
+   determinizm, profil bo'lmasa zahira matnlar;
+6. `../sales-copilot` mavjud bo'lsa — vendor sxema va asosiy repodagi
    `profileSchema` bir xil namunalarni qabul/rad qiladi (bo'lmasa `skip`);
-5. **RLS izolyatsiyasi** cheklangan rol ustida: A biznes qatorlari B biznes
+7. **RLS izolyatsiyasi** cheklangan rol ustida: A biznes qatorlari B biznes
    ostida ko'rinmaydi, `withTenant`siz o'qish ham yozish ham mumkin emas,
-   boshqa tenant nomidan yozish rad etiladi, CHECK va unique ishlaydi.
+   boshqa tenant nomidan yozish rad etiladi, CHECK va unique ishlaydi;
+8. to'liq sessiya DB ga yoziladi va `state` / `persona_card` jsonb
+   o'zgarishsiz qaytib o'qiladi.
 
 ## Keyingi qadamlar
 
-Step 2–5: deterministik holat mashinasi, endpoint'lar, STT/TTS, baholash,
+Step 3–5: Fastify endpoint'lar + LLM (mijoz matni), STT/TTS, baholash,
 frontend. Batafsil: `module/integration/INTEGRATION.md` (8-bo'lim).
