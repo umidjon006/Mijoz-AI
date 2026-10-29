@@ -11,12 +11,18 @@
     "db:init": "tsx --env-file-if-exists=.env src/apply-sql.ts",
     "withtenant:smoke": "tsx --env-file-if-exists=.env src/withTenant.ts",
     "verify:training": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training.ts",
-    "typecheck": "tsc --noEmit"
+    "verify:training:core": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-core.ts",
+    "verify": "npm run verify:training && npm run verify:training:core",
+    "play": "tsx --env-file-if-exists=.env src/play.ts",
+    "smoke:llm": "tsx --env-file-if-exists=.env src/smoke-llm.ts",
+    "typecheck": "tsc --noEmit",
+    "calibrate": "tsx --env-file-if-exists=.env src/calibrate.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.6",
     "pg": "^8.16.3",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "@anthropic-ai/sdk": "^0.70.1"
   },
   "devDependencies": {
     "@types/node": "^24.7.0",

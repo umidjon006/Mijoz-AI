@@ -5,12 +5,13 @@
  * `true` — "local to transaction", ya'ni commit/rollback bilan tozalanadi.
  *
  * Modul bu faylni IMPORT QILMAYDI (module/ -> harness/ bog'liqlik taqiqlangan);
- * modul faqat `ports.ts` dagi `WithTenant` tipini biladi, implementatsiyani
- * host (yoki shu harness) beradi.
+ * modul faqat `ports.ts` dagi `WithTenant` tipini biladi.
  */
-import { Pool, type PoolClient } from 'pg';
+import { sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
 
-import type { WithTenant } from '../../module/backend/src/training/ports.js';
+import type { TrainingTx, WithTenant } from '../../module/backend/src/training/ports.js';
 
 export function appDatabaseUrl(): string {
   const port = process.env.POSTGRES_PORT ?? '55433';
@@ -32,22 +33,15 @@ export function createPool(connectionString: string): Pool {
   return new Pool({ connectionString, max: 4 });
 }
 
-/** `WithTenant` portining pg (raw SQL) ustidagi implementatsiyasi. */
-export function createWithTenant(pool: Pool): WithTenant<PoolClient> {
+/** `WithTenant` portining Drizzle (node-postgres) ustidagi implementatsiyasi. */
+export function createWithTenant(pool: Pool): WithTenant {
+  const db = drizzle(pool);
   return async function withTenant(businessId, fn) {
-    const client = await pool.connect();
-    try {
-      await client.query('begin');
-      await client.query('select set_config($1, $2, true)', ['app.business_id', businessId]);
-      const result = await fn(client);
-      await client.query('commit');
-      return result;
-    } catch (err) {
-      await client.query('rollback').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('app.business_id', ${businessId}, true)`);
+      // Host repoda tx tipi o'z sxemasi bilan keladi; modul eng umumiy tipni kutadi.
+      return await fn(tx as unknown as TrainingTx);
+    });
   };
 }
 
@@ -57,10 +51,10 @@ async function smoke(): Promise<void> {
   const withTenant = createWithTenant(pool);
   const businessId = '00000000-0000-0000-0000-000000000001';
   const value = await withTenant(businessId, async (tx) => {
-    const res = await tx.query<{ who: string; biz: string | null }>(
-      "select current_user as who, current_setting('app.business_id', true) as biz",
+    const res = await tx.execute(
+      sql`select current_user as who, current_setting('app.business_id', true) as biz`,
     );
-    return res.rows[0];
+    return (res as unknown as { rows: unknown[] }).rows[0];
   });
   console.log('withTenant smoke:', value);
   await pool.end();

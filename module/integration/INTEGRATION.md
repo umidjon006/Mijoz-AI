@@ -4,8 +4,10 @@ Bu papka (`module/`) — **drop-in modul**. `harness/` papkasi BERILMAYDI va
 kerak emas: modul hech qachon undan import qilmaydi.
 
 Hozirgi holat: **Step 1-2** — poydevor (arxetiplar, portlar, profil sxemasi,
-DB jadvallari, RLS, verify) + **deterministik holat mashinasi va persona-card**.
-Endpoint, LLM chaqiruvlari, STT/TTS, baholash va frontend keyingi qadamlarda.
+DB jadvallari, RLS) + **matnli AI mijoz motori**: persona generatsiya, holat va
+qoidalar, prompt'lar, agreement guard, `startSession` / `takeTurn` /
+`endSession`. Endpoint (route), STT/TTS, baholash va frontend keyingi
+qadamlarda.
 
 ---
 
@@ -15,10 +17,15 @@ Endpoint, LLM chaqiruvlari, STT/TTS, baholash va frontend keyingi qadamlarda.
 | --- | --- |
 | `backend/src/training/archetypes.ts` | `backend/src/training/archetypes.ts` |
 | `backend/src/training/state.ts` | `backend/src/training/state.ts` |
-| `backend/src/training/engine.ts` | `backend/src/training/engine.ts` |
+| `backend/src/training/prompts.ts` | `backend/src/training/prompts.ts` |
 | `backend/src/training/persona.ts` | `backend/src/training/persona.ts` |
+| `backend/src/training/engine.ts` | `backend/src/training/engine.ts` |
+| `backend/src/training/repo.ts` | `backend/src/training/repo.ts` |
+| `backend/src/training/errors.ts` | `backend/src/training/errors.ts` |
 | `backend/src/training/ports.ts` | `backend/src/training/ports.ts` |
+| `backend/src/training/testing/*.ts` | `backend/src/training/testing/*.ts` (fake LLM + test yordamchilari) |
 | `backend/src/training/verify-training.ts` | `backend/src/training/verify-training.ts` |
+| `backend/src/training/verify-training-core.ts` | `backend/src/training/verify-training-core.ts` |
 | `backend/src/training/demo-profiles.json` | `backend/src/training/demo-profiles.json` (faqat dev/test; haqiqiy ma'lumot kelganda o'chiriladi) |
 | `backend/src/db/schema/training.ts` | `backend/src/db/schema/training.ts` |
 | `backend/src/training/profile-schema.ts` | **KO'CHIRILMAYDI** — 2-bo'limga qarang |
@@ -39,8 +46,8 @@ export * from './training.js';
 (modul standalone ishlashi uchun). Integratsiyada:
 
 1. faylni **o'chirib tashlang**;
-2. uni import qilgan joylarda (`ports.ts`, `persona.ts`, `verify-training.ts`)
-   importni almashtiring:
+2. uni import qilgan joylarda (`ports.ts`, `persona.ts`, `prompts.ts`,
+   `verify-training*.ts`) importni almashtiring:
 
 ```ts
 // oldin
@@ -85,8 +92,9 @@ ishga tushganda bir marta yig'ib beradi:
 | Chok | Tip | Asosiy repoda nimaga ulanadi |
 | --- | --- | --- |
 | **1. TrainingContext** | `{ businessId, userId, seatId }` | Fastify auth/preHandler dagi `request.user` / JWT claim'lari. Modul **hech qachon** global'dan yoki `request` dan o'zi o'qimaydi — kontekst argument sifatida uzatiladi. |
-| **2. TrainerLlm** | `completeJson({ stage, system, user, schema })` | `backend/src/ai/llm.ts` dagi `LlmClient` bilan **ayni bir xil shakl**: `const llm = getActiveLlm();` va to'g'ridan-to'g'ri beriladi, adapter yozish kerak emas. |
-| **3. WithTenant** | `withTenant(businessId, (tx) => ...)` | `backend/src/db/index.ts` dagi `withTenant` — o'zgarishsiz uzatiladi. Tip generik (`WithTenant<TTx>`), shuning uchun Drizzle tranzaksiya tipini bersangiz bo'ladi: `WithTenant<typeof db extends ... >` yoki oddiygina `WithTenant<DbTx>`. |
+| **2. TrainerLlm** | `completeJson({ stage, system, user, schema })` | `backend/src/ai/llm.ts` dagi `LlmClient` bilan **ayni bir xil shakl**: `const llm = getActiveLlm();` va to'g'ridan-to'g'ri beriladi, adapter yozish kerak emas. **Ixtiyoriy** `completeJsonWithUsage` ham bor: agar sizning klientingiz token sarfini qaytara olsa, shu metodni qo'shing — `cost_usd` avtomatik to'ldiriladi; qo'shmasangiz hammasi ishlaydi, faqat narx 0 bo'lib qoladi. |
+| **3. WithTenant** | `withTenant(businessId, (tx) => ...)` | `backend/src/db/index.ts` dagi `withTenant` — o'zgarishsiz uzatiladi. Modul `tx` dan faqat Drizzle query-builder'ini ishlatadi (`ports.ts` dagi `TrainingTx` — eng umumiy `PgTransaction`). Sizning `withTenant` ning tx tipi bu bilan to'g'ridan-to'g'ri mos kelmasa, ulash joyida bitta `as unknown as TrainingTx` yetarli (harness'da ham shunday). |
+| **5. PriceCall** (ixtiyoriy) | `(usage) => number` (USD) | Sizning tariflaringiz. Berilmasa `cost_usd` 0 qoladi. `random` va `now` ham ixtiyoriy — testlar uchun. |
 | **4. GetBusinessProfile** | `(businessId) => Promise<BusinessProfile \| null>` | `backend/src/business/profile.ts` dagi profil o'qish funksiyasi. Domen faktlari **faqat shu yerdan** keladi — modul ichida hech qanday soha nomi qattiq yozilmagan. |
 
 Namuna (host tomonda, Step 2 dan boshlab kerak bo'ladi):
@@ -97,49 +105,94 @@ import { withTenant } from './db/index.js';
 import { getBusinessProfile } from './business/profile.js';
 import type { TrainingDeps } from './training/ports.js';
 
-export const trainingDeps: TrainingDeps = {
-  withTenant,
-  getBusinessProfile,
-  llm: getActiveLlm(),
+export const engine = createTrainingEngine({
+  withTenant,                 // 3-chok
+  getBusinessProfile,         // 4-chok
+  llm: getActiveLlm(),        // 2-chok
+  priceCall: (usage) => yourPricing(usage), // ixtiyoriy
   logger: app.log,
+});
+
+// Route ichida (Step 3):
+const ctx: TrainingContext = {               // 1-chok
+  businessId: request.user.businessId,
+  userId: request.user.id,
+  seatId: request.user.seatId ?? null,
 };
+const result = await engine.takeTurn(ctx, { sessionId, sellerText });
 ```
 
-## 4b. Holat mashinasi va persona-card (Step 2)
+Xatolar: `TrainingError.code` -> HTTP:
+`profile_missing` 409, `session_not_found` 404, `session_forbidden` 403,
+`session_not_active` 409, `persona_generation_failed` / `llm_invalid_output` 502.
 
-Bu qism **to'liq deterministik va LLM'siz** — shuning uchun integratsiyada
-hech narsa ulash kerak emas, shunchaki ko'chiriladi. Lekin Step 3 da
-endpoint yozganda shu shartnomaga tayaniladi:
+## 4b. Motor (Step 2): nima qanday ishlaydi
+
+```
+startSession(ctx, {archetypeKey, direction?, language?})
+  getBusinessProfile(businessId)        <- chok
+  generatePersonaCard({llm, ...})       <- 1 LLM chaqiruvi (+1 tuzatish urinishi)
+  initState(archetype)                  <- sof kod
+  withTenant -> insert training_session (+ inbound bo'lsa openingLine = seq 1)
+
+takeTurn(ctx, {sessionId, sellerText})  -- hammasi BITTA tranzaksiyada
+  session'ni `for update` bilan qulflash (seq bo'shliqsiz bo'lishi uchun)
+  insert training_turn (speaker='seller')
+  computeReadiness(state, persona, archetype)        <- KOD qaror qiladi
+  buildTurnSystemPrompt + buildTurnUserPrompt (oxirgi 12 navbat)
+  llm.completeJson({stage:'training.turn', schema: turnResultSchema})
+  [guard] intent qoidani buzsa -> BITTA tuzatuvchi retry
+          yana buzsa -> matn olinadi, natija O'ZGARMAYDI, guardViolations++
+  applyTurnResult(...)  -> clamp, bazaviy decay, flaglar
+  evaluateEnd(...)      -> won | lost | timeout (faqat kod)
+  insert training_turn (speaker='customer', state_after = holat + {meta:{latencyMs,...}})
+  update training_session (state, turn_count, cost_usd += priceCall(usage), status/outcome)
+```
+
+Fayllar:
 
 | Fayl | Nima beradi |
 | --- | --- |
-| `state.ts` | `trainingStateSchema` (= `training_session.state` ustunining shakli), `turnSignalsSchema`, outcome/endReason enum'lari |
-| `engine.ts` | `initialState(archetype)`, `applyTurn(archetype, state, signals)`, `simulate(...)`, `ENGINE_RULES` |
-| `persona.ts` | `buildPersonaCard({ archetype, profile, seed })` (= `persona_card` ustuni), `objectionText(card, index)` |
+| `state.ts` | `trainingStateSchema` (= `state` ustuni), `turnResultSchema` (LLM shartnomasi), `initState`, `applyTurnResult`, `computeReadiness`, `evaluateEnd`, `isGuardViolation` |
+| `prompts.ts` | `PROMPT_VERSION`, `TRANSCRIPT_WINDOW = 12`, navbat va persona promptlari |
+| `persona.ts` | `personaCardSchema`, `makePersonaCardSchema` (arxetip/profil qoidalari), `generatePersonaCard` |
+| `engine.ts` | `createTrainingEngine({...})` -> `startSession`, `takeTurn`, `endSession`, `getSession` |
+| `repo.ts` | Drizzle so'rovlari (hammasi `tx` oladi) |
+| `errors.ts` | `TrainingError` + `code` (route'da HTTP statusga o'giriladi) |
 
-Step 3 da bir navbat quyidagicha ishlaydi (tartib muhim):
+**Qiyinlikni qanday sozlash kerak** (`archetypes.ts`, hech qanday prompt
+o'zgartirmasdan):
 
-1. sotuvchi matni keladi -> **LLM/analizator** faqat `TurnSignals` ni ajratib
-   beradi (`turnSignalsSchema` bilan validatsiya qilinadi);
-2. `applyTurn(...)` **kodda** yangi holatni va hodisalarni hisoblaydi —
-   g'alaba/yutqazish qarori LLM'da EMAS;
-3. `result.raisedObjectionIndex` bo'lsa, mijoz aytadigan e'tiroz matni
-   `objectionText(card, index)` dan olinadi (ya'ni profildan, kodda emas);
-4. **LLM** faqat mijozning javob matnini yozadi (persona-card + yangi holat
-   asosida);
-5. `training_turn` ga seller va customer navbatlari, `training_session.state`
-   ga yangi holat yoziladi (hammasi bitta `withTenant` tranzaksiyasida).
+- `objections.count` — nechta e'tiroz yechilishi kerak. Mijoz hamma e'tirozini
+  aytib bo'lmaguncha **hech qachon** rozi bo'lmaydi, shuning uchun bu
+  parametr qiyinlikka eng kuchli ta'sir qiladi;
+- `objections.severityMax` — e'tirozlar qanchalik qattiq (persona
+  generatsiyasida chegara sifatida ishlatiladi);
+- `win.minTrust` — rozilik uchun kerakli ishonch;
+- `win.requireObjectionsResolved` — e'tirozlar yechilishi shartmi;
+- `win.type` — `agree` | `agree_or_next_step` (keyingi qadam ham g'alaba) |
+  `need_discovered_and_agree` (avval yashirin ehtiyoj);
+- `lose.patienceBelow` — qachon qo'ng'iroq uziladi;
+- `difficulty` — har navbatdagi tabiiy sabr kamayishi `ceil(difficulty / 2)`;
+- `maxTurns` — timeout;
+- `behaviorRules` — prompt'ga aynan tushadi (mijozning xulqi);
+- `hiddenNeed` + `needRevealTriggers` — ehtiyojni ochish talabi.
 
-Muhim xususiyatlar:
+Deltalarning o'zi (`trust +6` kabi) **LLM tomonidan** taklif qilinadi, lekin
+kod ularni `[-20, 20]` ga va holatni `[0, 100]` ga chegaralaydi, shuning uchun
+model "hammasi yaxshi" deb sessiyani buzib yubora olmaydi.
 
-- `applyTurn` kirish holatini **o'zgartirmaydi** (immutable), yangi obyekt
-  qaytaradi — optimistik qayta urinish xavfsiz;
-- `buildPersonaCard` urug' (seed) bo'yicha deterministik — urug' sifatida
-  `training_session.id` ni bering, keyin sessiyani qayta o'ynash mumkin;
-- profil `null` bo'lsa kard neytral zahira matnlar bilan to'ladi (ilova
-  yiqilmaydi), lekin mashq sifati tushadi — profilni to'ldirishni talab qiling;
-- koeffitsiyentlarni sozlash kerak bo'lsa faqat `ENGINE_RULES` ni
-  o'zgartiring, mantiqni emas.
+**Prompt'lar qayerda:** hozircha kodda (`prompts.ts`), `PROMPT_VERSION`
+holatga yoziladi (`state.promptVersion`). Xohlasangiz keyinchalik asosiy
+repodagi `prompt_template` jadvaliga ko'chirasiz — shart: versiya kaliti
+holatga yozilishi davom etsin, aks holda eski sessiyalarni qayta o'qish
+mantig'i yo'qoladi.
+
+**Eslatma (ataylab qilingan tanlov):** `takeTurn` LLM chaqiruvini DB
+tranzaksiyasi ICHIDA bajaradi (spetsifikatsiya shunday talab qiladi:
+"in one transaction"). Bu sessiya qatorini bir necha soniya qulflab turadi.
+Yuklama ortsa, tranzaksiyani ikkiga bo'lish kerak bo'ladi (navbatni yozish ->
+LLM -> natijani yozish), lekin unda `seq` uchun boshqa qulf kerak.
 
 ## 5. DB migratsiyasi
 
@@ -184,17 +237,24 @@ xato ham chiqmaydi.
 - [ ] migratsiya o'z drizzle-kit bilan generatsiya qilindi va qo'llandi
 - [ ] `rls.sql` dagi `tenant_tables` ga 2 jadval qo'shildi va qayta qo'llandi
 - [ ] `TrainingDeps` yig'ildi (4 chok: context, llm, withTenant, getBusinessProfile)
-- [ ] `verify-training.ts` to'liq o'tadi (RLS testlari ham)
+- [ ] `verify-training.ts` va `verify-training-core.ts` to'liq o'tadi (RLS + engine testlari)
+- [ ] `module/` ichida provayder SDK'si yo'qligi tekshirildi (Anthropic SDK faqat harness'da edi)
 - [ ] `tsc --noEmit` toza
 
 ## 8. Keyingi qadamlar
 
-- **BAJARILDI (Step 2)**: deterministik holat mashinasi
-  (patience/trust/interest, e'tirozlar, yashirin ehtiyoj, win/lose/timeout),
-  persona-card, `state` va `persona_card` jsonb strukturasi — 4b bo'limga
-  qarang.
+- **BAJARILDI (Step 2)**: persona generatsiya, holat va qoidalar, prompt'lar,
+  agreement guard, `startSession`/`takeTurn`/`endSession`/`getSession`,
+  `state` va `persona_card` jsonb strukturasi — 4b bo'limga qarang.
 - **TODO (Step 3)**: Fastify endpoint'lar (`POST /training/sessions`,
-  `POST /training/sessions/:id/turns`), `TrainerLlm` orqali mijoz matni va
-  signal ajratish, zod validatsiya, rate-limit, cost hisobi (`cost_usd`).
+  `POST /training/sessions/:id/turns`, `GET /training/sessions/:id`), zod
+  validatsiya, rate-limit, `TrainingError.code` -> HTTP xaritasi, SSE/stream
+  (xohlasa).
+- **TODO (Step 4)**: STT/TTS (ovozli mashq). `reply` allaqachon ovozga tayyor
+  (2 qisqa gap, <= 300 belgi, emoji/markdown yo'q).
+- **TODO (Step 5)**: baholash/scoring (transkript + `state` tarixi asosida) va
+  frontend (React/Vite) ekranlari.
+- **Env (faqat harness)**: `ANTHROPIC_API_KEY`, `TRAINER_MODEL` — asosiy
+  repoda bular kerak emas, LLM host tomonidan beriladi.
 - **TODO (Step 4)**: STT/TTS (ovozli mashq) chok'lari.
 - **TODO (Step 5)**: baholash/scoring va frontend (React/Vite) ekranlari.

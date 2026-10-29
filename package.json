@@ -12,7 +12,12 @@
     "db:down": "npm run db:down -w sotuv-trener-harness",
     "db:reset": "npm run db:reset -w sotuv-trener-harness",
     "db:init": "npm run db:init -w sotuv-trener-harness",
+    "verify": "npm run verify -w sotuv-trener-harness",
     "verify:training": "npm run verify:training -w sotuv-trener-harness",
-    "typecheck": "npm run typecheck -w sotuv-trener-harness"
+    "verify:training:core": "npm run verify:training:core -w sotuv-trener-harness",
+    "play": "npm run play -w sotuv-trener-harness --",
+    "smoke:llm": "npm run smoke:llm -w sotuv-trener-harness --",
+    "typecheck": "npm run typecheck -w sotuv-trener-harness",
+    "calibrate": "npm run calibrate -w sotuv-trener-harness --"
   }
 }
