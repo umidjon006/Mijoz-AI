@@ -1,0 +1,19 @@
+# Sotuvchi gaplari — STT benchmark uchun etalon matn (o'zbek, lotin).
+# Har qator = bitta namuna; qator raqami samples/NN.wav bilan mos keladi.
+# '#' bilan boshlangan qatorlar va bo'sh qatorlar hisobga olinmaydi.
+# Ovoz yozganda matnni AYNAN shunday, tabiiy tezlikda o'qing.
+Assalomu alaykum, Nurafshon xizmatidan qo'ng'iroq qilyapman.
+Yaxshi, tushundim, sizga qulay vaqtni aniqlashtirsak bo'ladi.
+To'liq narxi bir million ikki yuz ming so'm, oyiga to'lanadi.
+Oldindan to'lov qilsangiz, umumiy summadan o'n foiz chegirma beramiz.
+Hujjatlarni tayyorlab, ertaga soat o'n birda qayta aloqaga chiqaman.
+Mening raqamim 90 123 45 67, qulay vaqtda yozib qo'ying.
+Shartnoma muddati olti oy, keyin avtomatik ravishda uzaytiriladi.
+Bu variant aksiya narxida, faqat shu hafta oxirigacha amal qiladi.
+Sizga qaysi variant ko'proq mos keladi, arzonrog'imi yoki to'liq paketmi?
+Menejerimiz sizga bepul konsultatsiya beradi, hech qanday majburiyat yo'q.
+Oldingi mijozlarimiz o'rtacha uch oyda natijani ko'rgan, statistika bor.
+Agar sifat yoqmasa, birinchi hafta ichida pulni to'liq qaytaramiz.
+Dostavka bepul, kuryer manzilga ertalab soat to'qqizdan keyin yetib boradi.
+Biz Toshkent va Guliston shaharlarida ishlaymiz, boshqa viloyatlarga kelishiladi.
+Tushunarli bo'ldimi, yoki shartlarni yana bir marta batafsil tushuntirib beraymi?

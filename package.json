@@ -18,6 +18,10 @@
     "play": "npm run play -w sotuv-trener-harness --",
     "smoke:llm": "npm run smoke:llm -w sotuv-trener-harness --",
     "typecheck": "npm run typecheck -w sotuv-trener-harness",
-    "calibrate": "npm run calibrate -w sotuv-trener-harness --"
+    "calibrate": "npm run calibrate -w sotuv-trener-harness --",
+    "bench:voices": "npm run bench:voices -w sotuv-trener-harness --",
+    "bench:record": "npm run bench:record -w sotuv-trener-harness",
+    "bench:stt": "npm run bench:stt -w sotuv-trener-harness --",
+    "bench:tts": "npm run bench:tts -w sotuv-trener-harness --"
   }
 }

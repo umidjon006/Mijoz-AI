@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="uz">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STT namunalarini yozib olish</title>
+    <style>
+      :root {
+        --bg: #14161a;
+        --panel: #1d2026;
+        --line: #2c313a;
+        --text: #e9edf3;
+        --muted: #9aa4b2;
+        --accent: #4f8cff;
+        --ok: #3ecf8e;
+        --warn: #ffb020;
+        --rec: #ff4d4f;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 24px 16px 48px;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 760px; margin: 0 auto; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+      .warn {
+        background: #3a2a10;
+        border: 1px solid #5c431a;
+        color: #ffd089;
+        padding: 10px 12px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        font-size: 14px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+      .counter { color: var(--muted); font-size: 13px; }
+      .sentence { font-size: 22px; line-height: 1.4; margin: 10px 0 18px; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      button {
+        font: inherit;
+        padding: 10px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #262b33;
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      #hold {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
+        padding: 16px 28px;
+        font-size: 17px;
+        user-select: none;
+        touch-action: none;
+      }
+      #hold.recording { background: var(--rec); border-color: var(--rec); }
+      .meter {
+        height: 12px;
+        background: #0f1115;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        overflow: hidden;
+        flex: 1 1 200px;
+        min-width: 160px;
+      }
+      .meter > div { height: 100%; width: 0%; background: var(--ok); transition: width 80ms linear; }
+      .status { font-size: 13px; color: var(--muted); margin-top: 12px; min-height: 20px; }
+      .status.ok { color: var(--ok); }
+      .status.err { color: var(--rec); }
+      ul.list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+      ul.list li {
+        display: flex;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+      }
+      ul.list li.done { color: var(--text); }
+      ul.list li.current { color: var(--accent); font-weight: 600; }
+      .n { width: 26px; text-align: right; opacity: 0.7; }
+      .tick { width: 16px; }
+      audio { width: 100%; margin-top: 12px; }
+      code { background: #0f1115; padding: 1px 5px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>STT namunalarini yozib olish</h1>
+      <div class="sub">
+        16 kHz, mono, 16-bit PCM WAV — brauzerda tayyorlanadi, serverda
+        konvertatsiya yo'q. Fayllar: <code>harness/benchmark/samples/NN.wav</code>
+      </div>
+
+      <div class="warn">
+        <b>Quloqchin kiyib oling.</b> Dinamikdan chiqqan ovoz mikrofonga qaytib
+        tushsa (echo) o'lchov buziladi. Tinch xonada, mikrofondan 20–30 sm
+        masofada, tabiiy tezlikda o'qing.
+      </div>
+
+      <div class="panel">
+        <div class="counter" id="counter">yuklanmoqda…</div>
+        <div class="sentence" id="sentence">…</div>
+
+        <div class="row">
+          <button id="hold" disabled>Yozish (bosib turing / BO'SHLIQ)</button>
+          <button id="prev" disabled>&larr; oldingi</button>
+          <button id="next" disabled>keyingi &rarr;</button>
+        </div>
+
+        <div class="row" style="margin-top: 14px">
+          <span style="font-size: 13px; color: var(--muted)">Mikrofon:</span>
+          <div class="meter"><div id="level"></div></div>
+          <span id="dur" style="font-size: 13px; color: var(--muted)">0.0 s</span>
+        </div>
+
+        <div class="status" id="status"></div>
+        <audio id="preview" controls hidden></audio>
+      </div>
+
+      <div class="panel">
+        <div class="counter" style="margin-bottom: 8px">Gaplar ro'yxati</div>
+        <ul class="list" id="list"></ul>
+      </div>
+    </main>
+
+    <script>
+      const MAX_SECONDS = 30;
+      const TARGET_RATE = 16000;
+
+      const el = {
+        counter: document.getElementById('counter'),
+        sentence: document.getElementById('sentence'),
+        hold: document.getElementById('hold'),
+        prev: document.getElementById('prev'),
+        next: document.getElementById('next'),
+        level: document.getElementById('level'),
+        dur: document.getElementById('dur'),
+        status: document.getElementById('status'),
+        preview: document.getElementById('preview'),
+        list: document.getElementById('list'),
+      };
+
+      let sentences = [];
+      let saved = new Set();
+      let index = 0;
+
+      let audioContext = null;
+      let mediaStream = null;
+      let sourceNode = null;
+      let processor = null;
+      let recording = false;
+      let chunks = [];
+      let recordedSamples = 0;
+      let startedAt = 0;
+
+      function setStatus(text, kind) {
+        el.status.textContent = text;
+        el.status.className = 'status' + (kind ? ' ' + kind : '');
+      }
+
+      function render() {
+        const item = sentences[index];
+        el.counter.textContent = `Gap ${index + 1} / ${sentences.length}` +
+          `  ·  yozilgan: ${saved.size} / ${sentences.length}`;
+        el.sentence.textContent = item ? item.text : '—';
+        el.prev.disabled = index === 0;
+        el.next.disabled = index >= sentences.length - 1;
+        el.preview.hidden = true;
+
+        el.list.innerHTML = '';
+        sentences.forEach((s, i) => {
+          const li = document.createElement('li');
+          li.className = (saved.has(s.n) ? 'done' : '') + (i === index ? ' current' : '');
+          const n = document.createElement('span');
+          n.className = 'n';
+          n.textContent = String(s.n).padStart(2, '0');
+          const tick = document.createElement('span');
+          tick.className = 'tick';
+          tick.textContent = saved.has(s.n) ? '✓' : '';
+          const txt = document.createElement('span');
+          txt.textContent = s.text;
+          li.append(n, tick, txt);
+          li.onclick = () => { index = i; render(); };
+          li.style.cursor = 'pointer';
+          el.list.append(li);
+        });
+      }
+
+      async function load() {
+        const res = await fetch('/api/sentences');
+        const data = await res.json();
+        sentences = data.sentences;
+        saved = new Set(data.saved);
+        render();
+        setStatus('Mikrofonga ruxsat berilsa, yozishni boshlashingiz mumkin.');
+      }
+
+      async function initAudio() {
+        if (audioContext) return;
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        // Chrome 16 kHz kontekstni qo'llab-quvvatlaydi — resample brauzer zimmasida.
+        audioContext = new AudioContext({ sampleRate: TARGET_RATE });
+        sourceNode = audioContext.createMediaStreamSource(mediaStream);
+        // ScriptProcessorNode eski API, lekin lokal asbob uchun yetarli va ishonchli.
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          let peak = 0;
+          for (let i = 0; i < input.length; i += 1) {
+            const v = Math.abs(input[i]);
+            if (v > peak) peak = v;
+          }
+          el.level.style.width = Math.min(100, Math.round(peak * 140)) + '%';
+
+          if (!recording) return;
+          chunks.push(new Float32Array(input));
+          recordedSamples += input.length;
+          const seconds = recordedSamples / audioContext.sampleRate;
+          el.dur.textContent = seconds.toFixed(1) + ' s';
+          if (seconds >= MAX_SECONDS) stop();
+        };
+
+        sourceNode.connect(processor);
+        // Chiqishga ulanmasa ScriptProcessor ishlamaydi; ovoz chiqmasligi uchun 0 gain.
+        const silent = audioContext.createGain();
+        silent.gain.value = 0;
+        processor.connect(silent);
+        silent.connect(audioContext.destination);
+      }
+
+      function encodeWav(float32Chunks, sampleRate) {
+        let total = 0;
+        for (const c of float32Chunks) total += c.length;
+        const buffer = new ArrayBuffer(44 + total * 2);
+        const view = new DataView(buffer);
+
+        const writeStr = (offset, str) => {
+          for (let i = 0; i < str.length; i += 1) view.setUint8(offset + i, str.charCodeAt(i));
+        };
+
+        writeStr(0, 'RIFF');
+        view.setUint32(4, 36 + total * 2, true);
+        writeStr(8, 'WAVE');
+        writeStr(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, 1, true); // mono
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true); // byte rate
+        view.setUint16(32, 2, true); // block align
+        view.setUint16(34, 16, true); // bits
+        writeStr(36, 'data');
+        view.setUint32(40, total * 2, true);
+
+        let offset = 44;
+        for (const chunk of float32Chunks) {
+          for (let i = 0; i < chunk.length; i += 1) {
+            const s = Math.max(-1, Math.min(1, chunk[i]));
+            view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            offset += 2;
+          }
+        }
+        return new Blob([buffer], { type: 'audio/wav' });
+      }
+
+      async function start() {
+        if (recording) return;
+        try {
+          await initAudio();
+        } catch (err) {
+          setStatus('Mikrofonga ruxsat berilmadi: ' + err.message, 'err');
+          return;
+        }
+        chunks = [];
+        recordedSamples = 0;
+        recording = true;
+        startedAt = Date.now();
+        el.hold.classList.add('recording');
+        el.hold.textContent = 'Yozilyapti… (qo’yib yuboring)';
+        setStatus('Yozilyapti…');
+      }
+
+      async function stop() {
+        if (!recording) return;
+        recording = false;
+        el.hold.classList.remove('recording');
+        el.hold.textContent = "Yozish (bosib turing / BO'SHLIQ)";
+
+        const seconds = recordedSamples / (audioContext ? audioContext.sampleRate : TARGET_RATE);
+        if (seconds < 0.3) {
+          setStatus('Juda qisqa (' + seconds.toFixed(2) + ' s) — qaytadan urinib ko’ring.', 'err');
+          return;
+        }
+
+        const blob = encodeWav(chunks, audioContext.sampleRate);
+        const item = sentences[index];
+        setStatus('Saqlanmoqda…');
+
+        try {
+          const res = await fetch('/api/samples/' + item.n, {
+            method: 'POST',
+            headers: { 'Content-Type': 'audio/wav' },
+            body: blob,
+          });
+          if (!res.ok) throw new Error(await res.text());
+          saved.add(item.n);
+          el.preview.src = URL.createObjectURL(blob);
+          el.preview.hidden = false;
+          setStatus(
+            `Saqlandi: ${String(item.n).padStart(2, '0')}.wav  (${seconds.toFixed(1)} s, ` +
+              `${audioContext.sampleRate} Hz)`,
+            'ok',
+          );
+          render();
+          if (index < sentences.length - 1) {
+            index += 1;
+            render();
+          }
+        } catch (err) {
+          setStatus('Saqlashda xato: ' + err.message, 'err');
+        }
+      }
+
+      el.hold.addEventListener('mousedown', start);
+      el.hold.addEventListener('mouseup', stop);
+      el.hold.addEventListener('mouseleave', () => { if (recording) stop(); });
+      el.hold.addEventListener('touchstart', (e) => { e.preventDefault(); start(); });
+      el.hold.addEventListener('touchend', (e) => { e.preventDefault(); stop(); });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' && !e.repeat && e.target === document.body) {
+          e.preventDefault();
+          start();
+        }
+      });
+      document.addEventListener('keyup', (e) => {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          stop();
+        }
+      });
+
+      el.prev.onclick = () => { if (index > 0) { index -= 1; render(); } };
+      el.next.onclick = () => { if (index < sentences.length - 1) { index += 1; render(); } };
+
+      load().then(() => { el.hold.disabled = false; });
+    </script>
+  </body>
+</html>

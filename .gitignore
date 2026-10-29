@@ -17,3 +17,7 @@ harness/drizzle/
 .zshrc
 .zprofile
 .profile
+
+# Benchmark materiali (audio) — git'ga kirmaydi
+harness/benchmark/samples/*.wav
+harness/benchmark/out/

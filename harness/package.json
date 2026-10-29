@@ -16,7 +16,11 @@
     "play": "tsx --env-file-if-exists=.env src/play.ts",
     "smoke:llm": "tsx --env-file-if-exists=.env src/smoke-llm.ts",
     "typecheck": "tsc --noEmit",
-    "calibrate": "tsx --env-file-if-exists=.env src/calibrate.ts"
+    "calibrate": "tsx --env-file-if-exists=.env src/calibrate.ts",
+    "bench:voices": "tsx --env-file-if-exists=.env src/bench-voices.ts",
+    "bench:record": "tsx --env-file-if-exists=.env src/record-server.ts",
+    "bench:stt": "tsx --env-file-if-exists=.env src/bench-stt.ts",
+    "bench:tts": "tsx --env-file-if-exists=.env src/bench-tts.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.6",
