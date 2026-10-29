@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+*.log
+harness/drizzle/
+
+# Bu papkaga tashqaridan ulangan muhit fayllari (loyihaga tegishli emas)
+.claude/
+.idea
+.vscode
+.mcp.json
+.ripgreprc
+.gitconfig
+.gitmodules
+.bashrc
+.bash_profile
+.zshrc
+.zprofile
+.profile

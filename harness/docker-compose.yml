@@ -1,0 +1,25 @@
+# Lokal (faqat dev) Postgres. Standart 5432 EMAS — laptopdagi boshqa
+# Postgres bilan to'qnashmasligi uchun 55433 porti ishlatiladi.
+name: sotuv-trener-harness
+
+services:
+  db:
+    image: postgres:18
+    container_name: sotuv-trener-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sotuv_trener
+    ports:
+      - '${POSTGRES_PORT:-55433}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d sotuv_trener']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

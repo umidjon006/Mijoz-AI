@@ -1,0 +1,28 @@
+{
+  "name": "sotuv-trener-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lokal (faqat dev) scaffolding: Postgres + verify skriptlari. Teammate'larga BERILMAYDI.",
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait",
+    "db:init": "tsx --env-file-if-exists=.env src/apply-sql.ts",
+    "withtenant:smoke": "tsx --env-file-if-exists=.env src/withTenant.ts",
+    "verify:training": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44.6",
+    "pg": "^8.16.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.0",
+    "@types/pg": "^8.15.5",
+    "drizzle-kit": "^0.31.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

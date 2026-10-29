@@ -1,0 +1,82 @@
+[
+  {
+    "key": "ready_buyer",
+    "title": "Tayyor mijoz",
+    "description": "Mahsulot/xizmat kerak, rozi bo'lishga tayyor. Asosiy savdo jarayonini o'rgatadi.",
+    "intent": "wants_to_buy",
+    "difficulty": 1,
+    "initialState": { "patience": 80, "trust": 50, "interest": 75 },
+    "objections": { "count": 1, "severityMax": 2 },
+    "hiddenNeed": false,
+    "win": { "type": "agree", "minTrust": 55, "requireObjectionsResolved": true },
+    "lose": { "patienceBelow": 10 },
+    "maxTurns": 14,
+    "behaviorRules": [
+      "Savollar beradi, lekin sotuvchi aniq javob bersa tez ijobiy javob beradi.",
+      "Birinchi e'tiroz yengil (narx yoki vaqt haqida aniqlashtirish)."
+    ]
+  },
+  {
+    "key": "negotiator",
+    "title": "Rozi bo'ladigan, lekin qiyinroq mijoz",
+    "description": "Rozi bo'lishi mumkin, lekin e'tirozlarni yechmaguncha yon bermaydi.",
+    "intent": "wants_to_buy",
+    "difficulty": 3,
+    "initialState": { "patience": 60, "trust": 35, "interest": 60 },
+    "objections": { "count": 3, "severityMax": 3 },
+    "hiddenNeed": false,
+    "win": { "type": "agree", "minTrust": 55, "requireObjectionsResolved": true },
+    "lose": { "patienceBelow": 10 },
+    "maxTurns": 18,
+    "behaviorRules": [
+      "Har e'tirozni alohida, ketma-ket aytadi (hammasini birdan emas).",
+      "Umumiy javobga ('sifatli', 'arzon') qanoat qilmaydi, aniq dalil/raqam so'raydi.",
+      "Sotuvchi e'tirozni yechsa, ishonchi o'sadi; e'tiborsiz qoldirsa, kamayadi."
+    ]
+  },
+  {
+    "key": "problematic",
+    "title": "Muammolari ko'p mijoz",
+    "description": "Rozi bo'lishi kerak, lekin bir nechta muammo birdaniga. Sotuvchi bir amallab ko'ndirishi kerak.",
+    "intent": "wants_to_buy",
+    "difficulty": 4,
+    "initialState": { "patience": 45, "trust": 25, "interest": 55 },
+    "objections": { "count": 5, "severityMax": 4 },
+    "hiddenNeed": false,
+    "win": {
+      "type": "agree_or_next_step",
+      "minTrust": 50,
+      "requireObjectionsResolved": false,
+      "acceptedNextSteps": ["Aniq vaqtli keyingi qo'ng'iroq", "Sinov/probniy variant", "Mas'ul shaxs bilan uchrashuv"]
+    },
+    "lose": { "patienceBelow": 8 },
+    "maxTurns": 22,
+    "behaviorRules": [
+      "Muammolar bir-biriga bog'liq (masalan byudjet + oila fikri + vaqt + shubha).",
+      "Sabri tez kamayadi: bir xil gap takrorlansa yoki e'tibor berilmasa keskin tushadi.",
+      "To'liq rozilik o'rniga aniq keyingi qadamga (sinov, uchrashuv) kelishishi mumkin, agar sotuvchi ishonch uyg'otsa."
+    ]
+  },
+  {
+    "key": "info_seeker",
+    "title": "Faqat ma'lumot oluvchi mijoz",
+    "description": "Sotib olish niyati yo'q. Sotuvchi ehtiyojni aniqlab, mahsulot kerakligini ko'rsatishi kerak.",
+    "intent": "just_info",
+    "difficulty": 4,
+    "initialState": { "patience": 55, "trust": 30, "interest": 20 },
+    "objections": { "count": 2, "severityMax": 3 },
+    "hiddenNeed": true,
+    "needRevealTriggers": [
+      "Sotuvchi mijozning maqsadi haqida ochiq savol beradi",
+      "Sotuvchi mijozning hozirgi holati/muammosini so'raydi"
+    ],
+    "win": { "type": "need_discovered_and_agree", "minTrust": 55, "requireObjectionsResolved": true },
+    "lose": { "patienceBelow": 10 },
+    "maxTurns": 20,
+    "behaviorRules": [
+      "Boshida 'faqat narxini bilmoqchiman / ma'lumot olyapman' deydi.",
+      "Yashirin ehtiyojini O'ZI aytmaydi; faqat sotuvchi to'g'ri ochuvchi savol bersa ochiladi.",
+      "Ehtiyoj ochilmasdan turib rozi bo'lmaydi. Sotuvchi faqat mahsulotni maqtasa qiziqishi tushadi."
+    ]
+  }
+]

@@ -1,0 +1,101 @@
+{
+  "_eslatma": "TASODIFIY DEMO MA'LUMOT. Haqiqiy ma'lumot kelgach almashtiriladi. Format: backend/src/business/profile.ts (profileSchema).",
+  "o_quv_markaz": {
+    "industry": "O'quv markazi (IT va tillar)",
+    "businessDescription": "Guliston shahridagi o'quv markazi: dasturlash, grafik dizayn va ingliz tili kurslari. Guruhlarda va individual o'qitiladi.",
+    "primaryOffers": [
+      "Frontend dasturlash kursi: 6 oy, haftada 3 marta, oyiga 1 200 000 so'm",
+      "Python + AI kursi: 5 oy, haftada 3 marta, oyiga 1 500 000 so'm",
+      "Grafik dizayn kursi: 4 oy, oyiga 900 000 so'm",
+      "Ingliz tili (IELTS): 6 oy, oyiga 700 000 so'm"
+    ],
+    "typicalCustomers": "16-30 yoshli o'quvchilar va talabalar; ba'zan ota-onalar farzandi uchun qo'ng'iroq qiladi",
+    "customerProblem": "Yaxshi kasb o'rganib, ish topishni yoki daromadni oshirishni xohlaydi, lekin qayerdan boshlashni bilmaydi",
+    "customerType": "b2c",
+    "leadSources": ["Instagram", "Telegram kanal", "Tanishlar tavsiyasi"],
+    "callDirection": "mixed",
+    "commonCustomerQuestions": [
+      "Kurs necha oy davom etadi va narxi qancha?",
+      "Dars kuni va vaqti qanday, ish bilan qo'shib bo'ladimi?",
+      "Sertifikat beriladimi, ish bilan ta'minlaysizlarmi?",
+      "Sinov darsi bormi?"
+    ],
+    "commonObjections": [
+      "Narxi qimmat ekan",
+      "Vaqtim yo'q, ishlayman",
+      "O'ylab ko'raman, keyin qo'ng'iroq qilaman",
+      "Boshqa markazda arzonroq",
+      "Ota-onam bilan maslahatlashishim kerak",
+      "Hech narsa bilmayman, uddalay olmasam-chi?"
+    ],
+    "successSignals": ["Sinov darsiga yozildi", "Oldindan to'lov qildi", "Guruhga qo'shildi"],
+    "failureSignals": ["Qo'ng'iroqni tugatdi", "Aniq javob bermadi"],
+    "redLines": ["Ish kafolatini va'da qilmaslik", "Soxta chegirma aytmaslik"],
+    "vocabulary": ["guruh", "ustoz", "sinov darsi", "sertifikat", "oylik to'lov"],
+    "additionalNotes": "Yangi guruh har oyning 1-sanasida boshlanadi."
+  },
+  "taksi": {
+    "industry": "Taksi xizmati (telefon orqali buyurtma)",
+    "businessDescription": "Shahar ichida va viloyatlararo taksi buyurtmasi. Haydovchilar ro'yxatga olingan, narx masofa bo'yicha.",
+    "primaryOffers": [
+      "Shahar ichida taksi: boshlang'ich 8 000 so'm + har km uchun 2 500 so'm",
+      "Viloyatlararo (Guliston-Toshkent): 1 kishi 80 000 so'm, butun mashina 250 000 so'm",
+      "Aeroportga transfer: qat'iy narx 120 000 so'm",
+      "Oylik korporativ obuna: 10 va undan ortiq xodim uchun chegirma"
+    ],
+    "typicalCustomers": "Shahar aholisi, safarga chiqayotgan oilalar, kompaniya xodimlari",
+    "customerProblem": "Tez, ishonchli va narxi oldindan ma'lum bo'lgan mashina kerak",
+    "customerType": "both",
+    "leadSources": ["Telefon", "Telegram bot", "Tavsiya"],
+    "callDirection": "inbound",
+    "commonCustomerQuestions": [
+      "Mashina necha daqiqada keladi?",
+      "Narxi qancha bo'ladi, oldindan aniq aytasizlarmi?",
+      "Bolalar o'rindig'i bormi?",
+      "Bagaj sig'adimi, yuklar ko'p"
+    ],
+    "commonObjections": [
+      "Boshqa taksida arzonroq ekan",
+      "Kutish vaqti uzoq",
+      "Oldingi safar haydovchi kech qoldi",
+      "Naqd pul bilan to'layman, karta yo'q"
+    ],
+    "successSignals": ["Manzil va vaqt tasdiqlandi", "Buyurtma rasmiylashtirildi"],
+    "failureSignals": ["Boshqa xizmatga o'tdi", "Buyurtmani bekor qildi"],
+    "redLines": ["Aniq kelish vaqtini kafolatlamaslik (taxminiy deyish)", "Narxni keyin o'zgartirmaslik"],
+    "vocabulary": ["manzil", "haydovchi", "buyurtma", "tarif", "bagaj"],
+    "additionalNotes": "Tungi vaqtda (22:00-06:00) tarifga 20% qo'shiladi."
+  },
+  "ovqat_yetkazish": {
+    "industry": "Onlayn ovqat buyurtma va yetkazib berish",
+    "businessDescription": "Restoranlar va oshxonalardan ovqatni uyga yoki ofisga yetkazib beruvchi xizmat. Buyurtma ilova va telefon orqali.",
+    "primaryOffers": [
+      "Standart yetkazib berish: 30-45 daqiqa, 12 000 so'm",
+      "Tezkor yetkazish: 20 daqiqa, 25 000 so'm",
+      "Obuna 'Har kuni tushlik': oyiga 49 000 so'm, yetkazish bepul",
+      "Korporativ tushlik: 10+ kishiga 10% chegirma"
+    ],
+    "typicalCustomers": "Ofis xodimlari, talabalar, oilalar",
+    "customerProblem": "Vaqt yo'q yoki ovqat pishirishni xohlamaydi, tez va issiq ovqat kerak",
+    "customerType": "both",
+    "leadSources": ["Mobil ilova", "Telefon", "Instagram reklama"],
+    "callDirection": "mixed",
+    "commonCustomerQuestions": [
+      "Yetkazish qancha vaqt oladi?",
+      "Minimal buyurtma summasi bormi?",
+      "Halol ovqat bormi?",
+      "To'lovni qanday qilaman?"
+    ],
+    "commonObjections": [
+      "Yetkazish haqi qimmat",
+      "Oxirgi marta ovqat sovuq keldi",
+      "Restoranga o'zim borsam arzon",
+      "Obunaga hozir tayyor emasman"
+    ],
+    "successSignals": ["Birinchi buyurtma berildi", "Obunaga yozildi"],
+    "failureSignals": ["Ilovani o'chirdi", "Shikoyat bilan qo'ng'iroqni tugatdi"],
+    "redLines": ["Buyurtma vaqtini oshirib va'da qilmaslik", "Aldamchi aksiya aytmaslik"],
+    "vocabulary": ["buyurtma", "kuryer", "yetkazish", "aksiya", "promokod"],
+    "additionalNotes": "Yomg'irli kunlarda yetkazish 10-15 daqiqaga kechikishi mumkin."
+  }
+}
