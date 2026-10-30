@@ -53,3 +53,34 @@ create table if not exists training_turn (
 
 create unique index if not exists training_turn_session_seq_key
   on training_turn (session_id, seq);
+
+-- ---------------------------------------------------------------------------
+-- Step 4: baholash natijasi. VERSIYALANADI — qayta baholash eski versiyani
+-- o'chirmaydi (`session_id`, `version` unikal). Sessiya jadvali o'zgarmaydi.
+-- ---------------------------------------------------------------------------
+create table if not exists training_result (
+  id              uuid primary key default gen_random_uuid(),
+  business_id     uuid not null references business (id) on delete cascade,
+  session_id      uuid not null references training_session (id) on delete cascade,
+  version         integer not null,
+  status          text not null default 'pending',
+  quality         text not null default 'ok',
+  skill_score     numeric(5, 1),
+  criteria        jsonb,
+  metrics         jsonb,
+  coaching        jsonb,
+  key_moments     jsonb,
+  model           text,
+  prompt_version  text,
+  cost_usd        numeric(12, 6) not null default 0,
+  error           text,
+  created_at      timestamptz not null default now(),
+  constraint training_result_status_check check (status in ('pending', 'done', 'failed')),
+  constraint training_result_quality_check check (quality in ('ok', 'low', 'insufficient'))
+);
+
+create unique index if not exists training_result_session_version_key
+  on training_result (session_id, version);
+
+create index if not exists training_result_business_session_idx
+  on training_result (business_id, session_id, version desc);

@@ -23,6 +23,12 @@ import {
 
 import { ARCHETYPE_KEYS } from '../../training/archetypes.js';
 import type { PersonaCard } from '../../training/persona.js';
+import type {
+  CoachingResult,
+  CriterionResult,
+  KeyMomentResult,
+} from '../../training/scoring/scoring-types.js';
+import type { SessionMetrics } from '../../training/scoring/metrics.js';
 import type { TrainingState } from '../../training/state.js';
 // INTEGRATSIYA: `host-tables.js` o'rniga asosiy repodagi sxemalarni import qiling.
 import { appUser, business, seat } from './host-tables.js';
@@ -100,6 +106,57 @@ export const trainingTurn = pgTable(
     check('training_turn_speaker_check', sql.raw(`speaker in ('seller', 'customer')`)),
   ],
 );
+
+/**
+ * Baholash natijasi (Step 4). MUHIM: natija VERSIYALANADI — qayta baholash
+ * eski versiyani O'CHIRMAYDI, `version + 1` qo'shadi. `training_session`
+ * baholash tufayli o'zgarmaydi.
+ */
+export const trainingResult = pgTable(
+  'training_result',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => business.id, { onDelete: 'cascade' }),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => trainingSession.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    status: text('status').notNull().default('pending'),
+    quality: text('quality').notNull().default('ok'),
+    /** 0..100; hech bir mezon baholanmasa `null` (nolga aylantirilmaydi). */
+    skillScore: numeric('skill_score', { precision: 5, scale: 1 }),
+    criteria: jsonb('criteria').$type<CriterionResult[]>(),
+    metrics: jsonb('metrics').$type<SessionMetrics>(),
+    coaching: jsonb('coaching').$type<CoachingResult>(),
+    keyMoments: jsonb('key_moments').$type<KeyMomentResult[]>(),
+    model: text('model'),
+    promptVersion: text('prompt_version'),
+    costUsd: numeric('cost_usd', { precision: 12, scale: 6 }).notNull().default('0'),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('training_result_session_version_key').on(table.sessionId, table.version),
+    index('training_result_business_session_idx').on(
+      table.businessId,
+      table.sessionId,
+      table.version.desc(),
+    ),
+    check(
+      'training_result_status_check',
+      sql.raw(`status in ('pending', 'done', 'failed')`),
+    ),
+    check(
+      'training_result_quality_check',
+      sql.raw(`quality in ('ok', 'low', 'insufficient')`),
+    ),
+  ],
+);
+
+export type TrainingResultRow = typeof trainingResult.$inferSelect;
+export type NewTrainingResult = typeof trainingResult.$inferInsert;
 
 export type TrainingSessionRow = typeof trainingSession.$inferSelect;
 export type NewTrainingSession = typeof trainingSession.$inferInsert;

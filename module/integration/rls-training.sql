@@ -7,7 +7,8 @@
 -- Shuning uchun quyidagi ikki nomni albatta qo'shing:
 --
 --     'training_session',
---     'training_turn'
+--     'training_turn',
+--     'training_result'
 --
 -- Keyin rls.sql ni qayta qo'llang (repoda qanday bo'lsa: `npm run db:rls`
 -- yoki `psql -f backend/src/db/rls.sql`).
@@ -33,6 +34,15 @@ alter table training_turn force row level security;
 
 drop policy if exists training_turn_tenant_isolation on training_turn;
 create policy training_turn_tenant_isolation on training_turn
+  using (business_id = nullif(current_setting('app.business_id', true), '')::uuid)
+  with check (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
+
+-- training_result (Step 4) -------------------------------------------------
+alter table training_result enable row level security;
+alter table training_result force row level security;
+
+drop policy if exists training_result_tenant_isolation on training_result;
+create policy training_result_tenant_isolation on training_result
   using (business_id = nullif(current_setting('app.business_id', true), '')::uuid)
   with check (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
 

@@ -22,6 +22,8 @@
     "bench:voices": "npm run bench:voices -w sotuv-trener-harness --",
     "bench:record": "npm run bench:record -w sotuv-trener-harness",
     "bench:stt": "npm run bench:stt -w sotuv-trener-harness --",
-    "bench:tts": "npm run bench:tts -w sotuv-trener-harness --"
+    "bench:tts": "npm run bench:tts -w sotuv-trener-harness --",
+    "verify:training:scoring": "npm run verify:training:scoring -w sotuv-trener-harness",
+    "serve": "npm run serve -w sotuv-trener-harness"
   }
 }
