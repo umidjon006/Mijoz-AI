@@ -9,6 +9,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  printDemoBanner,
+  printMissingKeyBanner,
+  ProviderConfigError,
+  resolveProviderConfig,
+} from './llm-factory.js';
+
 const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const children: ChildProcess[] = [];
 
@@ -30,6 +37,25 @@ function stop(): void {
     if (!child.killed) child.kill('SIGTERM');
   }
   process.exit(0);
+}
+
+// LLM holatini OLDIN tekshiramiz: jim demo rejimi bo'lmasin.
+try {
+  const config = resolveProviderConfig();
+  if (config.demoRequested) {
+    printDemoBanner('dev');
+  } else if (!config.hasKey) {
+    printMissingKeyBanner('dev', config);
+    process.exit(1);
+  } else {
+    console.log(`\nLLM: ${config.provider} · ${config.model} (baholash: ${config.scoringModel})`);
+  }
+} catch (err) {
+  if (err instanceof ProviderConfigError) {
+    console.error(`\n[sozlama xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
+  throw err;
 }
 
 process.on('SIGINT', stop);

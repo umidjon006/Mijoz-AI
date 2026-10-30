@@ -25,3 +25,6 @@ harness/frontend/dist/
 
 # Bake-off natijalari (pulli chaqiruvlar natijasi) — git'ga kirmaydi
 harness/bakeoff/out/
+
+# Dockersiz lokal Postgres klasteri
+harness/.pg-local/

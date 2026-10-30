@@ -30,7 +30,10 @@
     "bakeoff": "tsx --env-file-if-exists=.env src/bakeoff.ts",
     "bakeoff:report": "tsx --env-file-if-exists=.env src/bakeoff-report.ts",
     "bakeoff:score": "tsx --env-file-if-exists=.env src/bakeoff-score.ts",
-    "verify:training:bakeoff": "tsx --env-file-if-exists=.env src/verify-bakeoff.ts"
+    "verify:training:bakeoff": "tsx --env-file-if-exists=.env src/verify-bakeoff.ts",
+    "db:local:start": "tsx --env-file-if-exists=.env src/db-local.ts start",
+    "db:local:stop": "tsx --env-file-if-exists=.env src/db-local.ts stop",
+    "db:local:status": "tsx --env-file-if-exists=.env src/db-local.ts status"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

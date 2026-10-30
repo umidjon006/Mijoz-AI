@@ -22,7 +22,13 @@ import { createTrainingEngine } from '../../module/backend/src/training/engine.j
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
 import { DEMO_CONTEXT, ensureDemoRows, loadDemoProfile, parseArgs } from './demo-env.js';
-import { createAnthropicTrainerLlm, priceCall } from './llm-anthropic.js';
+import { priceCall } from './llm-anthropic.js';
+import {
+  createTrainerLlm,
+  MissingLlmKeyError,
+  printDemoBanner,
+  printMissingKeyBanner,
+} from './llm-factory.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
 type SellerKind = 'careless' | 'skilled';
@@ -76,7 +82,7 @@ async function main(): Promise<void> {
   console.log(
     `Kalibrlash: ${archetypes.length} arxetip × 2 sotuvchi × ${sessionsPerKind} sessiya = ${totalSessions} sessiya`,
   );
-  console.log(`Taxminiy narx: ~$${estCost.toFixed(2)} (model: ${process.env.TRAINER_MODEL ?? 'claude-haiku-5-5'})`);
+  console.log(`Taxminiy narx: ~$${estCost.toFixed(2)}`);
 
   if (!process.argv.includes('--yes')) {
     const rl = createInterface({ input, output });
@@ -92,7 +98,18 @@ async function main(): Promise<void> {
   const pool = createPool(appDatabaseUrl());
   const withTenant = createWithTenant(pool);
   const getBusinessProfile: GetBusinessProfile = async () => profile;
-  const llm = createAnthropicTrainerLlm();
+  let resolved;
+  try {
+    resolved = createTrainerLlm({ profile });
+  } catch (err) {
+    if (err instanceof MissingLlmKeyError) {
+      printMissingKeyBanner('calibrate', err.config);
+      process.exit(1);
+    }
+    throw err;
+  }
+  if (resolved.isDemo) printDemoBanner('calibrate');
+  const llm = resolved.llm;
   const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm, priceCall });
 
   const results: Record<string, Record<SellerKind, { won: number; total: number }>> = {};

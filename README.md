@@ -68,12 +68,36 @@ sotuv-trener/
 
 ```bash
 npm install
-cp harness/.env.example harness/.env   # ANTHROPIC_API_KEY ni to'ldiring (play/smoke uchun)
-npm run db:up        # docker: postgres:18, 127.0.0.1:55433
+cp harness/.env.example harness/.env   # kalitlarni to'ldiring (pastga qarang)
+
+# DB — ikki yo'ldan biri:
+npm run db:local:start   # DOCKERSIZ (tavsiya etiladi): tizimdagi PostgreSQL binary'lari
+npm run db:up            # yoki docker: postgres:18, 127.0.0.1:55433
+
 npm run db:init      # bootstrap.sql -> training.sql -> rls-training.sql -> grants.sql
 npm run verify       # hamma tekshiruv + frontend build (LLM kerak emas)
 npm run typecheck
 ```
+
+### DB: dockersiz lokal klaster
+
+`docker` ishlamasa (masalan siz `docker` guruhida bo'lmasangiz), docker ham,
+sudo ham kerak emas:
+
+```bash
+npm run db:local:start    # birinchi marta klaster yaratadi, keyin ishga tushiradi
+npm run db:local:status   # ishlayaptimi
+npm run db:local:stop     # to'xtatadi (ma'lumotlar saqlanib qoladi)
+```
+
+- Klaster papkasi: `harness/.pg-local/` (git'ga kirmaydi). Boshqa joy kerak
+  bo'lsa — `PG_LOCAL_DATA` env.
+- Faqat `127.0.0.1` da TCP orqali tinglaydi (unix-socket o'chirilgan).
+- Port: `POSTGRES_PORT` (default 55433). Binary'lar avtomatik topiladi
+  (`/usr/lib/postgresql/<versiya>/bin` yoki PATH); topilmasa `PG_BIN` qo'ying.
+- `db:local:start` oxirida `harness/.env` ga qo'yiladigan ulanish satrlarini
+  o'zi chop etadi.
+- O'chirib tashlash: klaster to'xtagach `rm -rf harness/.pg-local`.
 
 ### Mashq interfeysi (React)
 
@@ -81,10 +105,9 @@ npm run typecheck
 npm run dev          # backend (5180) + UI (5181) birga
 ```
 
-Keyin <http://127.0.0.1:5181> ni oching. `ANTHROPIC_API_KEY` bo'lmasa
-**demo LLM** ishlaydi: mijoz javoblari sodda bo'ladi, lekin butun oqim
-(sessiya -> suhbat -> baholash -> debrief) ishlaydi va pul sarflanmaydi.
-Kalit qo'yilsa — haqiqiy model.
+Keyin <http://127.0.0.1:5181> ni oching. Kalit yo'q bo'lsa `dev` to'xtaydi va
+nima qilish kerakligini aytadi. Faqat oqimni ko'rish uchun `DEMO_LLM=1 npm run dev`
+— u holda javoblar soxta bo'ladi va UI'da qizil **DEMO AI** chizig'i turadi.
 
 Alohida ishga tushirish: `npm run serve` (backend), `npm run ui:dev` (UI).
 
@@ -119,8 +142,8 @@ npm run play -- --archetype negotiator --profile o_quv_markaz --debug
   `needRevealed`, `readyToAgree` + blockers, guard, kechikish va tokenlar
 - chiqish: `/stop`
 
-Kerakli env (faqat harness): `ANTHROPIC_API_KEY`, `TRAINER_MODEL`
-(default `claude-haiku-5-5`). `.env` **hech qachon** commit qilinmaydi.
+Kerakli env (faqat harness): pastdagi "LLM provayderi va kalitlar" bo'limiga
+qarang. `.env` **hech qachon** commit qilinmaydi.
 
 Boshqa ixtiyoriy skriptlar (pul sarflaydi, `verify` tarkibiga kirmaydi):
 
@@ -143,23 +166,84 @@ SKIP_DB=1 npm run verify:training
 To'liq tozalash: `npm run db:reset` (volume bilan birga o'chiradi), keyin
 `npm run db:init`.
 
-### Docker bo'lmasa (fallback)
+### LLM provayderi va kalitlar
 
-Agar `docker` ishlamasa (masalan foydalanuvchi `docker` guruhida bo'lmasa),
-lokal PostgreSQL binary'lari bilan vaqtinchalik klaster ko'tarish mumkin:
+Qaysi model ishlatilishi `harness/.env` dagi uchta o'zgaruvchi bilan hal
+qilinadi: **`TRAINER_PROVIDER`** (`anthropic` | `openai-compatible`),
+**`TRAINER_API_KEY_ENV`** (kalit qaysi env o'zgaruvchisida — kalitning o'zi
+emas, NOMI) va **`TRAINER_MODEL`**. Baholash uchun alohida
+`TRAINER_SCORING_MODEL` (berilmasa `TRAINER_MODEL`).
+
+**Kalit yo'q bo'lsa demo LLM'ga JIM O'TILMAYDI.** `play`, `serve` va `dev`
+tushunarli banner chiqarib to'xtaydi. Soxta rejim faqat ataylab
+`DEMO_LLM=1` qo'yilganda ishlaydi — unda terminalda ham, UI'da ham qizil
+**DEMO AI** ogohlantirishi ko'rinadi.
+
+Anthropic (default):
 
 ```bash
-PGBIN=/usr/lib/postgresql/16/bin     # o'z versiyangizni qo'ying
-export PGDATA=/tmp/sotuv-trener-pg
-$PGBIN/initdb -D "$PGDATA" -U postgres --auth=trust
-$PGBIN/pg_ctl -D "$PGDATA" -o "-p 55434 -c listen_addresses=127.0.0.1" -w start
-psql -h 127.0.0.1 -p 55434 -U postgres -c "create database sotuv_trener"
+# harness/.env
+TRAINER_PROVIDER=anthropic
+TRAINER_API_KEY_ENV=ANTHROPIC_API_KEY
+ANTHROPIC_API_KEY=sk-ant-...
+TRAINER_MODEL=claude-haiku-5-5
+TRAINER_SCORING_MODEL=claude-sonnet-5-5
+```
 
-export SUPERUSER_DATABASE_URL="postgres://postgres@127.0.0.1:55434/sotuv_trener"
-export TRAINING_DATABASE_URL="postgres://trainer_app:trainer_app@127.0.0.1:55434/sotuv_trener"
-npm run db:init && npm run verify:training
+Gemini (OpenAI-mos endpoint):
 
-$PGBIN/pg_ctl -D "$PGDATA" -m fast stop   # tugatgandan keyin
+```bash
+TRAINER_PROVIDER=openai-compatible
+TRAINER_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+TRAINER_API_KEY_ENV=GEMINI_API_KEY
+GEMINI_API_KEY=...
+TRAINER_MODEL=gemini-2.5-flash
+```
+
+Groq:
+
+```bash
+TRAINER_PROVIDER=openai-compatible
+TRAINER_BASE_URL=https://api.groq.com/openai/v1
+TRAINER_API_KEY_ENV=GROQ_API_KEY
+GROQ_API_KEY=...
+TRAINER_MODEL=llama-3.3-70b-versatile
+```
+
+GLM (z.ai) — JSON rejimi bo'lmasa `TRAINER_JSON_MODE=prompt`:
+
+```bash
+TRAINER_PROVIDER=openai-compatible
+TRAINER_BASE_URL=https://api.z.ai/api/paas/v4
+TRAINER_API_KEY_ENV=GLM_API_KEY
+GLM_API_KEY=...
+TRAINER_MODEL=glm-4.6
+TRAINER_JSON_MODE=prompt
+```
+
+Sozlagandan keyin har qaysisi uchun bir xil buyruq:
+
+```bash
+npm run db:local:start && npm run db:init     # bir marta
+npm run play -- --archetype negotiator --profile o_quv_markaz --debug
+# yoki brauzerda:
+npm run dev        # http://127.0.0.1:5181
+```
+
+Env'ni vaqtincha almashtirib ham sinash mumkin (`.env` ga tegmasdan):
+
+```bash
+TRAINER_PROVIDER=openai-compatible \
+TRAINER_BASE_URL=https://api.groq.com/openai/v1 \
+TRAINER_API_KEY_ENV=GROQ_API_KEY \
+TRAINER_MODEL=llama-3.3-70b-versatile \
+npm run play -- --archetype negotiator --profile o_quv_markaz
+```
+
+Kalitsiz, faqat oqimni ko'rish uchun (javoblar soxta):
+
+```bash
+DEMO_LLM=1 npm run dev
 ```
 
 ## Motor (Step 2) qisqacha

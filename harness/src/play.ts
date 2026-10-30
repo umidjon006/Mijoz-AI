@@ -20,7 +20,15 @@ import {
   loadDemoProfile,
   parseArgs,
 } from './demo-env.js';
-import { createAnthropicTrainerLlm, priceCall } from './llm-anthropic.js';
+import { priceCall } from './llm-anthropic.js';
+import {
+  createTrainerLlm,
+  describeLlm,
+  MissingLlmKeyError,
+  printDemoBanner,
+  printMissingKeyBanner,
+  ProviderConfigError,
+} from './llm-factory.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
 async function main(): Promise<void> {
@@ -33,13 +41,29 @@ async function main(): Promise<void> {
   const pool = createPool(appDatabaseUrl());
   const withTenant = createWithTenant(pool);
   const getBusinessProfile: GetBusinessProfile = async () => profile;
-  const llm = createAnthropicTrainerLlm();
-  const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm, priceCall });
+  let resolved;
+  try {
+    resolved = createTrainerLlm({ profile });
+  } catch (err) {
+    if (err instanceof MissingLlmKeyError) {
+      printMissingKeyBanner('play', err.config);
+      process.exit(1);
+    }
+    throw err;
+  }
+  if (resolved.isDemo) printDemoBanner('play');
+  const engine = createTrainingEngine({
+    withTenant,
+    getBusinessProfile,
+    llm: resolved.llm,
+    priceCall,
+  });
 
   const rl = createInterface({ input, output });
 
   console.log(`\nArxetip: ${archetype.key} — ${archetype.title} (qiyinlik ${archetype.difficulty}/5)`);
   console.log(`Profil:  ${args.profile} — ${profile.industry}`);
+  console.log(`LLM:     ${describeLlm(resolved)}`);
   console.log('Persona generatsiya qilinyapti...\n');
 
   const started = await engine.startSession(DEMO_CONTEXT, {
@@ -150,6 +174,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof ProviderConfigError) {
+    console.error(`\n[sozlama xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
   console.error(err);
   process.exit(1);
 });

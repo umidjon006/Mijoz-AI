@@ -13,7 +13,14 @@ import { ARCHETYPE_KEYS, getArchetype } from '../../module/backend/src/training/
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
 import { DEMO_CONTEXT, ensureDemoRows, loadDemoProfile, parseArgs } from './demo-env.js';
-import { createAnthropicTrainerLlm, priceCall } from './llm-anthropic.js';
+import { priceCall } from './llm-anthropic.js';
+import {
+  createTrainerLlm,
+  describeLlm,
+  MissingLlmKeyError,
+  printDemoBanner,
+  printMissingKeyBanner,
+} from './llm-factory.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
 /** Sotuvchining skriptlangan gaplari (oddiydan qattiqqa + injection). */
@@ -34,11 +41,22 @@ async function main(): Promise<void> {
   const pool = createPool(appDatabaseUrl());
   const withTenant = createWithTenant(pool);
   const getBusinessProfile: GetBusinessProfile = async () => profile;
-  const llm = createAnthropicTrainerLlm();
+  let resolved;
+  try {
+    resolved = createTrainerLlm({ profile });
+  } catch (err) {
+    if (err instanceof MissingLlmKeyError) {
+      printMissingKeyBanner('smoke:llm', err.config);
+      process.exit(1);
+    }
+    throw err;
+  }
+  if (resolved.isDemo) printDemoBanner('smoke:llm');
+  const llm = resolved.llm;
   const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm, priceCall });
 
   console.log(`Profil: ${args.profile} — ${profile.industry}`);
-  console.log(`Model:  ${process.env.TRAINER_MODEL ?? 'claude-haiku-5-5'}\n`);
+  console.log(`LLM:    ${describeLlm(resolved)}\n`);
 
   let totalCost = 0;
   const latencies: number[] = [];

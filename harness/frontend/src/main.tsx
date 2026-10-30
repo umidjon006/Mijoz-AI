@@ -51,6 +51,8 @@ interface HarnessInfo {
   industry: string;
   callDirection: 'inbound' | 'outbound' | 'mixed';
   llm: string;
+  model?: string;
+  isDemo?: boolean;
 }
 
 function Shell(): JSX.Element {
@@ -62,8 +64,41 @@ function Shell(): JSX.Element {
       .catch(() => setInfo(null));
   }, []);
 
+  const isDemo = info?.isDemo === true;
+
   return (
     <>
+      {/* DEMO rejimi ko'zga tashlanib tursin: javoblar haqiqiy model emas. */}
+      {isDemo ? (
+        <div
+          style={{
+            font: '600 13px system-ui, sans-serif',
+            background: '#b3261e',
+            color: '#fff',
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+          role="status"
+        >
+          <span
+            style={{
+              background: '#fff',
+              color: '#b3261e',
+              borderRadius: 999,
+              padding: '2px 10px',
+              letterSpacing: '0.06em',
+            }}
+          >
+            DEMO AI
+          </span>
+          <span style={{ fontWeight: 400 }}>
+            Bu haqiqiy model emas (DEMO_LLM=1). Javoblar sodda va qolipli — sifat,
+            kechikish yoki narx haqida xulosa chiqarmang.
+          </span>
+        </div>
+      ) : null}
       <div
         style={{
           font: '13px system-ui, sans-serif',
@@ -78,7 +113,7 @@ function Shell(): JSX.Element {
           <>
             {' '}
             · profil: {info.profileKey} ({info.industry}) · LLM: {info.llm}
-            {info.llm === 'demo' ? ' (kalit yo’q — javoblar sodda)' : ''}
+            {info.model ? ` (${info.model})` : ''}
           </>
         ) : (
           ' · backend ulanmadi: `npm run serve` ishlayaptimi?'

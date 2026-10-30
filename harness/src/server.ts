@@ -25,8 +25,16 @@ import {
   listDemoProfileKeys,
   loadDemoProfile,
 } from './demo-env.js';
-import { createDemoLlm } from './demo-llm.js';
-import { createAnthropicTrainerLlm, priceCall } from './llm-anthropic.js';
+import {
+  createTrainerLlm,
+  describeLlm,
+  MissingLlmKeyError,
+  printDemoBanner,
+  printMissingKeyBanner,
+  ProviderConfigError,
+  resolveProviderConfig,
+} from './llm-factory.js';
+import { priceCall } from './llm-anthropic.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
 const PORT = Number(process.env.HARNESS_PORT ?? 5180);
@@ -40,13 +48,23 @@ async function main(): Promise<void> {
   const withTenant = createWithTenant(pool);
   const getBusinessProfile: GetBusinessProfile = async () => profile;
 
-  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY);
-  const llm = hasKey ? createAnthropicTrainerLlm() : createDemoLlm({ profile });
-  const scoringLlm = hasKey
-    ? createAnthropicTrainerLlm({
-        model: process.env.TRAINER_SCORING_MODEL ?? 'claude-sonnet-5-5',
-      })
-    : createDemoLlm({ profile });
+  // Kalit yo'q bo'lsa JIM demo'ga o'tilmaydi: yo DEMO_LLM=1, yo to'xtash.
+  const config = resolveProviderConfig();
+  let turnLlm;
+  let scoringResolved;
+  try {
+    turnLlm = createTrainerLlm({ profile, config });
+    scoringResolved = createTrainerLlm({ profile, config, scoring: true });
+  } catch (err) {
+    if (err instanceof MissingLlmKeyError) {
+      printMissingKeyBanner('serve', err.config);
+      process.exit(1);
+    }
+    throw err;
+  }
+  if (turnLlm.isDemo) printDemoBanner('serve');
+  const llm = turnLlm.llm;
+  const scoringLlm = scoringResolved.llm;
 
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'warn' } });
 
@@ -90,17 +108,18 @@ async function main(): Promise<void> {
     profileKey: PROFILE_KEY,
     industry: profile.industry,
     callDirection: profile.callDirection,
-    llm: hasKey ? 'anthropic' : 'demo',
+    llm: turnLlm.provider,
+    model: turnLlm.model,
+    scoringModel: scoringResolved.model,
+    isDemo: turnLlm.isDemo,
     debug: true,
   }));
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   console.log(`\nHarness backend: http://127.0.0.1:${PORT}`);
   console.log(`Profil: ${PROFILE_KEY} (${profile.industry})`);
-  console.log(`LLM:    ${hasKey ? 'Anthropic (haqiqiy model)' : 'DEMO (kalit yo\'q)'}`);
-  if (!hasKey) {
-    console.log('        -> haqiqiy mijoz javoblari uchun harness/.env ga ANTHROPIC_API_KEY qo\'ying');
-  }
+  console.log(`LLM:    ${describeLlm(turnLlm)}`);
+  console.log(`Baholash: ${describeLlm(scoringResolved)}`);
   console.log(`Soxta auth: ${fakeAuth ? 'yoqilgan (HARNESS_AUTH=1)' : "O'CHIRILGAN"}\n`);
 
   const shutdown = async (): Promise<void> => {
@@ -113,6 +132,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof ProviderConfigError) {
+    console.error(`\n[sozlama xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
   console.error(err);
   process.exit(1);
 });
