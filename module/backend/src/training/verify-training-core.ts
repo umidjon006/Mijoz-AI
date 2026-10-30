@@ -578,7 +578,7 @@ const BANNED_WORDS = [
   'sertifikat',
 ];
 
-/** Skaner o'zi va demo ma'lumot tekshirilmaydi. */
+/** Skaner o'zi va demo ma'lumot tekshirilmaydi. `.ts` va `.tsx` qaraladi. */
 const SCAN_EXCLUDE = new Set(['verify-training-core.ts', 'demo-profiles.json']);
 
 function collectSourceFiles(dir: string, out: string[] = []): string[] {
@@ -586,7 +586,7 @@ function collectSourceFiles(dir: string, out: string[] = []): string[] {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
       collectSourceFiles(full, out);
-    } else if (entry.endsWith('.ts') && !SCAN_EXCLUDE.has(entry)) {
+    } else if ((entry.endsWith('.ts') || entry.endsWith('.tsx')) && !SCAN_EXCLUDE.has(entry)) {
       out.push(full);
     }
   }

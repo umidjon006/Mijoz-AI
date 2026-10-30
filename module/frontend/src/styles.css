@@ -1,0 +1,469 @@
+/*
+ * Mashq modulining uslublari — oddiy CSS (`../sales-copilot/frontend` topilmagani
+ * uchun; integratsiyada asosiy repo uslubiga moslashtiriladi).
+ *
+ * Hamma klass `mq-` prefiksi bilan — host ilovaning uslublariga tegmasligi uchun.
+ * Mobil uchun ham mos: asosiy o'lchamlar 360px dan boshlab ishlaydi.
+ */
+.mq-root {
+  --mq-bg: #ffffff;
+  --mq-panel: #f7f8fa;
+  --mq-line: #e3e6ea;
+  --mq-text: #1b1f24;
+  --mq-muted: #6b7480;
+  --mq-accent: #2f6fed;
+  --mq-accent-soft: #e8efff;
+  --mq-ok: #1f9d6b;
+  --mq-warn: #b4780a;
+  --mq-bad: #d2453d;
+  --mq-radius: 12px;
+
+  color: var(--mq-text);
+  background: var(--mq-bg);
+  font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  box-sizing: border-box;
+}
+.mq-root *,
+.mq-root *::before,
+.mq-root *::after {
+  box-sizing: inherit;
+}
+
+.mq-wrap {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 16px 16px 56px;
+}
+
+/* Sarlavhalar */
+.mq-h1 {
+  font-size: 22px;
+  margin: 0 0 6px;
+}
+.mq-h2 {
+  font-size: 17px;
+  margin: 24px 0 10px;
+}
+.mq-sub {
+  color: var(--mq-muted);
+  margin: 0 0 18px;
+}
+
+/* Navigatsiya */
+.mq-nav {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--mq-line);
+  margin-bottom: 18px;
+}
+.mq-nav button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--mq-muted);
+  cursor: pointer;
+}
+.mq-nav button[aria-current='page'] {
+  color: var(--mq-accent);
+  border-bottom-color: var(--mq-accent);
+  font-weight: 600;
+}
+
+/* Panel va kartalar */
+.mq-panel {
+  background: var(--mq-panel);
+  border: 1px solid var(--mq-line);
+  border-radius: var(--mq-radius);
+  padding: 16px;
+}
+.mq-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.mq-card {
+  background: var(--mq-panel);
+  border: 1px solid var(--mq-line);
+  border-radius: var(--mq-radius);
+  padding: 14px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mq-card:hover,
+.mq-card:focus-visible {
+  border-color: var(--mq-accent);
+  background: var(--mq-accent-soft);
+}
+.mq-card[aria-pressed='true'] {
+  border-color: var(--mq-accent);
+  background: var(--mq-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--mq-accent);
+}
+.mq-card-title {
+  font-weight: 600;
+}
+.mq-card-desc {
+  color: var(--mq-muted);
+  font-size: 13px;
+}
+
+/* Tugmalar */
+.mq-btn {
+  font: inherit;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--mq-line);
+  background: #fff;
+  color: var(--mq-text);
+  cursor: pointer;
+}
+.mq-btn:hover:not(:disabled) {
+  border-color: var(--mq-accent);
+}
+.mq-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.mq-btn-primary {
+  background: var(--mq-accent);
+  border-color: var(--mq-accent);
+  color: #fff;
+  font-weight: 600;
+}
+.mq-btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Belgilar */
+.mq-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--mq-line);
+  background: #fff;
+}
+.mq-badge-won {
+  color: var(--mq-ok);
+  border-color: currentColor;
+}
+.mq-badge-lost {
+  color: var(--mq-bad);
+  border-color: currentColor;
+}
+.mq-badge-timeout {
+  color: var(--mq-warn);
+  border-color: currentColor;
+}
+.mq-dots {
+  color: var(--mq-muted);
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+/* Ogohlantirish */
+.mq-notice {
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 14px;
+  border: 1px solid;
+}
+.mq-notice-warn {
+  background: #fff7e6;
+  border-color: #f0d79a;
+  color: #7a5200;
+}
+.mq-notice-error {
+  background: #fdeceb;
+  border-color: #f3b7b3;
+  color: #8c241e;
+}
+.mq-notice-info {
+  background: var(--mq-accent-soft);
+  border-color: #bdd2fb;
+  color: #1d4ba8;
+}
+
+/* Suhbat */
+.mq-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 220px;
+}
+.mq-turn {
+  max-width: 82%;
+  padding: 10px 13px;
+  border-radius: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mq-turn-seller {
+  align-self: flex-end;
+  background: var(--mq-accent);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.mq-turn-customer {
+  align-self: flex-start;
+  background: #fff;
+  border: 1px solid var(--mq-line);
+  border-bottom-left-radius: 4px;
+}
+.mq-turn-label {
+  display: block;
+  font-size: 11px;
+  opacity: 0.75;
+  margin-bottom: 2px;
+}
+.mq-turn.mq-highlight {
+  outline: 2px solid var(--mq-warn);
+  outline-offset: 2px;
+}
+.mq-composer {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  align-items: flex-end;
+}
+.mq-composer textarea {
+  flex: 1;
+  min-height: 46px;
+  max-height: 150px;
+  resize: vertical;
+  font: inherit;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--mq-line);
+  background: #fff;
+  color: inherit;
+}
+
+/* Ball halqasi */
+.mq-score {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mq-ring-label {
+  font-size: 13px;
+  color: var(--mq-muted);
+}
+
+/* O'lchovlar */
+.mq-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.mq-metric {
+  background: #fff;
+  border: 1px solid var(--mq-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.mq-metric-label {
+  font-size: 12px;
+  color: var(--mq-muted);
+  display: block;
+}
+.mq-metric-value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* Mezonlar */
+.mq-criterion {
+  border-top: 1px solid var(--mq-line);
+  padding: 12px 0;
+}
+.mq-criterion:first-child {
+  border-top: none;
+}
+.mq-criterion-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+.mq-criterion-name {
+  font-weight: 600;
+}
+.mq-criterion-score {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.mq-bar {
+  height: 6px;
+  background: var(--mq-line);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 7px 0;
+}
+.mq-bar > div {
+  height: 100%;
+  background: var(--mq-accent);
+}
+.mq-quote {
+  font: inherit;
+  text-align: left;
+  background: #fff;
+  border: 1px dashed var(--mq-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--mq-text);
+  cursor: pointer;
+  margin-top: 6px;
+  display: block;
+  width: 100%;
+}
+.mq-quote:hover,
+.mq-quote:focus-visible {
+  border-color: var(--mq-accent);
+  border-style: solid;
+}
+.mq-quote-rejected {
+  border-color: #f3b7b3;
+  color: #8c241e;
+  cursor: default;
+}
+
+/* Maslahat */
+.mq-improvement {
+  background: #fff;
+  border: 1px solid var(--mq-line);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.mq-better {
+  background: #eef9f2;
+  border-left: 3px solid var(--mq-ok);
+  padding: 8px 10px;
+  margin-top: 8px;
+  border-radius: 0 6px 6px 0;
+}
+.mq-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* Jadval */
+.mq-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.mq-table th,
+.mq-table td {
+  text-align: left;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--mq-line);
+}
+.mq-table th {
+  color: var(--mq-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mq-table tbody tr:hover {
+  background: var(--mq-panel);
+}
+
+/* Bo'sh holat / skelet */
+.mq-empty {
+  color: var(--mq-muted);
+  padding: 22px 0;
+  text-align: center;
+}
+.mq-skeleton {
+  background: linear-gradient(90deg, #eef0f3 25%, #f6f7f9 37%, #eef0f3 63%);
+  background-size: 400% 100%;
+  animation: mq-shimmer 1.3s ease infinite;
+  border-radius: 8px;
+  /* Yuklanishda sahifa "sakramasligi" uchun balandlik oldindan band qilinadi */
+  min-height: 16px;
+}
+@keyframes mq-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mq-skeleton {
+    animation: none;
+  }
+}
+
+.mq-muted {
+  color: var(--mq-muted);
+}
+.mq-small {
+  font-size: 13px;
+}
+.mq-mono {
+  font-variant-numeric: tabular-nums;
+}
+.mq-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .mq-wrap {
+    padding: 12px 12px 48px;
+  }
+  .mq-turn {
+    max-width: 92%;
+  }
+  .mq-h1 {
+    font-size: 20px;
+  }
+}
+
+/* Qorong'i rejim — host ilova `data-theme` bermasa, tizim sozlamasiga qaraydi */
+@media (prefers-color-scheme: dark) {
+  .mq-root:not([data-theme='light']) {
+    --mq-bg: #15181d;
+    --mq-panel: #1c2026;
+    --mq-line: #2b3139;
+    --mq-text: #e8ecf2;
+    --mq-muted: #98a1ad;
+    --mq-accent: #5b8cf5;
+    --mq-accent-soft: #1d2a44;
+  }
+  .mq-root:not([data-theme='light']) .mq-btn,
+  .mq-root:not([data-theme='light']) .mq-metric,
+  .mq-root:not([data-theme='light']) .mq-turn-customer,
+  .mq-root:not([data-theme='light']) .mq-improvement,
+  .mq-root:not([data-theme='light']) .mq-quote,
+  .mq-root:not([data-theme='light']) .mq-badge,
+  .mq-root:not([data-theme='light']) .mq-composer textarea {
+    background: #11141a;
+    color: var(--mq-text);
+  }
+  .mq-root:not([data-theme='light']) .mq-better {
+    background: #13251c;
+  }
+}

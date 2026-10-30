@@ -12,7 +12,7 @@
     "withtenant:smoke": "tsx --env-file-if-exists=.env src/withTenant.ts",
     "verify:training": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training.ts",
     "verify:training:core": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-core.ts",
-    "verify": "npm run verify:training && npm run verify:training:core && npm run verify:training:scoring",
+    "verify": "npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:frontend",
     "play": "tsx --env-file-if-exists=.env src/play.ts",
     "smoke:llm": "tsx --env-file-if-exists=.env src/smoke-llm.ts",
     "typecheck": "tsc --noEmit",
@@ -22,20 +22,30 @@
     "bench:stt": "tsx --env-file-if-exists=.env src/bench-stt.ts",
     "bench:tts": "tsx --env-file-if-exists=.env src/bench-tts.ts",
     "verify:training:scoring": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-scoring.ts",
-    "serve": "tsx --env-file-if-exists=.env src/server.ts"
+    "serve": "tsx --env-file-if-exists=.env src/server.ts",
+    "ui:dev": "vite --config frontend/vite.config.ts",
+    "ui:build": "tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "dev": "tsx src/dev.ts",
+    "verify:frontend": "npm run ui:build"
   },
   "dependencies": {
-    "drizzle-orm": "^0.44.6",
-    "pg": "^8.16.3",
-    "zod": "^3.25.76",
     "@anthropic-ai/sdk": "^0.70.1",
-    "fastify": "^5.6.1"
+    "drizzle-orm": "^0.44.6",
+    "fastify": "^5.6.1",
+    "pg": "^8.16.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.7.0",
     "@types/pg": "^8.15.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
     "drizzle-kit": "^0.31.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^6.3.5"
   }
 }

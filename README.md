@@ -1,4 +1,4 @@
-# sotuv-trener — AI mijoz trenajyori (Step 1-2)
+# sotuv-trener — AI mijoz trenajyori (Step 1-2, 3A, 4)
 
 Sotuvchilar mashq qiladigan **AI mijoz simulyatori**. Keyinchalik mavjud
 multi-tenant SaaS (`sales-copilot`: Fastify + Drizzle + PostgreSQL + RLS + zod
@@ -34,8 +34,15 @@ sotuv-trener/
       profile-schema.ts          # vendor profileSchema (integratsiyada o'chiriladi)
       demo-profiles.json         # dev/test ma'lumoti
       testing/                   # FakeTrainerLlm + test yordamchilari
+      scoring/                   # Step 4: rubrika, o'lchovlar, dalil, baholash
+      voice/                     # Step 3: STT/TTS portlari, WAV tekshiruvi
+      routes.ts                  # Fastify plagini (sessiya, navbat, natija, stats)
       verify-training.ts         # Step 1 tekshiruvi (sxemalar + RLS)
       verify-training-core.ts    # Step 2 tekshiruvi (motor, haqiqiy LLM'siz)
+      verify-training-scoring.ts # Step 4 tekshiruvi (baholash + route'lar)
+  module/frontend/src/           # React sahifalar (Step 4 Phase B)
+      pages/                     # Mashq, SessionPage, NatijaPage, TarixPage
+      components/, lib/api.ts, lugat/mashq.ts, styles.css
     backend/src/db/schema/
       training.ts                # Drizzle: training_session, training_turn
       host-tables.ts             # host jadvallarining minimal e'loni (integratsiyada o'chiriladi)
@@ -64,9 +71,40 @@ npm install
 cp harness/.env.example harness/.env   # ANTHROPIC_API_KEY ni to'ldiring (play/smoke uchun)
 npm run db:up        # docker: postgres:18, 127.0.0.1:55433
 npm run db:init      # bootstrap.sql -> training.sql -> rls-training.sql -> grants.sql
-npm run verify       # verify:training + verify:training:core (LLM kerak emas)
+npm run verify       # hamma tekshiruv + frontend build (LLM kerak emas)
 npm run typecheck
 ```
+
+### Mashq interfeysi (React)
+
+```bash
+npm run dev          # backend (5180) + UI (5181) birga
+```
+
+Keyin <http://127.0.0.1:5181> ni oching. `ANTHROPIC_API_KEY` bo'lmasa
+**demo LLM** ishlaydi: mijoz javoblari sodda bo'ladi, lekin butun oqim
+(sessiya -> suhbat -> baholash -> debrief) ishlaydi va pul sarflanmaydi.
+Kalit qo'yilsa — haqiqiy model.
+
+Alohida ishga tushirish: `npm run serve` (backend), `npm run ui:dev` (UI).
+
+**Qo'lda tekshirish ro'yxati (manual QA):**
+
+1. Bosh sahifada 4 ta mijoz kartasi, qiyinlik nuqtalari va "Mashqni boshlash";
+2. profil `mixed` bo'lsa yo'nalish tanlovi ko'rinadi; `inbound` tanlansa
+   suhbatni mijoz boshlaydi;
+3. suhbatda: Enter yuboradi, Shift+Enter yangi qator; yuborilayotganda
+   "Mijoz javob yozyapti…" chiqadi; navbat hisoblagichi o'sadi;
+4. xato bo'lsa yozgan matn YO'QOLMAYDI (qayta yuborish mumkin);
+5. "Suhbatni tugatish" -> natija sahifasi; baholash tugamagan bo'lsa
+   "Baholanmoqda…" va skelet ko'rinadi (sahifa sakramaydi);
+6. natijada: ball halqasi, o'lchovlar, sabr/ishonch/qiziqish grafigi,
+   mezonlar + dalil iqtiboslari, maslahat ("Shunday desangiz yaxshiroq edi"),
+   muhim lahzalar, **mijozning yashirin kartalari**, transkript;
+7. dalil iqtibosiga bosilsa transkriptdagi o'sha navbat belgilanadi;
+8. suhbat davomida yashirin kartalar KO'RINMAYDI (faqat tugagach);
+9. Tarix: mashqlar ro'yxati, o'rtacha ball, ball dinamikasi, eng zaif mezonlar;
+10. telefon kengligida (375px) hammasi bir ustunda, gorizontal scroll yo'q.
 
 ### AI mijoz bilan mashq qilish (haqiqiy model)
 
@@ -164,6 +202,15 @@ Qiyinlikni sozlash — faqat `archetypes.ts` maydonlari orqali; batafsil:
    ostida ko'rinmaydi, `withTenant`siz o'qish ham yozish ham mumkin emas,
    boshqa tenant nomidan yozish rad etiladi, CHECK va unique ishlaydi.
 
+`verify:training:scoring` (Step 4, haqiqiy LLM ishlatilmaydi): rubrika
+(vaznlar 100), `verifyEvidence` (apostroflar, qisqa iqtibos, mijoz iqtibosi,
+navbat chegarasi), ball hisobi (null'lar), o'lchovlar va muhim lahzalar,
+o'ylab topilgan dalil -> baho null + `rejectedQuote`, versiyalangan qayta
+baholash, past sifat (retry), kam mazmun, route'lar (yashirin ma'lumot,
+tenant/foydalanuvchi izolyatsiyasi -> 404, validatsiya, statistika).
+
+`verify:frontend`: TypeScript tekshiruvi + production build (Vite).
+
 `verify:training:core` (Step 2, haqiqiy LLM ishlatilmaydi — `FakeTrainerLlm`):
 
 1. holat: chegaralash, bazaviy decay, notanish e'tiroz kalitlari, `needRevealed`;
@@ -181,7 +228,28 @@ Qiyinlikni sozlash — faqat `archetypes.ts` maydonlari orqali; batafsil:
 8. prompt builder'lar: blockers va ishonchsiz-sotuvchi qoidasi system promptda,
    transkript oynasi 12 navbat bilan cheklangan.
 
+## Baholash va debrief (Step 4) qisqacha
+
+Sessiya tugagach sotuvchi **debrief** oladi. Qoida avvalgidek: **LLM
+tushuntiradi, kod hisoblaydi va tekshiradi.**
+
+- **Dalil majburiy.** Har baho uchun model transkriptdan AYNAN iqtibos
+  keltirishi kerak; u mexanik tekshiriladi (apostrof/tinish normalizatsiyasi,
+  >= 3 so'z va >= 12 belgi, faqat sotuvchi navbati, navbat chegarasidan
+  oshmaydi). O'tmasa — baho `null`, iqtibos esa audit uchun saqlanadi.
+- **Ball:** `skillScore = Σ(score/3 × weight) / Σ(baholangan vazn) × 100`.
+  `null` baho nolga aylanmaydi. `skillScore` va `outcome` — ikki alohida son.
+- **Versiyalash:** qayta baholash eski natijani o'chirmaydi (`version + 1`).
+- **Sifat:** dalillarning 40% dan ko'pi yiqilsa bitta qayta urinish, keyin
+  `quality: 'low'` va UI'da ogohlantirish; juda qisqa suhbat ->
+  `quality: 'insufficient'`.
+- **Yashirin kartalar** (mijozning asl ehtiyoji, aytmagan faktlari, e'tiroz
+  rejasi) faqat sessiya TUGAGANDAN keyin ko'rsatiladi.
+
 ## Keyingi qadamlar
 
-Step 3–5: Fastify endpoint'lar (route), STT/TTS, baholash/scoring, frontend.
-Batafsil: `module/integration/INTEGRATION.md` (8-bo'lim).
+- **Step 3 Phase B (ovoz):** push-to-talk, STT/TTS ulash. Avval Step 3A
+  benchmarkini o'tkazish kerak (`harness/benchmark/README.md`).
+- Frontend'dagi `VoiceControls` komponenti slot sifatida tayyor turibdi.
+
+Batafsil: `module/integration/INTEGRATION.md`.

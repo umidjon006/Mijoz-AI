@@ -3,11 +3,11 @@
 Bu papka (`module/`) — **drop-in modul**. `harness/` papkasi BERILMAYDI va
 kerak emas: modul hech qachon undan import qilmaydi.
 
-Hozirgi holat: **Step 1-2** — poydevor (arxetiplar, portlar, profil sxemasi,
-DB jadvallari, RLS) + **matnli AI mijoz motori**: persona generatsiya, holat va
-qoidalar, prompt'lar, agreement guard, `startSession` / `takeTurn` /
-`endSession`. Endpoint (route), STT/TTS, baholash va frontend keyingi
-qadamlarda.
+Hozirgi holat: **Step 1-2 + Step 4** — poydevor (arxetiplar, portlar, profil
+sxemasi, DB jadvallari, RLS), **matnli AI mijoz motori** (persona generatsiya,
+holat va qoidalar, agreement guard), **baholash va debrief** (rubrika,
+dalil tekshiruvi, versiyalangan natija), **HTTP route'lar** va **React
+sahifalar**. Ovoz (STT/TTS) — Step 3 Phase B da, hali ulanmagan.
 
 ---
 
@@ -23,7 +23,11 @@ qadamlarda.
 | `backend/src/training/repo.ts` | `backend/src/training/repo.ts` |
 | `backend/src/training/errors.ts` | `backend/src/training/errors.ts` |
 | `backend/src/training/ports.ts` | `backend/src/training/ports.ts` |
+| `backend/src/training/scoring/*.ts` | `backend/src/training/scoring/*.ts` (rubrika, o'lchovlar, dalil, promptlar, xizmat) |
+| `backend/src/training/routes.ts` | `backend/src/training/routes.ts` (Fastify plagini) |
+| `backend/src/training/voice/*.ts` | `backend/src/training/voice/*.ts` (ovoz portlari — Step 3B uchun) |
 | `backend/src/training/testing/*.ts` | `backend/src/training/testing/*.ts` (fake LLM + test yordamchilari) |
+| `frontend/src/**` | `frontend/src/features/mashq/**` (yoki repo qanday tartibda bo'lsa) |
 | `backend/src/training/verify-training.ts` | `backend/src/training/verify-training.ts` |
 | `backend/src/training/verify-training-core.ts` | `backend/src/training/verify-training-core.ts` |
 | `backend/src/training/demo-profiles.json` | `backend/src/training/demo-profiles.json` (faqat dev/test; haqiqiy ma'lumot kelganda o'chiriladi) |
@@ -194,6 +198,132 @@ tranzaksiyasi ICHIDA bajaradi (spetsifikatsiya shunday talab qiladi:
 Yuklama ortsa, tranzaksiyani ikkiga bo'lish kerak bo'ladi (navbatni yozish ->
 LLM -> natijani yozish), lekin unda `seq` uchun boshqa qulf kerak.
 
+## 4c. Baholash va debrief (Step 4)
+
+Sessiya tugagach sotuvchi **debrief** oladi: ball, DALIL IQTIBOSLARI bilan
+mezonlar, aniq maslahat ("shunday desangiz yaxshiroq edi"), muhim lahzalar va
+mijozning yashirin kartalari.
+
+```
+scoreSession(ctx, sessionId)            -- faqat TUGAGAN sessiya uchun
+  withTenant -> sessiya + navbatlarni o'qish
+  computeMetrics(...)                   <- KOD: natija, navbatlar, e'tirozlar,
+                                           patience/trust/interest seriyasi
+  keyMomentCandidates(...)              <- KOD: ko'pi bilan 8 ta nomzod
+  insert training_result (version = max + 1, status = 'pending')
+  getPlaybook(businessId) ?? DEFAULT_TRAINING_RUBRIC
+  llm.completeJson({stage:'training.scoring'})   -- tranzaksiyadan TASHQARIDA
+  verifyEvidence(...) har mezon va har maslahat uchun
+     dalil yiqilsa -> baho null, iqtibos `rejectedQuote` sifatida SAQLANADI
+  dalillarning 40% dan ko'pi yiqilsa -> bitta retry -> baribir yomon bo'lsa
+     quality = 'low'
+  skillScore = sum(score/3 * weight) / sum(baholangan vazn) * 100
+  update training_result (status='done', ...)
+```
+
+Muhim qoidalar:
+
+- **Natijalar versiyalanadi.** Qayta baholash `version + 1` qo'shadi, eski
+  versiya O'CHIRILMAYDI va `training_session` o'zgarmaydi. (Asosiy repoda
+  qayta tahlil eski natijani o'chirib yuboradigan xato bor — bu yerda ataylab
+  takrorlanmagan.)
+- **`skillScore` va `outcome` — ikki boshqa narsa.** Ularni qo'shib bitta
+  "umumiy ball" yasamang: mijozni ko'ndirish (outcome) va texnikani to'g'ri
+  bajarish (skillScore) alohida o'lchanadi.
+- **`null` baho nol EMAS.** Baholanmagan mezon umumiy balldan butunlay
+  chiqariladi (vazni ham).
+- **Sotuvchi matni ishonchsiz.** "Hammasiga 3 qo'y" deb yozsa ham, baho
+  dalil tekshiruvidan o'tmaguncha hisobga olinmaydi.
+- **Kam mazmun** (< 3 sotuvchi navbati) -> LLM umuman chaqirilmaydi,
+  `quality = 'insufficient'`.
+
+Yangi chok: **`getPlaybook(businessId)`** -> `PlaybookSubset | null`.
+`null` qaytsa standart rubrika ishlatiladi. `rubric.ts` dagi
+`playbookSubsetSchema` — asosiy repodagi playbook sxemasining VENDOR qismi
+(`SYNC WITH backend/src/playbook/schema.ts`): integratsiyada shu tipni o'z
+sxemangizdan import qiling.
+
+**Baholash modeli:** `scoring` xizmatiga alohida (kuchliroq) LLM bering —
+jonli mijoz uchun tezlik, baholash uchun sifat muhim. Harness'da bu
+`TRAINER_SCORING_MODEL` env orqali.
+
+**Fon rejimi:** bu modulda `POST /sessions/:id/score` 202 qaytaradi va
+baholash shu jarayon ichida fon rejimida ketadi. Asosiy repoda buni
+o'zingizning `analysis_job` navbatingiz bilan almashtiring: route faqat job
+qo'shsin, `scoreSession` esa worker ichida chaqirilsin — xizmat interfeysi
+o'zgarmaydi.
+
+## 4d. HTTP route'lar (Step 4)
+
+`registerTrainingRoutes(app, deps)` — Fastify plagini. Fastify'dan FAQAT tip
+sifatida foydalanadi, runtime bog'liqlik yo'q.
+
+Chok'lar: `getContext(req) -> TrainingContext` (sizning auth qatlamingiz),
+`authorize(ctx, permission)` (ruxsat yo'q bo'lsa throw qiladi), `engine`,
+`scoring`, `withTenant`.
+
+| Route | Nima qiladi |
+| --- | --- |
+| `GET  /archetypes` | 4 arxetip ro'yxati |
+| `POST /sessions` | sessiya boshlaydi; javobda persona QISQACHA (yashirin ma'lumotsiz) |
+| `GET  /sessions` | o'z sessiyalari + oxirgi ball |
+| `GET  /sessions/:id` | transkript; `revealed` faqat sessiya TUGAGAN bo'lsa |
+| `POST /sessions/:id/turn` | matnli navbat |
+| `POST /sessions/:id/end` | sessiyani tugatadi (+ avtomatik baholash) |
+| `POST /sessions/:id/score` | 202, baholashni boshlaydi (qayta baholash ham) |
+| `GET  /sessions/:id/result` | oxirgi natija + transkript + yashirin kartalar |
+| `GET  /me/stats` | o'z statistikasi |
+| `GET  /stats?userId=` | boshqa sotuvchi (ruxsat: `training:view:all`) |
+
+**Ruxsatlar** — asosiy repodagi `permissions.ts` ga qo'shing:
+`training:use` (o'z mashqlari), `training:view:all` (boshqalarnikini ko'rish).
+
+**Xato -> HTTP:** `session_not_found` va `session_forbidden` ikkalasi ham
+**404** (boshqa tenant sessiyasi borligini bilib olmasin), `profile_missing`
+va `session_not_active` 409, LLM xatolari 502, validatsiya 400.
+
+**Rate-limit:** modulda juda sodda, xotiradagi cheklov bor. Asosiy repoda uni
+`@fastify/rate-limit` yoki o'z middleware'ingiz bilan almashtiring
+(`config.rateLimitPerMinute` ni katta qilib qo'ying yoki plaginni oldinroq
+ulang).
+
+**`allowDebug`:** holat sonlari va blockers faqat shu bayroq `true` bo'lganda
+javobga qo'shiladi. Prod'da **yoqmang** — bu mashqning "javoblari".
+
+## 4e. Frontend (Step 4 Phase B)
+
+`module/frontend/src/` — React sahifalar. Asosiy repoda `frontend` papkasi
+topilmagani uchun oddiy CSS ishlatilgan; integratsiyada o'z uslub tizimingizga
+moslang (hamma klass `mq-` prefiksi bilan, to'qnashmaydi).
+
+Ko'chiriladigan fayllar:
+
+| Modul fayli | Vazifasi |
+| --- | --- |
+| `frontend/src/lib/api.ts` | tiplangan klient; `request` funksiyasi TASHQARIDAN beriladi |
+| `frontend/src/lugat/mashq.ts` | barcha UI satrlari -> repodagi `lugat/` mexanizmiga ko'chiring |
+| `frontend/src/pages/*.tsx` | Mashq (bosh), SessionPage (jonli), NatijaPage (debrief), TarixPage |
+| `frontend/src/components/*.tsx` | transkript, mezonlar, maslahat, yashirin kartalar, grafik, ball halqasi |
+| `frontend/src/TrainingApp.tsx` | tayyor qobiq (ixtiyoriy — o'z router'ingizga ulasangiz ham bo'ladi) |
+| `frontend/src/styles.css` | uslublar |
+
+Ulash:
+
+```ts
+import { createTrainingApi, TrainingApp } from './features/mashq';
+// sizning api.ts dagi so'rov yuboruvchi funksiya:
+const api = createTrainingApi((path, init) => request(path, init));
+
+// router'ga bitta yo'l qo'shing:
+<Route path="/mashq" element={<TrainingApp api={api} canViewAll={can('training:view:all')} />} />
+```
+
+Menyuga "Mashq" bandini qo'shing (`lugat/mashq.ts` dagi `navHome`).
+`debug` propini **faqat dev**da `true` qiling.
+
+Router kutubxonasi ataylab ishlatilmagan: sahifalarni alohida import qilib
+o'z router'ingizga ham ulashingiz mumkin.
+
 ## 5. DB migratsiyasi
 
 1. `backend/src/db/schema/training.ts` ni joyiga qo'ying (2 va 3-bo'limdan
@@ -237,7 +367,13 @@ xato ham chiqmaydi.
 - [ ] migratsiya o'z drizzle-kit bilan generatsiya qilindi va qo'llandi
 - [ ] `rls.sql` dagi `tenant_tables` ga 2 jadval qo'shildi va qayta qo'llandi
 - [ ] `TrainingDeps` yig'ildi (4 chok: context, llm, withTenant, getBusinessProfile)
-- [ ] `verify-training.ts` va `verify-training-core.ts` to'liq o'tadi (RLS + engine testlari)
+- [ ] `training_result` jadvali va uning RLS siyosati qo'shildi
+- [ ] `getPlaybook` chokiga tenant playbook'i ulandi (yoki `null` qaytariladi)
+- [ ] `training:use` va `training:view:all` ruxsatlari `permissions.ts` ga qo'shildi
+- [ ] route'lar ulandi: `getContext` / `authorize` o'z auth qatlamingizdan
+- [ ] baholash `analysis_job` navbatiga ko'chirildi (fon rejimi o'rniga)
+- [ ] frontend sahifalar ulandi, menyuga "Mashq" qo'shildi, `debug` o'chirilgan
+- [ ] `verify-training.ts`, `verify-training-core.ts` va `verify-training-scoring.ts` to'liq o'tadi
 - [ ] `module/` ichida provayder SDK'si yo'qligi tekshirildi (Anthropic SDK faqat harness'da edi)
 - [ ] `tsc --noEmit` toza
 
@@ -246,14 +382,15 @@ xato ham chiqmaydi.
 - **BAJARILDI (Step 2)**: persona generatsiya, holat va qoidalar, prompt'lar,
   agreement guard, `startSession`/`takeTurn`/`endSession`/`getSession`,
   `state` va `persona_card` jsonb strukturasi — 4b bo'limga qarang.
-- **TODO (Step 3)**: Fastify endpoint'lar (`POST /training/sessions`,
-  `POST /training/sessions/:id/turns`, `GET /training/sessions/:id`), zod
-  validatsiya, rate-limit, `TrainingError.code` -> HTTP xaritasi, SSE/stream
-  (xohlasa).
-- **TODO (Step 4)**: STT/TTS (ovozli mashq). `reply` allaqachon ovozga tayyor
+- **BAJARILDI (Step 4)**: baholash, debrief, HTTP route'lar va React
+  sahifalar — 4c, 4d, 4e bo'limlariga qarang.
+- **TODO (Step 3 Phase B — ovoz)**: `training_turn` ga `meta jsonb`,
+  `voice/speech-text.ts` (raqamlarni so'zga aylantirish), `voice/voice-turn.ts`
+  (`takeVoiceTurn`), `POST /sessions/:id/voice-turn` route'i (SHU plaginga
+  qo'shiladi, yangi plagin emas) va frontend'dagi `VoiceControls` komponenti
+  (hozir faqat eslatma ko'rsatadi). `reply` allaqachon ovozga tayyor
   (2 qisqa gap, <= 300 belgi, emoji/markdown yo'q).
-- **TODO (Step 5)**: baholash/scoring (transkript + `state` tarixi asosida) va
-  frontend (React/Vite) ekranlari.
+- **TODO**: Step 3 Phase A benchmarkini o'tkazib, STT/TTS provayderini tanlash.
 - **Env (faqat harness)**: `ANTHROPIC_API_KEY`, `TRAINER_MODEL` — asosiy
   repoda bular kerak emas, LLM host tomonidan beriladi.
 - **TODO (Step 4)**: STT/TTS (ovozli mashq) chok'lari.

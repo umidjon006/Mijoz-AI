@@ -21,3 +21,4 @@ harness/drizzle/
 # Benchmark materiali (audio) — git'ga kirmaydi
 harness/benchmark/samples/*.wav
 harness/benchmark/out/
+harness/frontend/dist/

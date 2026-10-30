@@ -24,6 +24,10 @@
     "bench:stt": "npm run bench:stt -w sotuv-trener-harness --",
     "bench:tts": "npm run bench:tts -w sotuv-trener-harness --",
     "verify:training:scoring": "npm run verify:training:scoring -w sotuv-trener-harness",
-    "serve": "npm run serve -w sotuv-trener-harness"
+    "serve": "npm run serve -w sotuv-trener-harness",
+    "dev": "npm run dev -w sotuv-trener-harness",
+    "ui:dev": "npm run ui:dev -w sotuv-trener-harness",
+    "ui:build": "npm run ui:build -w sotuv-trener-harness",
+    "verify:frontend": "npm run verify:frontend -w sotuv-trener-harness"
   }
 }
