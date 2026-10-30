@@ -22,3 +22,6 @@ harness/drizzle/
 harness/benchmark/samples/*.wav
 harness/benchmark/out/
 harness/frontend/dist/
+
+# Bake-off natijalari (pulli chaqiruvlar natijasi) — git'ga kirmaydi
+harness/bakeoff/out/

@@ -28,6 +28,10 @@
     "dev": "npm run dev -w sotuv-trener-harness",
     "ui:dev": "npm run ui:dev -w sotuv-trener-harness",
     "ui:build": "npm run ui:build -w sotuv-trener-harness",
-    "verify:frontend": "npm run verify:frontend -w sotuv-trener-harness"
+    "verify:frontend": "npm run verify:frontend -w sotuv-trener-harness",
+    "bakeoff": "npm run bakeoff -w sotuv-trener-harness --",
+    "bakeoff:report": "npm run bakeoff:report -w sotuv-trener-harness --",
+    "bakeoff:score": "npm run bakeoff:score -w sotuv-trener-harness --",
+    "verify:training:bakeoff": "npm run verify:training:bakeoff -w sotuv-trener-harness"
   }
 }

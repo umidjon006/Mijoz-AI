@@ -20,6 +20,7 @@ import type {
   TrainerLlm,
   TrainerLlmRequest,
 } from '../../module/backend/src/training/ports.js';
+import type { LlmCallListener } from './bakeoff/types.js';
 
 export const DEFAULT_TRAINER_MODEL = 'claude-haiku-5-5';
 
@@ -29,6 +30,8 @@ export interface AnthropicTrainerLlmOptions {
   maxTokens?: number;
   /** Har chaqiruvdan keyin chaqiriladi — `play --debug` shu orqali token ko'rsatadi. */
   onUsage?: (usage: TokenUsage & { latencyMs: number; stage: string }) => void;
+  /** Bake-off o'lchovlari uchun (urinishlar soni, muvaffaqiyat, kechikish). */
+  onCall?: LlmCallListener;
 }
 
 export class LlmOutputError extends Error {
@@ -93,8 +96,21 @@ export function createAnthropicTrainerLlm(options: AnthropicTrainerLlmOptions = 
     options.onUsage?.({ ...usage, latencyMs, stage: req.stage });
 
     // Tekshiruv modulning sxemasi bilan: xato bo'lsa engine tuzatib qayta so'raydi.
-    const value = req.schema.parse(extractJson(text));
-    return { value, usage, latencyMs };
+    try {
+      const value = req.schema.parse(extractJson(text));
+      options.onCall?.({ stage: req.stage, attempts: 1, ok: true, latencyMs, usage });
+      return { value, usage, latencyMs };
+    } catch (err) {
+      options.onCall?.({
+        stage: req.stage,
+        attempts: 1,
+        ok: false,
+        latencyMs,
+        usage,
+        error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+      });
+      throw err;
+    }
   }
 
   return {

@@ -1,0 +1,68 @@
+{
+  "_izoh": [
+    "Model bake-off nomzodlari. Kalitlar FAQAT harness/.env da bo'ladi, bu yerda yo'q.",
+    "Yangi nomzod qo'shish: `candidates` ga element qo'shing va `enabled: true` qiling.",
+    "`_examples` ichidagilar — tayyor namunalar; kalitni .env ga qo'shib, bu yerga ko'chiring."
+  ],
+  "sellerModel": "claude-sonnet-5-5",
+  "sellerApiKeyEnv": "ANTHROPIC_API_KEY",
+  "defaultProfile": "o_quv_markaz",
+  "secondProfile": "taksi",
+  "secondProfileArchetype": "negotiator",
+  "repetitions": 3,
+  "maxTurnsPerSession": 8,
+  "shuffleSeed": "bakeoff-2026",
+  "candidates": [
+    {
+      "label": "haiku",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "pricePerMTok": { "input": 1, "output": 5 },
+      "enabled": true
+    },
+    {
+      "label": "sonnet",
+      "provider": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "pricePerMTok": { "input": 3, "output": 15 },
+      "enabled": true
+    }
+  ],
+  "_examples": [
+    {
+      "_izoh": "Google Gemini — OpenAI-mos endpoint. .env ga GEMINI_API_KEY qo'ying.",
+      "label": "gemini-flash",
+      "provider": "openai-compatible",
+      "model": "gemini-2.5-flash",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "pricePerMTok": { "input": 0.3, "output": 2.5 },
+      "jsonMode": "json_object",
+      "enabled": false
+    },
+    {
+      "_izoh": "Groq — juda tez. .env ga GROQ_API_KEY qo'ying.",
+      "label": "groq-llama",
+      "provider": "openai-compatible",
+      "model": "llama-3.3-70b-versatile",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "apiKeyEnv": "GROQ_API_KEY",
+      "pricePerMTok": { "input": 0.59, "output": 0.79 },
+      "jsonMode": "json_object",
+      "enabled": false
+    },
+    {
+      "_izoh": "Z.ai GLM. .env ga GLM_API_KEY qo'ying.",
+      "label": "glm",
+      "provider": "openai-compatible",
+      "model": "glm-4.6",
+      "baseUrl": "https://api.z.ai/api/paas/v4",
+      "apiKeyEnv": "GLM_API_KEY",
+      "pricePerMTok": { "input": 0.6, "output": 2.2 },
+      "jsonMode": "prompt",
+      "enabled": false
+    }
+  ]
+}

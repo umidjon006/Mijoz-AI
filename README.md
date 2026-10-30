@@ -127,7 +127,12 @@ Boshqa ixtiyoriy skriptlar (pul sarflaydi, `verify` tarkibiga kirmaydi):
 ```bash
 npm run smoke:llm -- --profile o_quv_markaz --debug        # 4 arxetip, skriptlangan sotuvchi + prompt-injection
 npm run calibrate -- --profile o_quv_markaz --sessions 5   # beparvo vs mohir sotuvchi, g'alaba foizi
+npm run bakeoff                                            # model bake-off (Step 2b)
+npm run bakeoff:report && npm run bakeoff:score            # hisobot, ko'r baholash, reyting
 ```
+
+Model bake-off — qaysi LLM AI mijozni yaxshi o'ynashini **raqam bilan** hal
+qilish uchun: `harness/bakeoff/README.md`.
 
 DB kerak bo'lmasa (faqat sxema testlari):
 
@@ -208,6 +213,11 @@ navbat chegarasi), ball hisobi (null'lar), o'lchovlar va muhim lahzalar,
 o'ylab topilgan dalil -> baho null + `rejectedQuote`, versiyalangan qayta
 baholash, past sifat (retry), kam mazmun, route'lar (yashirin ma'lumot,
 tenant/foydalanuvchi izolyatsiyasi -> 404, validatsiya, statistika).
+
+`verify:training:bakeoff` (Step 2b, pulli chaqiruvsiz): nomzod konfiguratsiyasi,
+urug'li aralashtirishning takrorlanishi va ko'r yorliqlar, resume mantig'i,
+o'lchovlar (tayyor sessiyalar ustida), narx taxminlagichi, odam baholarini
+birlashtirish va reyting/diskvalifikatsiya.
 
 `verify:frontend`: TypeScript tekshiruvi + production build (Vite).
 
