@@ -20,9 +20,9 @@ import type { GetBusinessProfile } from '../../module/backend/src/training/ports
 import {
   DEMO_CONTEXT,
   ensureDemoRows,
-  loadDemoProfile,
   parseArgs,
 } from './demo-env.js';
+import { BusinessDataError, resolveBusinessData } from './business-data.js';
 import { priceCall } from './llm-anthropic.js';
 import {
   createTrainerLlm,
@@ -38,7 +38,8 @@ import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const archetype = getArchetype(args.archetype);
-  const profile = loadDemoProfile(args.profile);
+  const business = resolveBusinessData(args.profile);
+  const profile = business.profile;
 
   await ensureDemoRows();
 
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
   const rl = createInterface({ input, output });
 
   console.log(`\nArxetip: ${archetype.key} — ${archetype.title} (qiyinlik ${archetype.difficulty}/5)`);
-  console.log(`Profil:  ${args.profile} — ${profile.industry}`);
+  console.log(`Profil:  ${business.source} — ${profile.industry}`);
   console.log(`LLM:     ${describeLlm(resolved)}`);
   console.log('Persona generatsiya qilinyapti...\n');
 
@@ -180,6 +181,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof BusinessDataError) {
+    console.error(`\n[biznes ma'lumotlari xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
   if (err instanceof ProviderConfigError) {
     console.error(`\n[sozlama xatosi] ${err.message}\n`);
     process.exit(1);

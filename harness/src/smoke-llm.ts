@@ -15,7 +15,8 @@ import './env.js';
 import { ARCHETYPE_KEYS, getArchetype } from '../../module/backend/src/training/archetypes.js';
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
-import { DEMO_CONTEXT, ensureDemoRows, loadDemoProfile, parseArgs } from './demo-env.js';
+import { DEMO_CONTEXT, ensureDemoRows, parseArgs } from './demo-env.js';
+import { BusinessDataError, resolveBusinessData } from './business-data.js';
 import { priceCall } from './llm-anthropic.js';
 import {
   createTrainerLlm,
@@ -39,7 +40,8 @@ const SELLER_SCRIPT: string[] = [
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const profile = loadDemoProfile(args.profile);
+  const business = resolveBusinessData(args.profile);
+  const profile = business.profile;
   await ensureDemoRows();
 
   const pool = createPool(appDatabaseUrl());
@@ -61,7 +63,7 @@ async function main(): Promise<void> {
   const llm = resolved.llm;
   const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm, priceCall });
 
-  console.log(`Profil: ${args.profile} — ${profile.industry}`);
+  console.log(`Profil: ${business.source} — ${profile.industry}`);
   console.log(`LLM:    ${describeLlm(resolved)}\n`);
 
   let totalCost = 0;
@@ -139,6 +141,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof BusinessDataError) {
+    console.error(`\n[biznes ma'lumotlari xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
   console.error(err);
   process.exit(1);
 });

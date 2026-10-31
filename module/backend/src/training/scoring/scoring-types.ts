@@ -37,10 +37,46 @@ export interface ImprovementResult {
   rejectReason?: EvidenceRejectReason | null;
 }
 
+/**
+ * Qizil chiziq buzilishi (biznes profilidagi `redLines` dan). FAQAT
+ * tekshiruvdan o'tgan sotuvchi iqtibosi bilan saqlanadi — debrief tepasida
+ * ko'rsatiladi.
+ */
+export interface RedLineViolation {
+  /** Buzilgan qoida — profildagi `redLines` satri. */
+  rule: string;
+  explanation: string;
+  evidenceQuote: string;
+  evidenceTurnSeq: number;
+}
+
+export type ScriptStageStatus = 'followed' | 'partly' | 'missed';
+
+/** "Skriptga moslik": bitta bosqich natijasi. */
+export interface ScriptStageResult {
+  stage: string;
+  /** `null` — model bu bosqichni baholamadi. */
+  status: ScriptStageStatus | null;
+  comment: string;
+  /** `followed` uchun tekshirilgan iqtibos MAJBURIY. */
+  evidenceQuote: string | null;
+  evidenceTurnSeq: number | null;
+  rejectedQuote?: string | null;
+  rejectReason?: EvidenceRejectReason | null;
+}
+
+/**
+ * Debrief (`training_result.coaching` jsonb). Yangi bo'limlar shu yerda —
+ * DB migratsiyasisiz; eski natijalarda ular yo'q (UI `?? []` bilan o'qiydi).
+ */
 export interface CoachingResult {
   summary: string;
   strengths: string[];
   improvements: ImprovementResult[];
+  /** Qizil chiziq buzilishlari (tekshirilgan iqtibos bilan). */
+  redLineViolations?: RedLineViolation[];
+  /** Skript berilgan bo'lsa — har bosqich natijasi; aks holda `null`/yo'q. */
+  scriptAdherence?: ScriptStageResult[] | null;
 }
 
 export interface KeyMomentResult {

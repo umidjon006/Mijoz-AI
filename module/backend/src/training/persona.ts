@@ -15,7 +15,8 @@ import {
   PersonaGenerationError,
   trainingErrorFromLlm,
 } from './errors.js';
-import type { TrainerLlm } from './ports.js';
+import { findScriptViolations, scriptCorrectionNote } from './language.js';
+import type { TrainerLlm, TrainingLogger } from './ports.js';
 import { buildPersonaSystemPrompt, buildPersonaUserPrompt } from './prompts.js';
 import type { BusinessProfile } from './profile-schema.js';
 
@@ -163,6 +164,22 @@ export interface GeneratePersonaInput {
   language?: PersonaLanguage;
   /** Deterministik testlar uchun; default `Math.random`. */
   random?: () => number;
+  /** Yozuv tekshiruvi tuzatilmasa — ogohlantirish shu yerga. */
+  logger?: TrainingLogger;
+}
+
+/** Sotuvchiga ko'rinadigan persona matnlari (ochilish gapi va keyin oshkor qilinadiganlar). */
+export function personaUserFacingText(card: PersonaCard): Array<{ field: string; text: string }> {
+  return [
+    { field: 'name', text: card.name },
+    { field: 'role', text: card.role },
+    { field: 'openingLine', text: card.openingLine },
+    { field: 'situation', text: card.situation },
+    { field: 'goal', text: card.goal },
+    { field: 'hiddenNeed', text: card.hiddenNeed ?? '' },
+    ...card.hiddenFacts.map((text, i) => ({ field: `hiddenFacts.${i}`, text })),
+    ...card.objections.map((o) => ({ field: `objections.${o.key}`, text: o.text })),
+  ];
 }
 
 /** `profile.callDirection` -> persona direction. */
@@ -202,6 +219,7 @@ export async function generatePersonaCard({
   direction,
   language = 'uz',
   random = Math.random,
+  logger,
 }: GeneratePersonaInput): Promise<PersonaCard> {
   const resolvedDirection = resolveDirection(profile, random, direction);
   const constraints: PersonaConstraints = {
@@ -215,23 +233,50 @@ export async function generatePersonaCard({
   let correction: string | undefined;
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const promptInput = { ...constraints, correction };
+  const request = (correctionText?: string) => {
+    const promptInput = { ...constraints, correction: correctionText };
+    return llm.completeJson({
+      stage: 'training.persona',
+      system: buildPersonaSystemPrompt(promptInput),
+      user: buildPersonaUserPrompt(promptInput),
+      schema,
+      outputSchema: personaCardSchema,
+    });
+  };
+
+  // Til `uz`: lotin bo'lmagan harflar — bitta tuzatish urinishi, keyin log.
+  const checkScript = async (card: PersonaCard): Promise<PersonaCard> => {
+    if (language !== 'uz') return card;
+    const violations = findScriptViolations(personaUserFacingText(card));
+    if (violations.length === 0) return card;
     try {
-      return await llm.completeJson({
-        stage: 'training.persona',
-        system: buildPersonaSystemPrompt(promptInput),
-        user: buildPersonaUserPrompt(promptInput),
-        schema,
-        outputSchema: personaCardSchema,
-      });
+      const retried = await request(scriptCorrectionNote(violations));
+      if (findScriptViolations(personaUserFacingText(retried)).length === 0) return retried;
+    } catch {
+      // Tuzatish muvaffaqiyatsiz — birinchi (yaroqli) persona bilan davom etamiz.
+    }
+    logger?.warn(
+      { violations },
+      `persona matnida lotin bo'lmagan harflar qoldi: ${violations
+        .map((v) => `${v.field}: ${v.words.join(', ')}`)
+        .join('; ')}`.slice(0, 500),
+    );
+    return card;
+  };
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    let card: PersonaCard;
+    try {
+      card = await request(correction);
     } catch (err) {
       if (!isCorrectableLlmError(err)) {
         throw trainingErrorFromLlm('persona_generation_failed', 'persona-card yaratilmadi', err);
       }
       lastError = err;
       correction = `Your previous JSON was rejected: ${issuesToText(err)}. Fix exactly these problems and return the full JSON again.`;
+      continue;
     }
+    return await checkScript(card);
   }
 
   throw new PersonaGenerationError(

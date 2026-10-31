@@ -141,6 +141,21 @@ export interface ImprovementView {
   evidenceTurnSeq: number | null;
 }
 
+export interface RedLineViolationView {
+  rule: string;
+  explanation: string;
+  evidenceQuote: string;
+  evidenceTurnSeq: number;
+}
+
+export interface ScriptStageView {
+  stage: string;
+  status: 'followed' | 'partly' | 'missed' | null;
+  comment: string;
+  evidenceQuote: string | null;
+  evidenceTurnSeq: number | null;
+}
+
 export interface ResultPayload {
   version: number;
   status: 'pending' | 'done' | 'failed';
@@ -148,7 +163,15 @@ export interface ResultPayload {
   skillScore: number | null;
   criteria: CriterionView[];
   metrics: SessionMetricsView | null;
-  coaching: { summary: string; strengths: string[]; improvements: ImprovementView[] } | null;
+  coaching: {
+    summary: string;
+    strengths: string[];
+    improvements: ImprovementView[];
+    /** Eski natijalarda yo'q. */
+    redLineViolations?: RedLineViolationView[];
+    /** Skript bo'lmasa `null`/yo'q. */
+    scriptAdherence?: ScriptStageView[] | null;
+  } | null;
   keyMoments: Array<{ turnSeq: number; kind: string; explanation: string }>;
   model: string | null;
   promptVersion: string | null;

@@ -15,7 +15,8 @@
  *   7. so'rov tanasi: TRAINER_JSON_MODE haqiqatan formatni almashtiradi;
  *   8. adapter xato toifalari, timeout qayta urinishi, log qatori (soxta fetch);
  *   9. token chegarasi parametri (auto), "parametr qo'llanmaydi" fallback'i,
- *      reasoning zaxirasi va reasoning tokenlari hisobi (soxta fetch).
+ *      reasoning zaxirasi va reasoning tokenlari hisobi (soxta fetch);
+ *  10. harness/data: biznes profili va sotuv skripti fayllari, aniq xatolar.
  */
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -54,6 +55,14 @@ import {
   resolveMaxTokensParam,
 } from './llm-openai-compatible.js';
 import { zodToJsonSchema } from './zod-json-schema.js';
+import {
+  BusinessDataError,
+  businessProfilePath,
+  dataDir,
+  loadBusinessProfileFile,
+  loadSalesScriptFile,
+  resolveBusinessData,
+} from './business-data.js';
 import { z } from 'zod';
 import {
   baseUrlHost,
@@ -912,6 +921,64 @@ async function main(): Promise<void> {
     globalThis.fetch = realFetch;
     resetParamFixesForTests();
   }
+
+  // -------------------------------------------------------------------------
+  section('[9] harness/data: biznes profili va sotuv skripti');
+
+  check(report, 'repodagi business-profile.json yaroqli', () => {
+    const profile = loadBusinessProfileFile();
+    assert(profile.primaryOffers.length > 0, 'takliflar bor');
+  });
+
+  check(report, 'repodagi sales-script.example.md yaroqli', () => {
+    const script = loadSalesScriptFile(join(dataDir, 'sales-script.example.md'));
+    assert(script !== null && script.stages.length >= 3, 'bosqichlar bor');
+  });
+
+  check(report, "default manba — fayl (demo emas); demo faqat aniq kalit bilan", () => {
+    const fromFile = resolveBusinessData();
+    assert(fromFile.source.endsWith('harness/data/business-profile.json'), `manba: ${fromFile.source}`);
+    const demo = resolveBusinessData('taksi');
+    assertEqual(demo.source, 'demo:taksi', 'demo manba');
+    assertEqual(demo.script, null, 'demo skriptsiz');
+  });
+
+  function expectDataError(fn: () => unknown, ...parts: string[]): void {
+    let caught: unknown;
+    try {
+      fn();
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof BusinessDataError, `BusinessDataError kutilgan, keldi: ${String(caught)}`);
+    for (const part of parts) {
+      assert((caught as Error).message.includes(part), `xabarda "${part}": ${(caught as Error).message}`);
+    }
+  }
+
+  await checkAsync(report, 'profil: JSON emas -> fayl nomi bilan aniq xato', async () => {
+    const path = join(dir, 'bad.json');
+    await writeFile(path, '{ "industry": "x", }');
+    expectDataError(() => loadBusinessProfileFile(path), 'bad.json', 'JSON emas');
+  });
+
+  await checkAsync(report, "profil: majburiy maydon yo'q -> maydon yo'li bilan xato", async () => {
+    const good = JSON.parse(await readFile(businessProfilePath, 'utf8')) as Record<string, unknown>;
+    const path = join(dir, 'missing.json');
+    await writeFile(path, JSON.stringify({ ...good, primaryOffers: [], customerType: 'boshqa' }));
+    expectDataError(() => loadBusinessProfileFile(path), 'primaryOffers', 'customerType');
+  });
+
+  check(report, "profil fayli yo'q -> aniq xato", () => {
+    expectDataError(() => loadBusinessProfileFile(join(dir, 'yoq.json')), 'topilmadi');
+  });
+
+  await checkAsync(report, "skript: yo'q -> null; noto'g'ri -> fayl va bosqich nomi bilan xato", async () => {
+    assertEqual(loadSalesScriptFile(join(dir, 'yoq.md')), null, "yo'q fayl -> null");
+    const path = join(dir, 'bad-script.md');
+    await writeFile(path, '## Salomlashish\n> faqat ibora\n');
+    expectDataError(() => loadSalesScriptFile(path), 'bad-script.md', 'Salomlashish');
+  });
 
   console.log(
     `\nNatija: ${report.passed} o'tdi, ${report.failed} xato, ${report.skipped} tashlab ketildi.`,

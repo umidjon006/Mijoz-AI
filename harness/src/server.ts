@@ -21,13 +21,8 @@ import { registerTrainingRoutes } from '../../module/backend/src/training/routes
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile, TrainingContext } from '../../module/backend/src/training/ports.js';
 import { createScoringService } from '../../module/backend/src/training/scoring/scoring.js';
-import {
-  DEMO_BUSINESS_ID,
-  DEMO_USER_ID,
-  ensureDemoRows,
-  listDemoProfileKeys,
-  loadDemoProfile,
-} from './demo-env.js';
+import { DEMO_BUSINESS_ID, DEMO_USER_ID, ensureDemoRows } from './demo-env.js';
+import { BusinessDataError, describeBusinessData, resolveBusinessData } from './business-data.js';
 import {
   createTrainerLlm,
   describeLlm,
@@ -43,10 +38,14 @@ import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
 // Bo'sh qiymat = default (avval bo'sh HARNESS_PORT port 0 ga aylanardi).
 const PORT = envInt('HARNESS_PORT', 5180, { min: 1, max: 65535 });
-const PROFILE_KEY = envStr('HARNESS_PROFILE') ?? listDemoProfileKeys()[0] ?? '';
+/** Bo'sh — `harness/data/business-profile.json`; kalit — o'sha demo profil. */
+const DEMO_PROFILE_KEY = envStr('HARNESS_PROFILE');
 
 async function main(): Promise<void> {
-  const profile = loadDemoProfile(PROFILE_KEY);
+  // Profil va skript startda o'qiladi (fayl o'zgarsa — serverni qayta ishga tushiring).
+  const business = resolveBusinessData(DEMO_PROFILE_KEY);
+  const profile = business.profile;
+  console.log(describeBusinessData(business));
   await ensureDemoRows();
 
   const pool = createPool(appDatabaseUrl());
@@ -79,6 +78,9 @@ async function main(): Promise<void> {
     withTenant,
     llm: scoringLlm,
     priceCall,
+    // Baholash sotuvchining da'volarini shu faktlar bilan tekshiradi.
+    getBusinessProfile,
+    getSalesScript: async () => business.script,
     logger: app.log,
   });
 
@@ -113,7 +115,8 @@ async function main(): Promise<void> {
 
   // Profil va rejim haqida ma'lumot (frontend ko'rsatishi uchun).
   app.get('/api/v1/training/_harness', async () => ({
-    profileKey: PROFILE_KEY,
+    profileKey: business.source,
+    hasSalesScript: business.script !== null,
     industry: profile.industry,
     callDirection: profile.callDirection,
     llm: turnLlm.provider,
@@ -125,7 +128,7 @@ async function main(): Promise<void> {
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   console.log(`\nHarness backend: http://127.0.0.1:${PORT}`);
-  console.log(`Profil: ${PROFILE_KEY} (${profile.industry})`);
+  console.log(`Profil: ${business.source} (${profile.industry})`);
   console.log(`LLM:    ${describeLlm(turnLlm)}`);
   console.log(`Baholash: ${describeLlm(scoringResolved)}`);
   console.log(`Soxta auth: ${fakeAuth ? 'yoqilgan (HARNESS_AUTH=1)' : "O'CHIRILGAN"}\n`);
@@ -140,6 +143,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof BusinessDataError) {
+    console.error(`\n[biznes ma'lumotlari xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
   if (err instanceof ProviderConfigError) {
     console.error(`\n[sozlama xatosi] ${err.message}\n`);
     process.exit(1);

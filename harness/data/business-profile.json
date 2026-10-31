@@ -1,0 +1,54 @@
+{
+  "industry": "O'quv markazi (IT va tillar)",
+  "businessDescription": "Guliston shahridagi o'quv markazi: dasturlash, grafik dizayn va ingliz tili kurslari. Guruhlarda va individual o'qitiladi.",
+  "primaryOffers": [
+    "Frontend dasturlash kursi: 6 oy, haftada 3 marta, oyiga 1 200 000 so'm",
+    "Python + AI kursi: 5 oy, haftada 3 marta, oyiga 1 500 000 so'm",
+    "Grafik dizayn kursi: 4 oy, oyiga 900 000 so'm",
+    "Ingliz tili (IELTS): 6 oy, oyiga 700 000 so'm"
+  ],
+  "typicalCustomers": "16-30 yoshli o'quvchilar va talabalar; ba'zan ota-onalar farzandi uchun qo'ng'iroq qiladi",
+  "customerProblem": "Yaxshi kasb o'rganib, ish topishni yoki daromadni oshirishni xohlaydi, lekin qayerdan boshlashni bilmaydi",
+  "customerType": "b2c",
+  "leadSources": [
+    "Instagram",
+    "Telegram kanal",
+    "Tanishlar tavsiyasi"
+  ],
+  "callDirection": "mixed",
+  "commonCustomerQuestions": [
+    "Kurs necha oy davom etadi va narxi qancha?",
+    "Dars kuni va vaqti qanday, ish bilan qo'shib bo'ladimi?",
+    "Sertifikat beriladimi, ish bilan ta'minlaysizlarmi?",
+    "Sinov darsi bormi?"
+  ],
+  "commonObjections": [
+    "Narxi qimmat ekan",
+    "Vaqtim yo'q, ishlayman",
+    "O'ylab ko'raman, keyin qo'ng'iroq qilaman",
+    "Boshqa markazda arzonroq",
+    "Ota-onam bilan maslahatlashishim kerak",
+    "Hech narsa bilmayman, uddalay olmasam-chi?"
+  ],
+  "successSignals": [
+    "Sinov darsiga yozildi",
+    "Oldindan to'lov qildi",
+    "Guruhga qo'shildi"
+  ],
+  "failureSignals": [
+    "Qo'ng'iroqni tugatdi",
+    "Aniq javob bermadi"
+  ],
+  "redLines": [
+    "Ish kafolatini va'da qilmaslik",
+    "Soxta chegirma aytmaslik"
+  ],
+  "vocabulary": [
+    "guruh",
+    "ustoz",
+    "sinov darsi",
+    "sertifikat",
+    "oylik to'lov"
+  ],
+  "additionalNotes": "Yangi guruh har oyning 1-sanasida boshlanadi."
+}

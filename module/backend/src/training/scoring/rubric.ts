@@ -52,7 +52,11 @@ export const playbookSubsetSchema = z.object({
 
 export type PlaybookSubset = z.infer<typeof playbookSubsetSchema>;
 
-/** Playbook bo'lmaganda ishlatiladigan standart rubrika (vaznlar: 100). */
+/**
+ * Playbook bo'lmaganda ishlatiladigan standart rubrika (vaznlar: 100):
+ * salomlashish 5, ehtiyoj 20, taklifni moslashtirish 10, mahsulot/narx
+ * aniqligi 15, e'tirozlar 20, yopish 10, ohang 10, boshqarish 10.
+ */
 export const DEFAULT_TRAINING_RUBRIC: PlaybookSubset = {
   categories: [
     {
@@ -62,7 +66,7 @@ export const DEFAULT_TRAINING_RUBRIC: PlaybookSubset = {
         {
           code: 'greeting_intro',
           name: 'Salomlashish va tanishuv',
-          weight: 10,
+          weight: 5,
           rubric: {
             '0': "Salomlashmadi yoki o'zini/kompaniyani tanishtirmadi; mijoz kim bilan gaplashayotganini bilmaydi.",
             '1': "Quruq salomlashdi, lekin tanishtirish chala: nomi yoki qaysi tashkilotdan ekani aytilmadi.",
@@ -84,12 +88,25 @@ export const DEFAULT_TRAINING_RUBRIC: PlaybookSubset = {
         {
           code: 'offer_fit',
           name: 'Taklifni ehtiyojga moslashtirish',
-          weight: 15,
+          weight: 10,
           rubric: {
             '0': "Taklifni umuman tushuntirmadi yoki mijozga aloqasi yo'q narsani aytdi.",
             '1': "Taklifni umumiy maqtov bilan aytdi ('yaxshi', 'sifatli'), mijozning holatiga bog'lamadi.",
             '2': "Taklifni aniq aytdi (shart, muddat, narx), lekin uni mijozning aytgan ehtiyoji bilan bog'lamadi.",
             '3': "Taklifni aynan mijoz aytgan ehtiyoj/muammo bilan bog'lab, aniq shart va raqamlar bilan tushuntirdi.",
+          },
+        },
+        {
+          // Biznes profiliga (takliflar, narxlar, shartlar, qizil chiziqlar)
+          // nisbatan tekshiriladi — baholash promptiga profil faktlari beriladi.
+          code: 'product_accuracy',
+          name: "Mahsulot va narx bo'yicha to'g'ri ma'lumot",
+          weight: 15,
+          rubric: {
+            '0': "Profilga zid gapirdi: mavjud taklifni 'yo'q' dedi, narx/muddat/shartni o'ylab topdi yoki qizil chiziqni buzdi (masalan soxta chegirma, kafolat va'dasi).",
+            '1': "Asosan to'g'ri, lekin bitta muhim faktni noto'g'ri yoki noaniq aytdi (narx, muddat, shart) yoki profilda bor ma'lumotni 'bilmayman' dedi.",
+            '2': "Aytgan faktlari profilga mos, lekin chala: mijoz so'ragan narx yoki shartni to'liq aytmadi.",
+            '3': "Har bir aytgan fakti (taklif, narx, muddat, shart) profilga aynan mos; mijozning savoliga aniq raqam bilan javob berdi, hech narsa o'ylab topmadi.",
           },
         },
         {
@@ -106,7 +123,7 @@ export const DEFAULT_TRAINING_RUBRIC: PlaybookSubset = {
         {
           code: 'closing_next_step',
           name: "Yopish / keyingi qadam",
-          weight: 15,
+          weight: 10,
           rubric: {
             '0': "Suhbat hech qanday qadamsiz tugadi; kim nima qilishi noma'lum.",
             '1': "Noaniq yakun: 'o'ylab ko'ring', 'keyin gaplashamiz' — mas'ul va vaqt yo'q.",

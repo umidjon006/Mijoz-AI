@@ -16,7 +16,10 @@
  *   6. DB: versiyalangan qayta baholash eski versiyani saqlaydi, `getPlaybook`
  *      null bo'lsa standart rubrika, past sifat (retry), kam mazmun;
  *   7. route'lar: yashirin ma'lumot tugashdan oldin yo'q / keyin bor,
- *      tenant va foydalanuvchi izolyatsiyasi (404), validatsiya.
+ *      tenant va foydalanuvchi izolyatsiyasi (404), validatsiya;
+ *   8. biznes faktlari: prompt profilni oladi, qizil chiziqlar (tekshirilgan
+ *      iqtibos bilan), kuchli tomonlar qizil chiziqni maqtamaydi, skriptga
+ *      moslik, sotuv skripti fayli formati, yozuv (lotin) tekshiruvi.
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -61,8 +64,20 @@ import {
   createScoringService,
   llmScoringSchema,
   processLlmScoring,
+  userFacingScoringText,
   type GetPlaybook,
 } from './scoring/scoring.js';
+import {
+  buildScoringSystemPrompt,
+  buildScoringUserPrompt,
+  type ScoringPromptInput,
+} from './scoring/scoring-prompts.js';
+import {
+  parseSalesScriptMarkdown,
+  SalesScriptFormatError,
+  type SalesScript,
+} from './scoring/sales-script.js';
+import { findScriptViolations, nonLatinWords } from './language.js';
 import type { CriterionResult } from './scoring/scoring-types.js';
 import {
   assert,
@@ -131,7 +146,29 @@ function verifyRubric(): void {
       100,
       'vaznlar',
     );
-    assertEqual(criteria.length, 7, 'mezonlar soni');
+    assertEqual(criteria.length, 8, 'mezonlar soni');
+  });
+
+  check(report, "yangi vaznlar: mahsulot/narx aniqligi 15, qolganlari qayta taqsimlangan", () => {
+    const weights = Object.fromEntries(
+      flattenCriteria(DEFAULT_TRAINING_RUBRIC).map((c) => [c.code, c.weight]),
+    );
+    assertDeepEqual(
+      weights,
+      {
+        greeting_intro: 5,
+        need_discovery: 20,
+        offer_fit: 10,
+        product_accuracy: 15,
+        objection_handling: 20,
+        closing_next_step: 10,
+        tone_respect: 10,
+        conversation_control: 10,
+      },
+      'vaznlar',
+    );
+    const accuracy = flattenCriteria(DEFAULT_TRAINING_RUBRIC).find((c) => c.code === 'product_accuracy');
+    assertEqual(accuracy?.name, "Mahsulot va narx bo'yicha to'g'ri ma'lumot", 'nomi');
   });
 
   check(report, 'har mezonda 0-3 uchun to\'rtta tavsif bor', () => {
@@ -593,6 +630,295 @@ function verifyProcessing(): void {
 // ---------------------------------------------------------------------------
 // 6 + 7. DB va route'lar
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 8. Biznes faktlari, qizil chiziqlar, skript, yozuv
+// ---------------------------------------------------------------------------
+const SCRIPT_MD = [
+  '# Test skripti',
+  '## 1. Salomlashish',
+  "- O'zini tanishtiradi",
+  "> Assalomu alaykum, sizga qulay vaqtda qo'ng'iroq qildimmi?",
+  '## 2. Taklif',
+  '- Taklifni narxi bilan aytadi',
+  '- Ibora: "Xizmat oyiga 1 200 000 so\'m"',
+  '## 3. Yopish',
+  '- Keyingi qadamni kelishadi',
+].join('\n');
+
+function promptInput(overrides: Partial<ScoringPromptInput> = {}): ScoringPromptInput {
+  const turns = makeTurns();
+  const persona = testPersona();
+  return {
+    criteria: flattenCriteria(DEFAULT_TRAINING_RUBRIC),
+    archetype: NEGOTIATOR,
+    persona,
+    metrics: computeMetrics(
+      {
+        id: randomUUID(),
+        archetypeKey: 'negotiator',
+        status: 'ended',
+        outcome: null,
+        endReason: 'user_ended',
+        turnCount: 3,
+        startedAt: new Date('2026-01-01T10:00:00Z'),
+        endedAt: new Date('2026-01-01T10:05:00Z'),
+      },
+      turns,
+      NEGOTIATOR,
+      persona,
+    ),
+    turns,
+    candidates: [],
+    profile: PROFILE,
+    script: null,
+    ...overrides,
+  };
+}
+
+function verifyBusinessFacts(): void {
+  section('[8] Biznes faktlari, qizil chiziqlar, skript, yozuv');
+
+  check(report, 'prompt: profil takliflari, narxlari, shartlari va qizil chiziqlari bor', () => {
+    const system = buildScoringSystemPrompt(promptInput());
+    for (const offer of PROFILE.primaryOffers) assert(system.includes(offer), `taklif yo'q: ${offer}`);
+    for (const rule of PROFILE.redLines) assert(system.includes(rule), `qizil chiziq yo'q: ${rule}`);
+    if (PROFILE.additionalNotes) assert(system.includes(PROFILE.additionalNotes), 'shartlar yo\'q');
+    assert(system.includes('Check EVERY factual claim'), "har da'voni tekshirish ko'rsatmasi");
+    assert(system.includes('product_accuracy'), 'mezon tilga olingan');
+  });
+
+  check(report, "prompt: kuchli tomonlar profilga zid gapni maqtamaydi (qoida)", () => {
+    const system = buildScoringSystemPrompt(promptInput());
+    assert(
+      system.includes('"strengths" must NEVER praise') && system.includes('contradicts the business facts'),
+      'strengths qoidasi',
+    );
+  });
+
+  check(report, "prompt: profilda bor faktni 'noma'lum' deb aytishni maslahat bermaydi (qoida)", () => {
+    const system = buildScoringSystemPrompt(promptInput());
+    assert(
+      system.includes('NEVER tell the seller to say a fact is unknown') &&
+        system.includes('use the real fact'),
+      'unknown qoidasi',
+    );
+  });
+
+  check(report, "prompt: profil yo'q -> faktlar baholanmaydi; skript yo'q -> scriptAdherence []", () => {
+    const system = buildScoringSystemPrompt(promptInput({ profile: null }));
+    assert(system.includes('No business profile was provided'), "profil yo'qligi aytiladi");
+    assert(system.includes('return "scriptAdherence": []'), 'skriptsiz ko\'rsatma');
+    assert(!system.includes('## Sales script adherence'), "skript bo'limi yo'q");
+  });
+
+  check(report, "prompt: skript bo'lsa har bosqich va kutilgan harakatlar bor", () => {
+    const script = parseSalesScriptMarkdown(SCRIPT_MD);
+    const system = buildScoringSystemPrompt(promptInput({ script }));
+    assert(system.includes('## Sales script adherence'), "bo'lim bor");
+    for (const stage of script.stages) assert(system.includes(stage.name), `bosqich: ${stage.name}`);
+    assert(system.includes('Taklifni narxi bilan aytadi'), 'kutilgan harakat');
+    // Transkript foydalanuvchi promptida — tizim promptida emas.
+    assert(buildScoringUserPrompt(promptInput()).includes('[T1] SELLER'), 'transkript');
+  });
+
+  // --- Qizil chiziqlar ------------------------------------------------------
+  const criteria = flattenCriteria(DEFAULT_TRAINING_RUBRIC);
+  const lie = "Bizda bunday xizmat yo'q, lekin bugun 50 foiz chegirma bor faqat siz uchun";
+  const turns: EvidenceTurn[] = [
+    { seq: 1, speaker: 'seller', text: SELLER_LINES[0] as string },
+    { seq: 2, speaker: 'customer', text: 'Shu xizmat bormi?' },
+    { seq: 3, speaker: 'seller', text: lie },
+  ];
+  const fakeDiscountRule = PROFILE.redLines.find((r) => r.toLowerCase().includes('chegirma'));
+  assert(fakeDiscountRule, "demo profilda 'chegirma' qizil chizig'i kutilgan");
+
+  const baseLlm = (extra: Record<string, unknown>) =>
+    llmScoringSchema.parse({
+      criteria: criteria.map((c) => ({
+        code: c.code,
+        score: 1,
+        evidenceQuote: '50 foiz chegirma bor faqat siz uchun',
+        evidenceTurnSeq: 3,
+        comment: 'izoh',
+      })),
+      coaching: { summary: 'xulosa', strengths: [], improvements: [] },
+      keyMoments: [],
+      ...extra,
+    });
+
+  check(report, "qizil chiziq: profildagi qoida + tekshirilgan iqtibos -> saqlanadi", () => {
+    const llm = baseLlm({
+      redLineViolations: [
+        {
+          rule: fakeDiscountRule,
+          evidenceQuote: '50 foiz chegirma bor faqat siz uchun',
+          evidenceTurnSeq: 3,
+          explanation: "Profilda chegirma yo'q — bu soxta chegirma.",
+        },
+      ],
+    });
+    const processed = processLlmScoring(llm, criteria, turns, [], { redLines: PROFILE.redLines });
+    const violations = processed.coaching.redLineViolations ?? [];
+    assertEqual(violations.length, 1, 'bitta buzilish');
+    assertEqual(violations[0]?.rule, fakeDiscountRule, 'qoida profildagi matn');
+    assertEqual(violations[0]?.evidenceTurnSeq, 3, 'navbat');
+  });
+
+  check(report, "qizil chiziq: iqtibos topilmasa yoki qoida profilda bo'lmasa -> tashlanadi", () => {
+    const llm = baseLlm({
+      redLineViolations: [
+        {
+          rule: fakeDiscountRule,
+          evidenceQuote: 'Bu gapni sotuvchi hech qachon aytmagan',
+          evidenceTurnSeq: 3,
+          explanation: 'x',
+        },
+        {
+          rule: "O'ylab topilgan qoida",
+          evidenceQuote: '50 foiz chegirma bor faqat siz uchun',
+          evidenceTurnSeq: 3,
+          explanation: 'y',
+        },
+      ],
+    });
+    const processed = processLlmScoring(llm, criteria, turns, [], { redLines: PROFILE.redLines });
+    assertEqual(processed.coaching.redLineViolations?.length, 0, 'hech biri qolmaydi');
+    assertEqual(processed.droppedNotes.length, 2, 'ikkalasi auditga yozildi');
+  });
+
+  check(report, "kuchli tomonlar qizil chiziqni buzgan gapni maqtasa -> olib tashlanadi", () => {
+    const llm = baseLlm({
+      coaching: {
+        summary: 'xulosa',
+        strengths: [
+          "Ishonch bilan '50 foiz chegirma bor faqat siz uchun' deb taklif qildingiz",
+          'Mijoz bilan xushmuomala gaplashdingiz',
+        ],
+        improvements: [],
+      },
+      redLineViolations: [
+        {
+          rule: fakeDiscountRule,
+          evidenceQuote: '50 foiz chegirma bor faqat siz uchun',
+          evidenceTurnSeq: 3,
+          explanation: 'Soxta chegirma.',
+        },
+      ],
+    });
+    const processed = processLlmScoring(llm, criteria, turns, [], { redLines: PROFILE.redLines });
+    assertDeepEqual(
+      processed.coaching.strengths,
+      ['Mijoz bilan xushmuomala gaplashdingiz'],
+      'faqat zid bo\'lmagan kuchli tomon qoladi',
+    );
+  });
+
+  // --- Skriptga moslik ------------------------------------------------------
+  const script: SalesScript = parseSalesScriptMarkdown(SCRIPT_MD);
+
+  check(report, "skript: followed+iqtibos qoladi, tekshirilmagan followed -> partly, yo'q bosqich -> null", () => {
+    const llm = baseLlm({
+      scriptAdherence: [
+        // Model tartibni almashtirib yuborsa ham natija SKRIPT tartibida.
+        {
+          stage: 'Taklif',
+          status: 'followed',
+          evidenceQuote: "O'ylab topilgan iqtibos bu yerda turibdi",
+          evidenceTurnSeq: 3,
+          comment: 'Taklif aytildi',
+        },
+        {
+          stage: 'Salomlashish',
+          status: 'followed',
+          evidenceQuote: "sizga qulay vaqtda qo'ng'iroq qildimmi",
+          evidenceTurnSeq: 1,
+          comment: 'Salomlashdi',
+        },
+      ],
+    });
+    const processed = processLlmScoring(llm, criteria, turns, [], { script });
+    const stages = processed.coaching.scriptAdherence ?? [];
+    assertDeepEqual(
+      stages.map((s) => s.stage),
+      ['Salomlashish', 'Taklif', 'Yopish'],
+      'skript tartibi',
+    );
+    assertEqual(stages[0]?.status, 'followed', 'salomlashish bajarildi');
+    assertEqual(stages[0]?.evidenceTurnSeq, 1, 'tekshirilgan iqtibos');
+    assertEqual(stages[1]?.status, 'partly', "tekshirilmagan 'followed' -> partly");
+    assertEqual(stages[1]?.evidenceQuote, null, 'iqtibos olib tashlandi');
+    assertEqual(stages[1]?.rejectReason, 'not_found', 'sababi saqlanadi');
+    assertEqual(stages[2]?.status, null, 'model baholamagan bosqich');
+  });
+
+  check(report, "skript yo'q -> scriptAdherence null", () => {
+    const processed = processLlmScoring(baseLlm({}), criteria, turns, []);
+    assertEqual(processed.coaching.scriptAdherence, null, 'null');
+  });
+
+  // --- Sotuv skripti fayli formati -----------------------------------------
+  check(report, 'skript markdown: sarlavha, bosqichlar, harakatlar, iboralar', () => {
+    assertEqual(script.title, 'Test skripti', 'sarlavha');
+    assertEqual(script.stages.length, 3, 'bosqichlar');
+    assertEqual(script.stages[0]?.name, 'Salomlashish', 'raqam olib tashlanadi');
+    assertEqual(script.stages[0]?.phrases.length, 1, '> ibora');
+    assertDeepEqual(script.stages[1]?.phrases, ["Xizmat oyiga 1 200 000 so'm"], "'- Ibora:' ibora");
+    assertEqual(script.stages[1]?.expectedActions.length, 1, 'harakat');
+  });
+
+  for (const [name, md, expected] of [
+    ['bosqichsiz fayl', '# Faqat sarlavha\nIzoh matni', 'kamida bitta bosqich'],
+    ['bosqichdan oldingi band', "- O'zini tanishtiradi\n## Salom\n- x y", '1-qator'],
+    ['harakatsiz bosqich', '## Salomlashish\n> faqat ibora bor', '1-bosqich "Salomlashish"'],
+    ['takroriy bosqich', '## Salom\n- aa\n## Salom\n- bb', 'takrorlangan'],
+  ] as const) {
+    check(report, `skript xatosi aniq: ${name}`, () => {
+      let caught: unknown;
+      try {
+        parseSalesScriptMarkdown(md);
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof SalesScriptFormatError, 'SalesScriptFormatError');
+      assert((caught as Error).message.includes(expected), `xabarda "${expected}": ${(caught as Error).message}`);
+    });
+  }
+
+  // --- Yozuv (lotin) tekshiruvi --------------------------------------------
+  check(report, "yozuv: kirill va mo'g'ul so'zlari topiladi, o'zbek lotin toza", () => {
+    assertDeepEqual(nonLatinWords("Siz yaxshi gapirdingiz, лекин narxni aytmadingiz."), ['лекин'], 'kirill');
+    assertDeepEqual(nonLatinWords('Mijoz сайн байна dedi'), ['сайн', 'байна'], "mo'g'ul (kirill)");
+    assertDeepEqual(nonLatinWords('Bu ᠮᠣᠩᠭᠣᠯ yozuvi'), ['ᠮᠣᠩᠭᠣᠯ'], "mo'g'ul eski yozuvi");
+    assertDeepEqual(
+      nonLatinWords("O‘zbekcha: o'g'il, g‘alaba, oʻqituvchi, ma'lumot, café — 1 200 000 so'm!"),
+      [],
+      "o‘/g‘/ʻ va diakritika — ruxsat",
+    );
+  });
+
+  check(report, "debrief matnlari tekshiriladi, iqtiboslar (transkript) — yo'q", () => {
+    const llm = llmScoringSchema.parse({
+      criteria: criteria.map((c) => ({
+        code: c.code,
+        score: 2,
+        evidenceQuote: 'Narx tarkibida nimalar borligini',
+        evidenceTurnSeq: 3,
+        comment: c.code === 'need_discovery' ? 'Savollar хорошо edi' : 'izoh',
+      })),
+      coaching: { summary: 'Umumiy xulosa', strengths: [], improvements: [] },
+      keyMoments: [],
+    });
+    const cyrillicSeller: EvidenceTurn[] = [
+      { seq: 1, speaker: 'seller', text: 'Здравствуйте, это учебный центр' },
+      { seq: 3, speaker: 'seller', text: SELLER_LINES[2] as string },
+    ];
+    const processed = processLlmScoring(llm, criteria, cyrillicSeller, []);
+    const violations = findScriptViolations(userFacingScoringText(processed));
+    assertEqual(violations.length, 1, 'faqat bitta maydon');
+    assertEqual(violations[0]?.field, 'criteria.need_discovery.comment', 'maydon nomi');
+  });
+}
+
 function appUrl(): string {
   const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
@@ -773,9 +1099,9 @@ async function verifyDbAndRoutes(): Promise<void> {
       const stored = await scoring.getLatestResult(ctxA, okSessionId);
       assert(stored, 'natija yo\'q');
       assertEqual(stored.model, 'fake-scorer', 'model');
-      assertEqual(stored.promptVersion, 'scoring-v1', 'promptVersion');
+      assertEqual(stored.promptVersion, 'scoring-v2', 'promptVersion');
       assert(Number(stored.costUsd) > 0, 'cost_usd to\'ldirilishi kerak');
-      assertEqual(stored.criteria?.length, 7, 'mezonlar soni');
+      assertEqual(stored.criteria?.length, 8, 'mezonlar soni');
       assertEqual(stored.keyMoments?.length, 1, 'muhim lahzalar');
       assert((stored.metrics?.sellerTurns ?? 0) === 3, 'o\'lchovlar saqlanadi');
     });
@@ -812,6 +1138,89 @@ async function verifyDbAndRoutes(): Promise<void> {
       assertEqual(Number(row.skillScore), 100, 'oxirgi versiya balli');
       assertEqual(row.resultStatus, 'done', 'natija holati');
       assertEqual(row.outcome, null, 'sessiya natijasi (tashlab ketilgan)');
+    });
+
+    // --- 6c-3. Biznes faktlari, qizil chiziq va skript saqlanadi ----------
+    await checkAsync(report, "profil+skript: qizil chiziq va skriptga moslik natijaga yoziladi", async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      const rule = PROFILE.redLines[0] as string;
+      const script = parseSalesScriptMarkdown('## Salomlashish\n- Salomlashadi\n## Yopish\n- Kelishadi');
+      const payload = {
+        ...scoringPayload(),
+        redLineViolations: [
+          {
+            rule,
+            evidenceQuote: 'Narx tarkibida nimalar borligini',
+            evidenceTurnSeq: 3,
+            explanation: 'Test buzilishi.',
+          },
+        ],
+        scriptAdherence: [
+          {
+            stage: 'Salomlashish',
+            status: 'followed',
+            evidenceQuote: 'Narx tarkibida nimalar borligini',
+            evidenceTurnSeq: 3,
+            comment: 'Bajarildi.',
+          },
+          { stage: 'Yopish', status: 'missed', evidenceQuote: null, evidenceTurnSeq: null, comment: "Yo'q." },
+        ],
+      };
+      const llm = new FakeTrainerLlm([payload]);
+      const scoring = createScoringService({
+        withTenant,
+        llm,
+        getBusinessProfile: async () => PROFILE,
+        getSalesScript: async () => script,
+      });
+      await scoring.scoreSession(ctxA, sessionId);
+      const prompt = llm.calls[0]?.system ?? '';
+      assert(prompt.includes(PROFILE.primaryOffers[0] as string), 'promptda profil taklifi');
+      assert(prompt.includes('## Sales script adherence'), "promptda skript bo'limi");
+
+      const stored = await scoring.getLatestResult(ctxA, sessionId);
+      assertEqual(stored?.coaching?.redLineViolations?.length, 1, 'qizil chiziq saqlandi');
+      assertEqual(stored?.coaching?.redLineViolations?.[0]?.rule, rule, 'qoida');
+      assertDeepEqual(
+        stored?.coaching?.scriptAdherence?.map((s) => s.status),
+        ['followed', 'missed'],
+        'skriptga moslik saqlandi',
+      );
+    });
+
+    // --- 6c-4. Yozuv: kirill aralashsa bitta qayta urinish ----------------
+    await checkAsync(report, "debriefda kirill -> bitta tuzatish urinishi, toza javob olinadi", async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      const dirty = scoringPayload();
+      dirty.coaching.summary = 'Suhbat хорошо o\'tdi, лекин yopish bo\'lmadi.';
+      const clean = scoringPayload();
+      const llm = new FakeTrainerLlm([dirty, clean]);
+      const scoring = createScoringService({ withTenant, llm });
+      await scoring.scoreSession(ctxA, sessionId);
+      assertEqual(llm.callCount, 2, 'bitta qayta urinish');
+      assert(llm.calls[1]?.system.includes('LATIN script only') ?? false, 'tuzatish izohi bor');
+      const stored = await scoring.getLatestResult(ctxA, sessionId);
+      assertEqual(nonLatinWords(stored?.coaching?.summary ?? '').length, 0, 'saqlangan xulosa toza');
+    });
+
+    await checkAsync(report, "debriefda kirill qolsa -> 2 chaqiruvdan keyin logga yoziladi", async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      const dirty = scoringPayload();
+      dirty.coaching.summary = 'Suhbat хорошо o\'tdi.';
+      const warnings: string[] = [];
+      const logger = {
+        info: () => undefined,
+        error: () => undefined,
+        warn: (_obj: unknown, msg?: string) => {
+          if (msg) warnings.push(msg);
+        },
+      };
+      const llm = new FakeTrainerLlm([dirty, dirty]);
+      const scoring = createScoringService({ withTenant, llm, logger });
+      const result = await scoring.scoreSession(ctxA, sessionId);
+      assertEqual(result.status, 'done', 'natija baribir yoziladi');
+      assertEqual(llm.callCount, 2, "uchinchi chaqiruv yo'q");
+      assert(warnings.some((w) => w.includes('lotin')), 'ogohlantirish logda');
     });
 
     // --- 6d. Past sifat (dalillar yiqiladi) -----------------------------
@@ -1064,6 +1473,7 @@ async function main(): Promise<void> {
   verifyScoreMath();
   verifyMetricsAndMoments();
   verifyProcessing();
+  verifyBusinessFacts();
 
   try {
     await verifyDbAndRoutes();

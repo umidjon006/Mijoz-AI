@@ -254,6 +254,15 @@ sxemangizdan import qiling.
 jonli mijoz uchun tezlik, baholash uchun sifat muhim. Harness'da bu
 `TRAINER_SCORING_MODEL` env orqali.
 
+**Biznes faktlari va skript:** `createScoringService` ga
+`getBusinessProfile` (engine'dagi bilan bir xil chok) va ixtiyoriy
+`getSalesScript(businessId)` ni bering. Profil berilmasa sotuvchining
+narx/taklif haqidagi gaplari tekshirilmaydi va qizil chiziqlar bo'sh qoladi.
+Skript `scoring/sales-script.ts` dagi `salesScriptSchema` shaklida
+(markdown'dan `parseSalesScriptMarkdown`). Natija `coaching` jsonb ichida:
+`redLineViolations` (tekshirilgan iqtibos bilan) va `scriptAdherence`
+(skript bo'lmasa `null`) — migratsiya kerak emas.
+
 **Fon rejimi:** bu modulda `POST /sessions/:id/score` 202 qaytaradi va
 baholash shu jarayon ichida fon rejimida ketadi. Asosiy repoda buni
 o'zingizning `analysis_job` navbatingiz bilan almashtiring: route faqat job

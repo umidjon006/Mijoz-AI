@@ -129,14 +129,101 @@ Alohida ishga tushirish: `npm run serve` (backend), `npm run ui:dev` (UI).
 9. Tarix: mashqlar ro'yxati, o'rtacha ball, ball dinamikasi, eng zaif mezonlar;
 10. telefon kengligida (375px) hammasi bir ustunda, gorizontal scroll yo'q.
 
+### Biznes ma'lumotlari: `harness/data/`
+
+Harness (server, `play`, `smoke:llm`, `calibrate`) biznes faktlarini
+**fayllardan** oladi — AI mijoz ham, baholash ham shu faktlarga tayanadi:
+
+| Fayl | Majburiy | Nima |
+|---|---|---|
+| `harness/data/business-profile.json` | ha | biznes profili: takliflar, narxlar, shartlar, qizil chiziqlar |
+| `harness/data/sales-script.md` | yo'q | sotuv skripti: bosqichlar va kutilgan harakatlar/iboralar |
+
+Ikkalasi ham startda zod bilan tekshiriladi. Xato bo'lsa server ishga
+tushmaydi va **qaysi fayl, qaysi maydon yoki bosqich** noto'g'riligini aytadi:
+
+```
+[biznes ma'lumotlari xatosi] harness/data/business-profile.json: biznes profili noto'g'ri:
+  - primaryOffers: Array must contain at least 1 element(s)
+```
+
+Fayllar startda o'qiladi — o'zgartirgandan keyin serverni qayta ishga
+tushiring. Demo profillar faqat aniq so'ralganda ishlatiladi:
+`HARNESS_PROFILE=taksi npm run serve` yoki `npm run play -- --profile taksi`
+(demo rejimida skript yo'q).
+
+**`business-profile.json`** — boshlang'ich nusxa sifatida `o_quv_markaz` demo
+profili qo'yilgan; uni o'z biznesingiz ma'lumotlari bilan almashtiring:
+
+```json
+{
+  "industry": "O'quv markazi (IT va tillar)",
+  "businessDescription": "Guliston shahridagi o'quv markazi: dasturlash, dizayn va ingliz tili.",
+  "primaryOffers": [
+    "Frontend dasturlash kursi: 6 oy, haftada 3 marta, oyiga 1 200 000 so'm",
+    "Python + AI kursi: 5 oy, haftada 3 marta, oyiga 1 500 000 so'm"
+  ],
+  "typicalCustomers": "16-30 yoshli o'quvchilar va talabalar",
+  "customerProblem": "Kasb o'rganib, ish topmoqchi, lekin qayerdan boshlashni bilmaydi",
+  "customerType": "b2c",
+  "callDirection": "mixed",
+  "commonObjections": ["Narxi qimmat ekan", "Vaqtim yo'q, ishlayman"],
+  "redLines": ["Ish kafolatini va'da qilmaslik", "Soxta chegirma aytmaslik"],
+  "additionalNotes": "Yangi guruh har oyning 1-sanasida boshlanadi."
+}
+```
+
+| Maydon | Majburiy | Izoh |
+|---|---|---|
+| `industry`, `businessDescription`, `typicalCustomers`, `customerProblem` | ha | matn |
+| `primaryOffers` | ha (kamida 1) | har taklif bitta satrda: **nomi, muddati, narxi** — baholash sotuvchining narx/taklif haqidagi har gapini shu bilan solishtiradi |
+| `customerType` | ha | `b2c` \| `b2b` \| `both` |
+| `callDirection` | ha | `inbound` \| `outbound` \| `mixed` |
+| `redLines` | yo'q | sotuvchi HECH QACHON qilmasligi kerak bo'lgan narsalar; buzilsa debrief tepasida "Qizil chiziq buzildi" bo'limi chiqadi |
+| `additionalNotes` | yo'q | shartlar (boshlanish sanasi, to'lov tartibi va h.k.) |
+| `leadSources`, `commonCustomerQuestions`, `commonObjections`, `successSignals`, `failureSignals`, `vocabulary` | yo'q | satrlar ro'yxati |
+
+**`sales-script.md`** — ixtiyoriy. Namuna: `harness/data/sales-script.example.md`
+(`cp harness/data/sales-script.example.md harness/data/sales-script.md`).
+Qoidalar:
+
+- `# Sarlavha` — ixtiyoriy, birinchi qatorda;
+- `## Bosqich nomi` — har biri yangi bosqich (`## 1. Salomlashish` dagi raqam olib tashlanadi);
+- `- ...` — kutilgan harakat (har bosqichda **kamida bitta**);
+- `> ...` yoki `- Ibora: ...` — namuna ibora (ixtiyoriy; baholash so'zma-so'z
+  talab qilmaydi, harakat bajarilganini tekshiradi);
+- boshqa matn (izoh paragraflari) e'tiborsiz qoldiriladi.
+
+```markdown
+# Kiruvchi qo'ng'iroq skripti
+
+## 1. Salomlashish
+- O'zini va markaz nomini aytadi
+> Assalomu alaykum, men Dilnoza, IT o'quv markazidan.
+
+## 2. Ehtiyojni aniqlash
+- Mijoz nimani o'rganmoqchi ekanini ochiq savol bilan so'raydi
+- Nega kerakligini aniqlaydi
+
+## 3. Yopish
+- Sinov darsiga yozilishni taklif qiladi
+- Ibora: "Ertaga soat 18:00 dagi sinov darsiga yozib qo'yaymi?"
+```
+
+Skript bo'lsa debriefda **"Skriptga moslik"** bo'limi chiqadi: har bosqich
+uchun *Bajarildi* / *Qisman* / *O'tkazib yuborildi*. "Bajarildi" faqat
+tekshirilgan sotuvchi iqtibosi bilan qoladi — iqtibos transkriptda topilmasa
+"Qisman" ga tushiriladi.
+
 ### AI mijoz bilan mashq qilish (haqiqiy model)
 
 ```bash
-npm run play -- --archetype negotiator --profile o_quv_markaz --debug
+npm run play -- --archetype negotiator --debug
 ```
 
 - `--archetype`: `ready_buyer` | `negotiator` | `problematic` | `info_seeker`
-- `--profile`: `demo-profiles.json` kalitlari (`o_quv_markaz`, `taksi`, `ovqat_yetkazish`)
+- `--profile`: ixtiyoriy demo profil (`o_quv_markaz`, `taksi`, `ovqat_yetkazish`);
+  berilmasa `harness/data/business-profile.json`
 - `--direction inbound|outbound` (berilmasa profildagi `callDirection` dan)
 - `--debug`: har navbatdan keyin patience/trust/interest, e'tirozlar,
   `needRevealed`, `readyToAgree` + blockers, guard, kechikish va tokenlar
@@ -429,6 +516,25 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
   `quality: 'insufficient'`.
 - **Yashirin kartalar** (mijozning asl ehtiyoji, aytmagan faktlari, e'tiroz
   rejasi) faqat sessiya TUGAGANDAN keyin ko'rsatiladi.
+- **Biznes faktlari.** Baholash promptiga profil (takliflar, narxlar, shartlar,
+  qizil chiziqlar) beriladi va sotuvchining har bir faktik gapi shular bilan
+  solishtiriladi. Standart rubrikada alohida mezon: **"Mahsulot va narx
+  bo'yicha to'g'ri ma'lumot"** (vazn 15). Vaznlar: salomlashish 5, ehtiyoj 20,
+  taklifni moslashtirish 10, mahsulot/narx 15, e'tirozlar 20, yopish 10,
+  ohang 10, boshqarish 10.
+- **Qizil chiziqlar** — alohida ro'yxat, debrief TEPASIDA. Har biri profildagi
+  qoida + tekshirilgan sotuvchi iqtibosi bilan; qoida profilda bo'lmasa yoki
+  iqtibos topilmasa — tashlanadi. Qizil chiziqni buzgan gapni maqtagan
+  "kuchli tomon" kodda olib tashlanadi. Promptda yana ikki qat'iy qoida:
+  kuchli tomonlar profilga zid gapni maqtamaydi; maslahat profilda bor faktni
+  "bilmayman" deyishni taklif qilmaydi.
+- **Yozuv tekshiruvi (uz).** Mijoz javobi, persona va debriefdagi model
+  yozgan har matn kodda tekshiriladi: lotin bo'lmagan harf (kirill, mo'g'ul
+  va h.k.) bo'lsa — bitta tuzatish urinishi, o'tmasa natija saqlanadi va
+  logga ogohlantirish yoziladi. Iqtiboslar (transkriptdan aynan) tekshirilmaydi.
+- **Saqlash:** qizil chiziqlar va skriptga moslik `training_result.coaching`
+  jsonb ichida (`redLineViolations`, `scriptAdherence`) — DB migratsiyasi
+  kerak emas; eski natijalarda bu bo'limlar shunchaki ko'rinmaydi.
 
 ## Keyingi qadamlar
 

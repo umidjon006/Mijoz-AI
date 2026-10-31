@@ -65,6 +65,93 @@ export function CoachingCard({ coaching, onQuoteClick }: CoachingProps): JSX.Ele
   );
 }
 
+/** Qizil chiziq buzilishlari — debrief TEPASIDA ko'rsatiladi. */
+export function RedLineViolations({
+  violations,
+  onQuoteClick,
+}: {
+  violations: NonNullable<ResultPayload['coaching']>['redLineViolations'];
+  onQuoteClick?: (turnSeq: number) => void;
+}): JSX.Element | null {
+  if (!violations || violations.length === 0) return null;
+
+  return (
+    <div className="mq-panel mq-redlines" role="alert">
+      <h2 className="mq-h2" style={{ marginTop: 0 }}>
+        {mashq.redLinesTitle} ({violations.length})
+      </h2>
+      <p className="mq-small mq-muted" style={{ marginTop: 0 }}>
+        {mashq.redLinesHint}
+      </p>
+      {violations.map((v, i) => (
+        <div className="mq-improvement" key={i}>
+          <strong>
+            {mashq.redLineRule}: {v.rule}
+          </strong>
+          <p className="mq-small" style={{ margin: '4px 0' }}>
+            {v.explanation}
+          </p>
+          <button type="button" className="mq-quote" onClick={() => onQuoteClick?.(v.evidenceTurnSeq)}>
+            <span className="mq-muted mq-small">
+              {mashq.evidenceLabel} · T{v.evidenceTurnSeq}
+            </span>
+            <br />«{v.evidenceQuote}»
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const STAGE_LABEL = {
+  followed: mashq.scriptFollowed,
+  partly: mashq.scriptPartly,
+  missed: mashq.scriptMissed,
+} as const;
+
+/** "Skriptga moslik": har bosqich — holat, izoh va (bo'lsa) tekshirilgan iqtibos. */
+export function ScriptAdherence({
+  stages,
+  onQuoteClick,
+}: {
+  stages: NonNullable<ResultPayload['coaching']>['scriptAdherence'];
+  onQuoteClick?: (turnSeq: number) => void;
+}): JSX.Element | null {
+  if (!stages || stages.length === 0) return null;
+
+  return (
+    <div className="mq-panel">
+      {stages.map((stage, i) => (
+        <div className="mq-script-stage" key={`${i}-${stage.stage}`}>
+          <div className="mq-btn-row" style={{ justifyContent: 'space-between' }}>
+            <strong>
+              {i + 1}. {stage.stage}
+            </strong>
+            <span className={`mq-stage-status mq-stage-${stage.status ?? 'unknown'}`}>
+              {stage.status ? STAGE_LABEL[stage.status] : mashq.scriptUnknown}
+            </span>
+          </div>
+          <p className="mq-small" style={{ margin: '4px 0' }}>
+            {stage.comment}
+          </p>
+          {stage.evidenceQuote && stage.evidenceTurnSeq !== null ? (
+            <button
+              type="button"
+              className="mq-quote"
+              onClick={() => onQuoteClick?.(stage.evidenceTurnSeq as number)}
+            >
+              <span className="mq-muted mq-small">
+                {mashq.evidenceLabel} · T{stage.evidenceTurnSeq}
+              </span>
+              <br />«{stage.evidenceQuote}»
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function KeyMoments({
   moments,
   onQuoteClick,

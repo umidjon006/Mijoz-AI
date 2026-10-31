@@ -71,7 +71,8 @@ export async function ensureDemoRows(): Promise<void> {
 
 export interface CliArgs {
   archetype: string;
-  profile: string;
+  /** Demo profil kaliti — faqat `--profile` berilganda; aks holda `harness/data/`. */
+  profile?: string;
   direction?: 'inbound' | 'outbound';
   debug: boolean;
   sessions?: number;
@@ -94,7 +95,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
 
   return {
     archetype: get('archetype') ?? 'negotiator',
-    profile: get('profile') ?? listDemoProfileKeys()[0] ?? '',
+    ...(get('profile') ? { profile: get('profile') as string } : {}),
     ...(direction ? { direction } : {}),
     debug: argv.includes('--debug'),
     ...(sessions ? { sessions: Number(sessions) } : {}),

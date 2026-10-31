@@ -24,7 +24,8 @@ import { ARCHETYPE_KEYS, getArchetype } from '../../module/backend/src/training/
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
-import { DEMO_CONTEXT, ensureDemoRows, loadDemoProfile, parseArgs } from './demo-env.js';
+import { DEMO_CONTEXT, ensureDemoRows, parseArgs } from './demo-env.js';
+import { BusinessDataError, resolveBusinessData } from './business-data.js';
 import { priceCall } from './llm-anthropic.js';
 import {
   createTrainerLlm,
@@ -74,7 +75,8 @@ function sellerSystemPrompt(kind: SellerKind, profile: BusinessProfile): string 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const sessionsPerKind = args.sessions ?? 5;
-  const profile = loadDemoProfile(args.profile);
+  const business = resolveBusinessData(args.profile);
+  const profile = business.profile;
 
   const archetypes = [...ARCHETYPE_KEYS];
   const avgTurns = 8;
@@ -195,6 +197,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof BusinessDataError) {
+    console.error(`\n[biznes ma'lumotlari xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
   console.error(err);
   process.exit(1);
 });

@@ -26,6 +26,7 @@ import {
   type PersonaDirection,
   type PersonaLanguage,
 } from './persona.js';
+import { findScriptViolations, nonLatinWords, scriptCorrectionNote } from './language.js';
 import type {
   PriceCall,
   TokenUsage,
@@ -193,6 +194,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         direction,
         language: input.language ?? 'uz',
         random,
+        ...(deps.logger ? { logger: deps.logger } : {}),
       });
 
       const state = initState(archetype, persona);
@@ -333,6 +335,33 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
             applied = applyTurnResult(state, retryResult, persona, archetype);
           } catch {
             // Tuzatish urinishi muvaffaqiyatsiz — birinchi javob bilan davom etamiz.
+          }
+        }
+
+        // Yozuv: o'zbekcha mijoz javobida kirill/boshqa alifbo harflari bo'lmasin.
+        // Bitta tuzatish urinishi; o'tmasa — javob qoladi, lekin logga yoziladi.
+        if (persona.language === 'uz') {
+          const badWords = nonLatinWords(result.reply);
+          if (badWords.length > 0) {
+            let fixed = false;
+            try {
+              const retryResult = await call(
+                scriptCorrectionNote(findScriptViolations([{ field: 'reply', text: result.reply }])),
+              );
+              if (nonLatinWords(retryResult.reply).length === 0) {
+                result = retryResult;
+                applied = applyTurnResult(state, retryResult, persona, archetype);
+                fixed = true;
+              }
+            } catch {
+              // Tuzatish muvaffaqiyatsiz — birinchi javob bilan davom etamiz.
+            }
+            if (!fixed) {
+              deps.logger?.warn(
+                { sessionId: input.sessionId, words: badWords },
+                `mijoz javobida lotin bo'lmagan harflar qoldi: ${badWords.join(', ')}`,
+              );
+            }
           }
         }
 

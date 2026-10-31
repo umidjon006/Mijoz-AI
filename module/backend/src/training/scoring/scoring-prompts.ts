@@ -11,10 +11,12 @@
  */
 import type { Archetype } from '../archetypes.js';
 import type { PersonaCard } from '../persona.js';
+import type { BusinessProfile } from '../profile-schema.js';
 import type { KeyMomentCandidate, ScoringTurn, SessionMetrics } from './metrics.js';
 import type { PlaybookCriterion } from './rubric.js';
+import type { SalesScript } from './sales-script.js';
 
-export const SCORING_PROMPT_VERSION = 'scoring-v1';
+export const SCORING_PROMPT_VERSION = 'scoring-v2';
 
 export interface ScoringPromptInput {
   criteria: readonly PlaybookCriterion[];
@@ -23,6 +25,10 @@ export interface ScoringPromptInput {
   metrics: SessionMetrics;
   turns: readonly ScoringTurn[];
   candidates: readonly KeyMomentCandidate[];
+  /** Biznes faktlari — sotuvchining har bir da'vosi shular bilan tekshiriladi. */
+  profile: BusinessProfile | null;
+  /** Sotuv skripti (bo'lsa "Skriptga moslik" bo'limi qo'shiladi). */
+  script: SalesScript | null;
   /** Dalil tekshiruvi muvaffaqiyatsiz bo'lganda — bitta qayta urinish uchun. */
   correction?: string;
 }
@@ -49,7 +55,41 @@ function formatCriteria(criteria: readonly PlaybookCriterion[]): string {
     .join('\n\n');
 }
 
-export function buildScoringSystemPrompt({ criteria, correction }: ScoringPromptInput): string {
+/** Biznes profilidan baholashga kerakli faktlar (manba sifatida). */
+export function formatBusinessFacts(profile: BusinessProfile): string {
+  const list = (items: readonly string[]): string =>
+    items.length > 0 ? items.map((item) => `- ${item}`).join('\n') : '- (none listed)';
+  return [
+    `Business: ${profile.businessDescription}`,
+    'Offers (name, duration, schedule, PRICE — this is the complete list of what the business sells):',
+    list(profile.primaryOffers),
+    `Terms / notes: ${profile.additionalNotes ?? '(none)'}`,
+    'Red lines (the seller must NEVER do these):',
+    list(profile.redLines),
+  ].join('\n');
+}
+
+function formatScript(script: SalesScript): string {
+  return script.stages
+    .map((stage, i) =>
+      [
+        `### Stage ${i + 1}: ${stage.name}`,
+        'Expected actions:',
+        ...stage.expectedActions.map((a) => `- ${a}`),
+        ...(stage.phrases.length > 0
+          ? ['Example phrases:', ...stage.phrases.map((p) => `- "${p}"`)]
+          : []),
+      ].join('\n'),
+    )
+    .join('\n\n');
+}
+
+export function buildScoringSystemPrompt({
+  criteria,
+  correction,
+  profile,
+  script,
+}: ScoringPromptInput): string {
   const sections: string[] = [
     'You are a sales coach reviewing a recorded TRAINING call between a salesperson (the trainee) and a simulated customer.',
     'You judge ONLY the salesperson. The customer was played by a simulator; never grade the customer.',
@@ -73,6 +113,29 @@ export function buildScoringSystemPrompt({ criteria, correction }: ScoringPrompt
     'Do not inflate: a 3 requires everything the descriptor says. Short calls usually cannot reach 3 on discovery or closing.',
     'You do NOT compute any overall score and you do NOT decide the call outcome — that is already computed and given to you.',
     '',
+    '## Business facts — the SOURCE OF TRUTH',
+    ...(profile
+      ? [
+          formatBusinessFacts(profile),
+          '',
+          'Check EVERY factual claim the seller makes (which offers exist, prices, durations, schedules,',
+          'discounts, guarantees, terms) against these facts:',
+          '- a claim that contradicts the facts is a factual error — e.g. saying an offer listed above does not exist,',
+          '  quoting a different price, or inventing a discount or condition that is not listed;',
+          '- a claim the facts do not cover is unverified — never treat it as correct;',
+          '- factual errors must lower the "product_accuracy" criterion (if present) and be named in its comment;',
+          '- a claim or promise that breaks a red line goes into "redLineViolations": copy the rule text',
+          '  EXACTLY from the red lines list above and give a verbatim SELLER quote (same evidence rules).',
+          '',
+          'HARD RULES for coaching:',
+          '- "strengths" must NEVER praise, repeat or approve a statement that contradicts the business facts',
+          '  or breaks a red line — a confident wrong answer is a mistake, not a strength;',
+          '- "betterPhrasing" and every suggestion must NEVER tell the seller to say a fact is unknown',
+          '  ("aniq bilmayman", "keyin aytaman") when the business facts contain it — use the real fact',
+          '  (exact offer name and price) in the suggested sentence instead.',
+        ]
+      : ['(No business profile was provided — do not judge factual accuracy; leave "redLineViolations" empty.)']),
+    '',
     '## Criteria and rubrics',
     formatCriteria(criteria),
     '',
@@ -84,6 +147,20 @@ export function buildScoringSystemPrompt({ criteria, correction }: ScoringPrompt
     '  an evidence quote from a seller turn, and "betterPhrasing" — the actual sentence they',
     '  should have said instead, written as spoken Uzbek, ready to copy.',
     '',
+    ...(script
+      ? [
+          '## Sales script adherence',
+          'The business has a sales script. For EACH stage below return one "scriptAdherence" item',
+          '(use the stage name exactly as written):',
+          '- "followed": the seller clearly did the expected actions — a verbatim SELLER quote is REQUIRED;',
+          '- "partly": some of it was done, or done weakly — give a quote if there is one;',
+          '- "missed": the stage did not happen — evidenceQuote null.',
+          'Example phrases are guidance, not mandatory wording: judge whether the action happened.',
+          '',
+          formatScript(script),
+          '',
+        ]
+      : []),
     '## Key moments',
     'Explain only the turns listed as candidates (they were selected by code from the state history).',
     'Each explanation: one or two sentences on what changed at that turn and why.',
@@ -91,13 +168,20 @@ export function buildScoringSystemPrompt({ criteria, correction }: ScoringPrompt
     '## Language',
     'All text you write for the trainee (comment, summary, strengths, improvements, betterPhrasing, explanation)',
     'MUST be in Uzbek, Latin script, plain spoken style. Evidence quotes stay exactly as in the transcript.',
+    'Never mix in Cyrillic letters, Russian or Mongolian words — every word you write must be Uzbek Latin.',
     '',
     '## Output',
     'Return JSON only:',
     '{"criteria":[{"code":string,"score":0|1|2|3|null,"evidenceQuote":string|null,"evidenceTurnSeq":number|null,"comment":string}],',
     ' "coaching":{"summary":string,"strengths":string[],"improvements":[{"title":string,"why":string,"evidenceQuote":string|null,"evidenceTurnSeq":number|null,"betterPhrasing":string}]},',
-    ' "keyMoments":[{"turnSeq":number,"kind":string,"explanation":string}]}',
+    ' "keyMoments":[{"turnSeq":number,"kind":string,"explanation":string}],',
+    ' "redLineViolations":[{"rule":string,"evidenceQuote":string|null,"evidenceTurnSeq":number|null,"explanation":string}],',
+    ' "scriptAdherence":[{"stage":string,"status":"followed"|"partly"|"missed","evidenceQuote":string|null,"evidenceTurnSeq":number|null,"comment":string}]}',
     'Include every criterion code exactly once.',
+    script
+      ? 'Include every script stage exactly once in "scriptAdherence".'
+      : 'There is no sales script: return "scriptAdherence": [].',
+    'Return "redLineViolations": [] if no red line was broken.',
   ];
 
   if (correction) {

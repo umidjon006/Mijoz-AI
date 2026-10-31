@@ -17,8 +17,11 @@ import {
   isCorrectableLlmError,
   TrainingError,
 } from '../errors.js';
+import { findScriptViolations, scriptCorrectionNote, type ScriptViolation } from '../language.js';
 import { personaCardSchema, type PersonaCard } from '../persona.js';
+import type { BusinessProfile } from '../profile-schema.js';
 import type {
+  GetBusinessProfile,
   PriceCall,
   TokenUsage,
   TrainerLlm,
@@ -26,7 +29,12 @@ import type {
   TrainingLogger,
   WithTenant,
 } from '../ports.js';
-import { EVIDENCE_REJECT_MESSAGE, verifyEvidence, type EvidenceTurn } from './evidence.js';
+import {
+  EVIDENCE_REJECT_MESSAGE,
+  normalizeForEvidence,
+  verifyEvidence,
+  type EvidenceTurn,
+} from './evidence.js';
 import {
   computeMetrics,
   keyMomentCandidates,
@@ -43,16 +51,22 @@ import {
   type ScoringPromptInput,
 } from './scoring-prompts.js';
 import { resolveRubric, type PlaybookCriterion, type PlaybookSubset } from './rubric.js';
+import type { SalesScript } from './sales-script.js';
 import type {
   CoachingResult,
   CriterionResult,
   ImprovementResult,
   KeyMomentResult,
+  RedLineViolation,
   ScoringQuality,
+  ScriptStageResult,
 } from './scoring-types.js';
 
 /** Tenant playbook'ini beradigan chok (host ulaydi). `null` -> standart rubrika. */
 export type GetPlaybook = (businessId: string) => Promise<PlaybookSubset | null>;
+
+/** Tenant'ning sotuv skripti (host ulaydi). `null` -> "Skriptga moslik" bo'limi yo'q. */
+export type GetSalesScript = (businessId: string) => Promise<SalesScript | null>;
 
 /** Shundan kam sotuvchi navbati bo'lsa LLM chaqirilmaydi. */
 export const MIN_SELLER_TURNS_FOR_SCORING = 3;
@@ -97,6 +111,27 @@ export const llmScoringSchema = z.object({
       }),
     )
     .default([]),
+  redLineViolations: z
+    .array(
+      z.object({
+        rule: z.string().min(1).max(300),
+        evidenceQuote: z.string().nullable().default(null),
+        evidenceTurnSeq: z.number().int().nullable().default(null),
+        explanation: z.string().min(1).max(600),
+      }),
+    )
+    .default([]),
+  scriptAdherence: z
+    .array(
+      z.object({
+        stage: z.string().min(1).max(200),
+        status: z.enum(['followed', 'partly', 'missed']),
+        evidenceQuote: z.string().nullable().default(null),
+        evidenceTurnSeq: z.number().int().nullable().default(null),
+        comment: z.string().min(1).max(600),
+      }),
+    )
+    .default([]),
 });
 
 export type LlmScoring = z.infer<typeof llmScoringSchema>;
@@ -106,6 +141,8 @@ export function coerceLlmScoring(raw: unknown): unknown {
   if (raw === null || typeof raw !== 'object') return raw;
   const obj = { ...(raw as Record<string, unknown>) };
   if (!Array.isArray(obj.keyMoments)) obj.keyMoments = [];
+  if (!Array.isArray(obj.redLineViolations)) obj.redLineViolations = [];
+  if (!Array.isArray(obj.scriptAdherence)) obj.scriptAdherence = [];
   const coaching = obj.coaching;
   if (coaching && typeof coaching === 'object') {
     const c = { ...(coaching as Record<string, unknown>) };
@@ -160,6 +197,21 @@ export interface ProcessedScoring {
   /** Dalil tekshiruvidan yiqilgan mezonlar nisbati (0..1). */
   evidenceFailureRatio: number;
   failureNotes: string[];
+  /** Qabul qilinmagan qizil chiziq da'volari va olib tashlangan "kuchli tomonlar" (audit/log). */
+  droppedNotes: string[];
+}
+
+export interface ProcessScoringContext {
+  /** Profildagi qizil chiziqlar — `redLineViolations.rule` shulardan biri bo'lishi shart. */
+  redLines?: readonly string[];
+  /** Sotuv skripti; `null`/yo'q — `scriptAdherence: null`. */
+  script?: SalesScript | null;
+}
+
+/** Iqtibos qisqa bo'lsa (tasodifiy moslik) kuchli tomonni o'chirishda ishlatilmaydi. */
+function containsQuote(text: string, quote: string): boolean {
+  const normalizedQuote = normalizeForEvidence(quote);
+  return normalizedQuote.length >= 12 && normalizeForEvidence(text).includes(normalizedQuote);
 }
 
 export function processLlmScoring(
@@ -167,7 +219,9 @@ export function processLlmScoring(
   rubricCriteria: readonly PlaybookCriterion[],
   turns: readonly EvidenceTurn[],
   candidates: readonly KeyMomentCandidate[],
+  context: ProcessScoringContext = {},
 ): ProcessedScoring {
+  const droppedNotes: string[] = [];
   const byCode = new Map(llm.criteria.map((c) => [c.code, c]));
   const criteria: CriterionResult[] = [];
   const failureNotes: string[] = [];
@@ -264,17 +318,136 @@ export function processLlmScoring(
     .map((m) => ({ turnSeq: m.turnSeq, kind: m.kind, explanation: m.explanation }))
     .sort((a, b) => a.turnSeq - b.turnSeq);
 
+  // Qizil chiziqlar: qoida profildagisi bo'lishi VA iqtibos tekshiruvdan o'tishi shart.
+  const redLines = context.redLines ?? [];
+  const redLineViolations: RedLineViolation[] = [];
+  for (const item of llm.redLineViolations) {
+    const rule = redLines.find((r) => {
+      const a = normalizeForEvidence(r);
+      const b = normalizeForEvidence(item.rule);
+      return a.length > 0 && (a === b || a.includes(b) || b.includes(a));
+    });
+    if (!rule) {
+      droppedNotes.push(`redLine: "${item.rule.slice(0, 60)}" profildagi qizil chiziqlardan emas`);
+      continue;
+    }
+    const check = verifyEvidence(item.evidenceQuote, turns, item.evidenceTurnSeq);
+    if (!check.ok) {
+      droppedNotes.push(`redLine "${rule}": ${EVIDENCE_REJECT_MESSAGE[check.reason]}`);
+      continue;
+    }
+    redLineViolations.push({
+      rule,
+      explanation: item.explanation,
+      evidenceQuote: item.evidenceQuote as string,
+      evidenceTurnSeq: check.turnSeq,
+    });
+  }
+
+  // Kuchli tomonlar qizil chiziqni buzgan gapni HECH QACHON maqtamasligi kerak
+  // (promptda qoida bor; bu — mexanik himoya).
+  const strengths = llm.coaching.strengths.filter((strength) => {
+    const bad = redLineViolations.find((v) => containsQuote(strength, v.evidenceQuote));
+    if (bad) droppedNotes.push(`strength olib tashlandi (qizil chiziq "${bad.rule}" ni maqtagan)`);
+    return !bad;
+  });
+
   return {
     criteria,
     coaching: {
       summary: llm.coaching.summary,
-      strengths: llm.coaching.strengths,
+      strengths,
       improvements,
+      redLineViolations,
+      scriptAdherence: processScriptAdherence(llm, context.script ?? null, turns),
     },
     keyMoments,
     evidenceFailureRatio: proposed === 0 ? 0 : failed / proposed,
     failureNotes,
+    droppedNotes,
   };
+}
+
+/**
+ * Skript bosqichlari — SKRIPT tartibida (modelniki emas). `followed` faqat
+ * tekshirilgan iqtibos bilan qoladi; iqtibos o'tmasa `partly` ga tushiriladi.
+ */
+export function processScriptAdherence(
+  llm: LlmScoring,
+  script: SalesScript | null,
+  turns: readonly EvidenceTurn[],
+): ScriptStageResult[] | null {
+  if (!script) return null;
+  const byName = new Map(llm.scriptAdherence.map((item) => [normalizeForEvidence(item.stage), item]));
+
+  return script.stages.map((stage): ScriptStageResult => {
+    const item = byName.get(normalizeForEvidence(stage.name));
+    if (!item) {
+      return {
+        stage: stage.name,
+        status: null,
+        comment: 'Model bu bosqichni baholamadi.',
+        evidenceQuote: null,
+        evidenceTurnSeq: null,
+      };
+    }
+    if (item.status === 'missed') {
+      return {
+        stage: stage.name,
+        status: 'missed',
+        comment: item.comment,
+        evidenceQuote: null,
+        evidenceTurnSeq: null,
+      };
+    }
+    const check = verifyEvidence(item.evidenceQuote, turns, item.evidenceTurnSeq);
+    if (check.ok) {
+      return {
+        stage: stage.name,
+        status: item.status,
+        comment: item.comment,
+        evidenceQuote: item.evidenceQuote,
+        evidenceTurnSeq: check.turnSeq,
+      };
+    }
+    return {
+      stage: stage.name,
+      // Tekshirilmagan "followed" — ishonchli emas: `partly` ga tushiriladi.
+      status: 'partly',
+      comment: item.comment,
+      evidenceQuote: null,
+      evidenceTurnSeq: null,
+      ...(item.evidenceQuote ? { rejectedQuote: item.evidenceQuote, rejectReason: check.reason } : {}),
+    };
+  });
+}
+
+/**
+ * Sotuvchiga ko'rinadigan, MODEL YOZGAN matnlar (iqtiboslar emas — ular
+ * transkriptdan aynan olinadi). Til `uz` bo'lganda yozuv tekshiruvi uchun.
+ */
+export function userFacingScoringText(
+  processed: ProcessedScoring,
+): Array<{ field: string; text: string }> {
+  const fields: Array<{ field: string; text: string }> = [];
+  for (const c of processed.criteria) fields.push({ field: `criteria.${c.code}.comment`, text: c.comment });
+  fields.push({ field: 'coaching.summary', text: processed.coaching.summary });
+  processed.coaching.strengths.forEach((text, i) => fields.push({ field: `coaching.strengths.${i}`, text }));
+  processed.coaching.improvements.forEach((item, i) => {
+    fields.push({ field: `coaching.improvements.${i}.title`, text: item.title });
+    fields.push({ field: `coaching.improvements.${i}.why`, text: item.why });
+    fields.push({ field: `coaching.improvements.${i}.betterPhrasing`, text: item.betterPhrasing });
+  });
+  for (const m of processed.keyMoments) {
+    fields.push({ field: `keyMoments.T${m.turnSeq}`, text: m.explanation });
+  }
+  (processed.coaching.redLineViolations ?? []).forEach((v, i) =>
+    fields.push({ field: `redLineViolations.${i}.explanation`, text: v.explanation }),
+  );
+  (processed.coaching.scriptAdherence ?? []).forEach((s, i) =>
+    fields.push({ field: `scriptAdherence.${i}.comment`, text: s.comment }),
+  );
+  return fields;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +457,16 @@ export interface ScoringDeps {
   withTenant: WithTenant;
   llm: TrainerLlm;
   getPlaybook?: GetPlaybook;
+  /**
+   * Biznes faktlari (takliflar, narxlar, shartlar, qizil chiziqlar) —
+   * sotuvchining da'volari shular bilan tekshiriladi. Berilmasa faktlar
+   * baholanmaydi va `redLineViolations` bo'sh qoladi.
+   */
+  getBusinessProfile?: GetBusinessProfile;
+  /** Sotuv skripti — bo'lsa "Skriptga moslik" bo'limi qo'shiladi. */
+  getSalesScript?: GetSalesScript;
+  /** Debrief tili; `uz` — lotin yozuvi kodda tekshiriladi. Default `uz`. */
+  language?: 'uz' | 'ru' | 'mixed';
   priceCall?: PriceCall;
   now?: () => Date;
   logger?: TrainingLogger;
@@ -408,6 +591,24 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
       }
       const rubric = resolveRubric(playbook);
 
+      // Biznes faktlari va skript (xato bo'lsa — ularsiz davom etamiz, lekin logga yozamiz).
+      let profile: BusinessProfile | null = null;
+      let script: SalesScript | null = null;
+      try {
+        profile = (await deps.getBusinessProfile?.(ctx.businessId)) ?? null;
+      } catch (err) {
+        deps.logger?.warn({ err }, 'getBusinessProfile xato berdi — faktlar tekshirilmaydi');
+      }
+      try {
+        script = (await deps.getSalesScript?.(ctx.businessId)) ?? null;
+      } catch (err) {
+        deps.logger?.warn({ err }, 'getSalesScript xato berdi — skriptga moslik baholanmaydi');
+      }
+      const processContext: ProcessScoringContext = { redLines: profile?.redLines ?? [], script };
+      const language = deps.language ?? 'uz';
+      const scriptIssues = (p: ProcessedScoring): ScriptViolation[] =>
+        language === 'uz' ? findScriptViolations(userFacingScoringText(p)) : [];
+
       // 4. LLM (tranzaksiyadan TASHQARIDA — tarmoq chaqiruvi qulf ushlab turmasin).
       let usage: TokenUsage | undefined;
       let costUsd = 0;
@@ -420,6 +621,8 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           metrics,
           turns,
           candidates,
+          profile,
+          script,
           ...(correction ? { correction } : {}),
         };
         const req = {
@@ -450,25 +653,54 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
             `Your previous answer was rejected: ${describeLlmError(err)}. Return a single valid JSON object with all required fields.`,
           );
         }
-        let processed = processLlmScoring(raw, rubric.criteria, turns, candidates);
+        let processed = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
 
-        // 5. Dalillar ko'p yiqilsa — bitta qayta urinish.
-        if (processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO) {
+        // 5. Dalillar ko'p yiqilsa YOKI matnda lotin bo'lmagan harflar bo'lsa —
+        //    BITTA qayta urinish (ikkala tuzatish izohi bitta so'rovda).
+        const evidenceBad = processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO;
+        const scriptBad = scriptIssues(processed);
+        if (evidenceBad || scriptBad.length > 0) {
           const correction = [
-            'Your evidence quotes failed verification. Problems:',
-            ...processed.failureNotes.map((note) => `- ${note}`),
-            'Copy the quotes character-by-character from SELLER lines in the transcript.',
-            'If you cannot find a real quote for a criterion, set its score to null instead of inventing one.',
+            ...(evidenceBad
+              ? [
+                  'Your evidence quotes failed verification. Problems:',
+                  ...processed.failureNotes.map((note) => `- ${note}`),
+                  'Copy the quotes character-by-character from SELLER lines in the transcript.',
+                  'If you cannot find a real quote for a criterion, set its score to null instead of inventing one.',
+                ]
+              : []),
+            ...(scriptBad.length > 0 ? [scriptCorrectionNote(scriptBad)] : []),
           ].join('\n');
           try {
             raw = await call(correction);
-            const retried = processLlmScoring(raw, rubric.criteria, turns, candidates);
-            if (retried.evidenceFailureRatio <= processed.evidenceFailureRatio) {
+            const retried = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
+            const retriedScript = scriptIssues(retried).length;
+            // Dalillar yomonlashmasa va yozuv xatolari ko'paymasa — yangisini olamiz.
+            if (
+              retried.evidenceFailureRatio <= processed.evidenceFailureRatio &&
+              retriedScript <= scriptBad.length
+            ) {
               processed = retried;
             }
           } catch (err) {
             deps.logger?.warn({ err }, 'baholashni qayta urinish muvaffaqiyatsiz');
           }
+        }
+
+        const remainingScript = scriptIssues(processed);
+        if (remainingScript.length > 0) {
+          deps.logger?.warn(
+            { sessionId, scriptViolations: remainingScript },
+            `debriefda lotin bo'lmagan harflar qoldi (qayta urinishdan keyin): ${remainingScript
+              .map((v) => `${v.field}: ${v.words.join(', ')}`)
+              .join('; ')}`.slice(0, 500),
+          );
+        }
+        if (processed.droppedNotes.length > 0) {
+          deps.logger?.warn(
+            { sessionId, dropped: processed.droppedNotes },
+            'baholash: tekshiruvdan o\'tmagan qismlar olib tashlandi',
+          );
         }
 
         const quality: ScoringQuality =

@@ -19,7 +19,12 @@ import {
   Skeleton,
 } from '../components/ui.js';
 import { CriteriaList } from '../components/CriteriaList.js';
-import { CoachingCard, KeyMoments } from '../components/Coaching.js';
+import {
+  CoachingCard,
+  KeyMoments,
+  RedLineViolations,
+  ScriptAdherence,
+} from '../components/Coaching.js';
 import { HiddenCards } from '../components/HiddenCards.js';
 import { StateChart } from '../components/StateChart.js';
 import { Transcript } from '../components/Transcript.js';
@@ -165,6 +170,11 @@ export function NatijaPage({
         </Notice>
       ) : null}
       {result.quality === 'low' ? <Notice kind="warn">{mashq.qualityLowNotice}</Notice> : null}
+
+      <RedLineViolations
+        violations={result.coaching?.redLineViolations}
+        onQuoteClick={jumpToTurn}
+      />
       {result.quality === 'insufficient' ? (
         <Notice kind="warn">{mashq.qualityInsufficientNotice}</Notice>
       ) : null}
@@ -225,6 +235,13 @@ export function NatijaPage({
         <>
           <h2 className="mq-h2">{mashq.coaching}</h2>
           <CoachingCard coaching={result.coaching} onQuoteClick={jumpToTurn} />
+        </>
+      ) : null}
+
+      {result.coaching?.scriptAdherence && result.coaching.scriptAdherence.length > 0 ? (
+        <>
+          <h2 className="mq-h2">{mashq.scriptTitle}</h2>
+          <ScriptAdherence stages={result.coaching.scriptAdherence} onQuoteClick={jumpToTurn} />
         </>
       ) : null}
 

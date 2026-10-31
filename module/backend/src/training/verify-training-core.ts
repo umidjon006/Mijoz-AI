@@ -542,6 +542,45 @@ async function verifyPersonaValidation(): Promise<void> {
     assertEqual(llm.calls, 2, 'shakl xatosi bir marta tuzatiladi');
   });
 
+  // --- Yozuv (lotin) tekshiruvi -------------------------------------------
+  const latinPersona = fakePersona({
+    objectionKeys: ['price_too_high', 'no_time', 'needs_to_ask_family'],
+    severity: 3,
+    focusOffer: FIRST_OFFER,
+  }) as Record<string, unknown>;
+  const cyrillicPersona = { ...latinPersona, openingLine: 'Здравствуйте, shartlaringizni bilmoqchi edim.' };
+
+  await checkAsync(report, "persona (uz): kirill -> bitta tuzatish urinishi, lotin olinadi", async () => {
+    const llm = new FakeTrainerLlm([cyrillicPersona, latinPersona]);
+    const card = await generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound' });
+    assertEqual(card.openingLine, latinPersona.openingLine as string, 'lotin variant');
+    assertEqual(llm.callCount, 2, 'bitta qayta urinish');
+    assert(llm.calls[1]?.user.includes('LATIN script only') || llm.calls[1]?.system.includes('LATIN script only'), 'tuzatish izohi');
+  });
+
+  await checkAsync(report, "persona (uz): kirill qolsa -> birinchi persona qoladi, logga yoziladi", async () => {
+    const warnings: string[] = [];
+    const logger = {
+      info: () => undefined,
+      error: () => undefined,
+      warn: (_obj: unknown, msg?: string) => {
+        if (msg) warnings.push(msg);
+      },
+    };
+    const llm = new FakeTrainerLlm([cyrillicPersona, cyrillicPersona]);
+    const card = await generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound', logger });
+    assert(card.openingLine.includes('Здравствуйте'), 'sessiya to\'xtamaydi');
+    assertEqual(llm.callCount, 2, "uchinchi chaqiruv yo'q");
+    assert(warnings.some((w) => w.includes('openingLine')), 'logda maydon nomi');
+  });
+
+  await checkAsync(report, "persona (ru): yozuv tekshirilmaydi", async () => {
+    const ruPersona = { ...cyrillicPersona, language: 'ru' };
+    const llm = new FakeTrainerLlm([ruPersona]);
+    await generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound', language: 'ru' });
+    assertEqual(llm.callCount, 1, 'bitta chaqiruv');
+  });
+
   check(report, 'xato toifalari: ZodError/AbortError/SyntaxError/LlmCallError', () => {
     const zodErr = personaCardSchema.safeParse({}).error;
     assertEqual(classifyLlmError(zodErr), 'schema', 'ZodError -> schema');
@@ -1089,6 +1128,53 @@ async function verifyEngineWithDb(): Promise<void> {
         'llm_invalid_output kutilgan',
       );
       assertEqual(llm.callCount, 3, 'persona + 2 urinish');
+    });
+
+    // --- 6e-2. Mijoz javobida kirill --------------------------------------
+    await checkAsync(report, "mijoz javobi (uz): kirill -> bitta tuzatish, lotin javob qaytadi", async () => {
+      const llm = new FakeTrainerLlm([
+        personaScript('outbound'),
+        fakeTurn({ reply: 'Хорошо, narxi qancha?' }),
+        fakeTurn({ reply: 'Yaxshi, narxi qancha?' }),
+      ]);
+      const engine = createTrainingEngine({
+        withTenant,
+        getBusinessProfile: getProfile,
+        llm,
+        random: () => 0.9,
+      });
+      const started = await engine.startSession(ctxA, { archetypeKey: 'negotiator' });
+      const turn = await engine.takeTurn(ctxA, { sessionId: started.sessionId, sellerText: 'salom' });
+      assertEqual(turn.customerReply, 'Yaxshi, narxi qancha?', 'lotin javob');
+      assertEqual(llm.callCount, 3, 'persona + 2 urinish');
+      assert(llm.calls[2]?.system.includes('LATIN script only') ?? false, 'tuzatish izohi');
+    });
+
+    await checkAsync(report, "mijoz javobi (uz): kirill qolsa -> javob qoladi, logga yoziladi", async () => {
+      const warnings: string[] = [];
+      const llm = new FakeTrainerLlm([
+        personaScript('outbound'),
+        fakeTurn({ reply: 'Хорошо, narxi qancha?' }),
+        fakeTurn({ reply: 'Хорошо, narxi qancha?' }),
+      ]);
+      const engine = createTrainingEngine({
+        withTenant,
+        getBusinessProfile: getProfile,
+        llm,
+        random: () => 0.9,
+        logger: {
+          info: () => undefined,
+          error: () => undefined,
+          warn: (_obj: unknown, msg?: string) => {
+            if (msg) warnings.push(msg);
+          },
+        },
+      });
+      const started = await engine.startSession(ctxA, { archetypeKey: 'negotiator' });
+      const turn = await engine.takeTurn(ctxA, { sessionId: started.sessionId, sellerText: 'salom' });
+      assert(turn.customerReply.includes('Хорошо'), 'javob saqlanadi');
+      assertEqual(llm.callCount, 3, "uchinchi urinish yo'q");
+      assert(warnings.some((w) => w.includes('lotin')), 'ogohlantirish logda');
     });
 
     // --- 6f. Timeout DB orqali -------------------------------------------

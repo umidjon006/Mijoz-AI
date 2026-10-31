@@ -342,6 +342,40 @@
 }
 
 /* Maslahat */
+.mq-redlines {
+  border: 2px solid var(--mq-bad);
+}
+
+.mq-script-stage + .mq-script-stage {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mq-line);
+}
+
+.mq-stage-status {
+  font-size: 0.85em;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.mq-stage-followed {
+  color: var(--mq-ok);
+}
+
+.mq-stage-partly {
+  color: var(--mq-warn);
+}
+
+.mq-stage-missed {
+  color: var(--mq-bad);
+}
+
+.mq-stage-unknown {
+  opacity: 0.6;
+}
+
 .mq-improvement {
   background: #fff;
   border: 1px solid var(--mq-line);
