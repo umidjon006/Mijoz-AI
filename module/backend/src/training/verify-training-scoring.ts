@@ -63,6 +63,7 @@ import {
   computeSkillScore,
   createScoringService,
   llmScoringSchema,
+  enforceScoringLanguage,
   processLlmScoring,
   STALE_PENDING_ERROR,
   userFacingScoringText,
@@ -78,7 +79,16 @@ import {
   SalesScriptFormatError,
   type SalesScript,
 } from './scoring/sales-script.js';
-import { findScriptViolations, nonLatinWords } from './language.js';
+import {
+  classifyUzText,
+  enforceUzLatin,
+  findScriptViolations,
+  guardCustomerReply,
+  CUSTOMER_LANGUAGE_FALLBACK,
+  LANGUAGE_PLACEHOLDER,
+  nonLatinWords,
+  transliterateUzCyrillic,
+} from './language.js';
 import { canOfferRescore, RESCORE_PENDING_AFTER_MS } from '../../../frontend/src/lib/rescore.js';
 import type { CriterionResult } from './scoring/scoring-types.js';
 import {
@@ -953,6 +963,177 @@ function verifyRescoreRule(): void {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 10. Til himoyasi (uz): transliteratsiya, tasnif, maydon darajasida qayta yaratish
+// ---------------------------------------------------------------------------
+/** Regressiya #1: haqiqiy debriefdagi mezon izohi (mo'g'ulcha), xabardagi ko'rinishida. */
+const MONGOLIAN_COMMENT = 'санал болгосноор хариулсан ч ... нотлоогүй';
+/**
+ * Regressiya #2: "Muhim lahzalar" o'zbek kirillida. Xabarda aynan matn
+ * keltirilmagan — shu ko'rinishdagi (o'sha bo'lim uchun xos) gap.
+ */
+const UZ_CYRILLIC_MOMENT = 'Мижоз нархни сўради, сотувчи эса аниқ жавоб бермади ва ишонч пасайди.';
+const UZ_CYRILLIC_MOMENT_LATIN = "Mijoz narxni so'radi, sotuvchi esa aniq javob bermadi va ishonch pasaydi.";
+
+async function verifyLanguageGuard(): Promise<void> {
+  section('[10] Til himoyasi (uz)');
+
+  check(report, "transliteratsiya: е so'z boshida/unlidan keyin, ё/ю/я, ъ, ц, katta harf", () => {
+    const cases: Array<[string, string]> = [
+      ['ер', 'yer'],
+      ['Ер', 'Yer'],
+      ['келди', 'keldi'],
+      ['поезд', 'poyezd'],
+      ['ёшлар', 'yoshlar'],
+      ['Юлдуз', 'Yulduz'],
+      ['янги', 'yangi'],
+      ['маъно', "ma'no"],
+      ['съезд', "s'yezd"],
+      ['ўқитувчи', "o'qituvchi"],
+      ['ғалаба', "g'alaba"],
+      ['ҳамма', 'hamma'],
+      ['Шаҳар', 'Shahar'],
+      ['ШАҲАР', 'SHAHAR'],
+      ['Чой', 'Choy'],
+      ['цирк', 'sirk'],
+      ['милиция', 'militsiya'],
+      ['Ўзбекистон', "O'zbekiston"],
+    ];
+    for (const [cyr, lat] of cases) assertEqual(transliterateUzCyrillic(cyr), lat, cyr);
+  });
+
+  check(report, "transliteratsiya: tinish belgilari, raqamlar va lotin matn o'zgarmaydi", () => {
+    assertEqual(
+      transliterateUzCyrillic('Салом, дўстим! «Яхши». Ер-юзи; 12 000 сўм?'),
+      "Salom, do'stim! «Yaxshi». Yer-yuzi; 12 000 so'm?",
+      'aralash tinish belgilari',
+    );
+    assertEqual(transliterateUzCyrillic("Mijoz нархни so'radi"), "Mijoz narxni so'radi", 'aralash');
+    assertEqual(transliterateUzCyrillic(UZ_CYRILLIC_MOMENT), UZ_CYRILLIC_MOMENT_LATIN, 'regressiya #2');
+  });
+
+  check(report, "tasnif: lotin / o'zbek kirill / begona (mo'g'ul, rus)", () => {
+    assertEqual(classifyUzText("Mijoz narxni so'radi, 12 000 so'm."), 'latin', 'lotin');
+    assertEqual(classifyUzText(UZ_CYRILLIC_MOMENT), 'uz_cyrillic', 'regressiya #2: o\'zbek kirill');
+    assertEqual(classifyUzText(MONGOLIAN_COMMENT), 'foreign', "regressiya #1: mo'g'ul");
+    assertEqual(classifyUzText('Санал болгосноор хариулсан'), 'foreign', "mo'g'ul so'zlari (ө/ү siz)");
+    assertEqual(classifyUzText('Өнөөдөр сайн байна'), 'foreign', "mo'g'ul harflari ө ү");
+    assertEqual(classifyUzText("Suhbat хорошо o'tdi"), 'foreign', "lotin ichida rus so'zi");
+    assertEqual(classifyUzText('Клиент задал вопрос о цене'), 'foreign', 'rus gapi');
+    assertEqual(classifyUzText('Это очень дорого'), 'foreign', 'rus');
+    assertEqual(classifyUzText('Τιμή'), 'foreign', 'yunon');
+  });
+
+  /** Debriefga o'xshash qayta ishlangan natija. */
+  const processedWith = (comment: string, moment: string) => {
+    const criteria = flattenCriteria(DEFAULT_TRAINING_RUBRIC);
+    const llm = llmScoringSchema.parse({
+      criteria: criteria.map((c, i) => ({
+        code: c.code,
+        score: 2,
+        evidenceQuote: 'Narx tarkibida nimalar borligini',
+        evidenceTurnSeq: 3,
+        comment: i === 0 ? comment : 'izoh',
+      })),
+      coaching: { summary: 'Umumiy xulosa', strengths: ['Yaxshi savol'], improvements: [] },
+      keyMoments: [{ turnSeq: 2, kind: 'objection_raised', explanation: moment }],
+    });
+    const turns: EvidenceTurn[] = [
+      { seq: 1, speaker: 'seller', text: SELLER_LINES[0] as string },
+      { seq: 2, speaker: 'customer', text: 'Narxi qancha?' },
+      { seq: 3, speaker: 'seller', text: SELLER_LINES[2] as string },
+    ];
+    return processLlmScoring(llm, criteria, turns, [{ turnSeq: 2, kind: 'objection_raised' }]);
+  };
+  const commentId = `criteria.${flattenCriteria(DEFAULT_TRAINING_RUBRIC)[0]!.code}.comment`;
+
+  await checkAsync(report, "regressiya: kirill lahza o'giriladi (LLM'siz), mo'g'ul izoh — faqat u qayta so'raladi", async () => {
+    const processed = processedWith(MONGOLIAN_COMMENT, UZ_CYRILLIC_MOMENT);
+    const asked: string[][] = [];
+    const report1 = await enforceScoringLanguage(processed, async (fields) => {
+      asked.push(fields.map((f) => f.id));
+      return new Map([[commentId, 'Taklif bilan javob berdi, lekin uni isbotlamadi.']]);
+    });
+    assertEqual(asked.length, 1, 'bitta chaqiruv');
+    assertDeepEqual(asked[0], [commentId], "faqat begona maydon so'raldi");
+    assertEqual(processed.keyMoments[0]?.explanation, UZ_CYRILLIC_MOMENT_LATIN, 'lahza lotinda');
+    assertEqual(processed.criteria[0]?.comment, 'Taklif bilan javob berdi, lekin uni isbotlamadi.', 'izoh yangilandi');
+    assertDeepEqual(report1.hidden, [], "hech narsa yashirilmadi");
+    const leftovers = findScriptViolations(userFacingScoringText(processed));
+    assertEqual(leftovers.length, 0, "lotin bo'lmagan matn qolmadi");
+  });
+
+  await checkAsync(report, "qayta yaratish yana begona / qaytmadi / yiqildi -> yashiriladi", async () => {
+    for (const [name, regen] of [
+      ['yana begona', async () => new Map([[commentId, MONGOLIAN_COMMENT]])],
+      ['qaytmadi', async () => new Map<string, string>()],
+      ['yiqildi', async () => {
+        throw new Error('timeout');
+      }],
+    ] as const) {
+      const processed = processedWith(MONGOLIAN_COMMENT, 'Oddiy lotin izoh');
+      const r = await enforceScoringLanguage(processed, regen);
+      assertDeepEqual(r.hidden, [commentId], `${name}: yashirildi`);
+      assertEqual(processed.criteria[0]?.comment, LANGUAGE_PLACEHOLDER, `${name}: placeholder`);
+    }
+  });
+
+  await checkAsync(report, "qayta yaratish o'zbek kirillida qaytsa -> lotinga o'giriladi", async () => {
+    const processed = processedWith(MONGOLIAN_COMMENT, 'Oddiy lotin izoh');
+    await enforceScoringLanguage(processed, async () => new Map([[commentId, 'Мижоз нархни сўради']]));
+    assertEqual(processed.criteria[0]?.comment, "Mijoz narxni so'radi", 'lotinda');
+  });
+
+  await checkAsync(report, "hammasi lotin -> chaqiruv yo'q", async () => {
+    let calls = 0;
+    const processed = processedWith('Yaxshi izoh', 'Lotin lahza');
+    await enforceUzLatin(
+      userFacingScoringText(processed).map((f) => ({ id: f.field, text: f.text, set: () => undefined })),
+      async () => {
+        calls += 1;
+        return new Map();
+      },
+    );
+    assertEqual(calls, 0, "chaqiruv yo'q");
+  });
+
+  // --- Mijoz javobi --------------------------------------------------------
+  await checkAsync(report, "mijoz javobi: lotin / kirill (LLM'siz) / begona -> retry / fallback", async () => {
+    const latin = await guardCustomerReply({ reply: 'Narxi qancha?' }, async () => {
+      throw new Error("chaqirilmasligi kerak");
+    });
+    assertEqual(latin.outcome, 'ok', 'lotin');
+
+    let retries = 0;
+    const cyr = await guardCustomerReply({ reply: 'Яхши, нархи қанча?' }, async () => {
+      retries += 1;
+      return { reply: 'x' };
+    });
+    assertEqual(cyr.result.reply, 'Yaxshi, narxi qancha?', "o'girildi");
+    assertEqual(retries, 0, "o'zbek kirill uchun LLM chaqirilmaydi");
+
+    const regen = await guardCustomerReply({ reply: 'Хорошо, а сколько стоит?' }, async () => ({
+      reply: 'Yaxshi, narxi qancha?',
+    }));
+    assertEqual(regen.outcome, 'regenerated', 'qayta yaratildi');
+    assertEqual(regen.stateSource.reply, 'Yaxshi, narxi qancha?', 'holat yangi javobdan');
+
+    const fallback = await guardCustomerReply({ reply: 'Хорошо, а сколько стоит?' }, async () => ({
+      reply: 'Сайн байна уу',
+    }));
+    assertEqual(fallback.outcome, 'fallback', 'fallback');
+    assertEqual(fallback.result.reply, CUSTOMER_LANGUAGE_FALLBACK, 'neytral gap');
+    assertEqual(classifyUzText(CUSTOMER_LANGUAGE_FALLBACK), 'latin', 'fallback lotinda');
+  });
+
+  check(report, "baholash prompti: faqat lotin, kirill taqiqi va namuna gap", () => {
+    const system = buildScoringSystemPrompt(promptInput());
+    assert(system.includes('NEVER use Cyrillic'), 'kirill taqiqi');
+    assert(system.includes('Example of the required style'), 'namuna gap');
+    assert(classifyUzText(LANGUAGE_PLACEHOLDER) === 'latin', 'placeholder lotinda');
+  });
+}
+
 function appUrl(): string {
   const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
@@ -1133,7 +1314,7 @@ async function verifyDbAndRoutes(): Promise<void> {
       const stored = await scoring.getLatestResult(ctxA, okSessionId);
       assert(stored, 'natija yo\'q');
       assertEqual(stored.model, 'fake-scorer', 'model');
-      assertEqual(stored.promptVersion, 'scoring-v2', 'promptVersion');
+      assertEqual(stored.promptVersion, 'scoring-v3', 'promptVersion');
       assert(Number(stored.costUsd) > 0, 'cost_usd to\'ldirilishi kerak');
       assertEqual(stored.criteria?.length, 8, 'mezonlar soni');
       assertEqual(stored.keyMoments?.length, 1, 'muhim lahzalar');
@@ -1222,39 +1403,44 @@ async function verifyDbAndRoutes(): Promise<void> {
       );
     });
 
-    // --- 6c-4. Yozuv: kirill aralashsa bitta qayta urinish ----------------
-    await checkAsync(report, "debriefda kirill -> bitta tuzatish urinishi, toza javob olinadi", async () => {
+    // --- 6c-4. Til: maydon darajasida qayta yaratish / yashirish --------
+    // Regressiya: haqiqiy debriefdagi ikki xato (mo'g'ulcha izoh va o'zbek
+    // kirillidagi "Muhim lahzalar").
+    await checkAsync(report, "debrief: mo'g'ulcha izoh qayta yaratiladi, kirill lahza o'giriladi (DB)", async () => {
       const sessionId = await playSession(ctxA, { turns: 3 });
       const dirty = scoringPayload();
-      dirty.coaching.summary = 'Suhbat хорошо o\'tdi, лекин yopish bo\'lmadi.';
-      const clean = scoringPayload();
-      const llm = new FakeTrainerLlm([dirty, clean]);
+      dirty.criteria[0]!.comment = MONGOLIAN_COMMENT;
+      dirty.keyMoments[0]!.explanation = UZ_CYRILLIC_MOMENT;
+      const rewrite = {
+        fields: [{ id: `criteria.${dirty.criteria[0]!.code}.comment`, text: "Taklif bilan javob berdi, lekin uni isbotlamadi." }],
+      };
+      const llm = new FakeTrainerLlm([dirty, rewrite]);
       const scoring = createScoringService({ withTenant, llm });
-      await scoring.scoreSession(ctxA, sessionId);
-      assertEqual(llm.callCount, 2, 'bitta qayta urinish');
-      assert(llm.calls[1]?.system.includes('LATIN script only') ?? false, 'tuzatish izohi bor');
+      const result = await scoring.scoreSession(ctxA, sessionId);
+      assertEqual(llm.callCount, 2, 'bitta qo\'shimcha chaqiruv (faqat begona maydon)');
+      assertEqual(llm.calls[1]?.stage, 'training.scoring.language', 'til chaqiruvi');
+      assert(!(llm.calls[1]?.user ?? '').includes('keyMoments'), "kirill lahza qayta so'ralmaydi");
+      assertEqual(result.quality, 'ok', 'hech narsa yashirilmadi');
       const stored = await scoring.getLatestResult(ctxA, sessionId);
-      assertEqual(nonLatinWords(stored?.coaching?.summary ?? '').length, 0, 'saqlangan xulosa toza');
+      assertEqual(stored?.criteria?.[0]?.comment, "Taklif bilan javob berdi, lekin uni isbotlamadi.", 'izoh');
+      assertEqual(stored?.keyMoments?.[0]?.explanation, UZ_CYRILLIC_MOMENT_LATIN, "lahza lotinda");
+      assertEqual(stored?.coaching?.languageCheck?.transliterated, 1, "1 ta o'girildi");
     });
 
-    await checkAsync(report, "debriefda kirill qolsa -> 2 chaqiruvdan keyin logga yoziladi", async () => {
+    await checkAsync(report, "debrief: qayta yaratish ham begona -> yashiriladi, quality=low (DB)", async () => {
       const sessionId = await playSession(ctxA, { turns: 3 });
       const dirty = scoringPayload();
-      dirty.coaching.summary = 'Suhbat хорошо o\'tdi.';
-      const warnings: string[] = [];
-      const logger = {
-        info: () => undefined,
-        error: () => undefined,
-        warn: (_obj: unknown, msg?: string) => {
-          if (msg) warnings.push(msg);
-        },
-      };
-      const llm = new FakeTrainerLlm([dirty, dirty]);
-      const scoring = createScoringService({ withTenant, llm, logger });
+      dirty.coaching.summary = "Suhbat хорошо o'tdi.";
+      const stillBad = { fields: [{ id: 'coaching.summary', text: 'Всё хорошо было.' }] };
+      const llm = new FakeTrainerLlm([dirty, stillBad]);
+      const scoring = createScoringService({ withTenant, llm });
       const result = await scoring.scoreSession(ctxA, sessionId);
-      assertEqual(result.status, 'done', 'natija baribir yoziladi');
+      assertEqual(result.status, 'done', 'natija yoziladi');
+      assertEqual(result.quality, 'low', 'quality=low');
       assertEqual(llm.callCount, 2, "uchinchi chaqiruv yo'q");
-      assert(warnings.some((w) => w.includes('lotin')), 'ogohlantirish logda');
+      const stored = await scoring.getLatestResult(ctxA, sessionId);
+      assertEqual(stored?.coaching?.summary, LANGUAGE_PLACEHOLDER, 'yashirildi');
+      assertDeepEqual(stored?.coaching?.lowQualityReasons, ['language'], 'sabab: til');
     });
 
     // --- 6c-5. Server to'xtagan: osilib qolgan pending -> failed ----------
@@ -1554,6 +1740,7 @@ async function main(): Promise<void> {
   verifyProcessing();
   verifyBusinessFacts();
   verifyRescoreRule();
+  await verifyLanguageGuard();
 
   try {
     await verifyDbAndRoutes();

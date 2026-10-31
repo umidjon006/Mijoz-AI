@@ -72,6 +72,8 @@ export const mashq = {
   outcomeUnknown: 'Tugamagan',
   qualityLowNotice:
     'Diqqat: tahlil sifati past — model keltirgan dalillarning ko\'pi transkriptda topilmadi. Ballarga ehtiyotkorlik bilan qarang.',
+  qualityLanguageNotice:
+    "Diqqat: tahlilning ba'zi qismlari to'g'ri tilda yaratilmadi va yashirildi. Qayta baholab ko'ring.",
   qualityInsufficientNotice:
     'Bu suhbat juda qisqa bo\'lgani uchun baholanmadi. Kamida 3-4 marta gaplashib ko\'ring.',
 

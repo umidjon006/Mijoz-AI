@@ -27,6 +27,7 @@ import { Pool } from 'pg';
 
 import { ARCHETYPES, ARCHETYPE_KEYS, getArchetype, type Archetype } from './archetypes.js';
 import { createTrainingEngine } from './engine.js';
+import { CUSTOMER_LANGUAGE_FALLBACK, nonLatinWords } from './language.js';
 import {
   classifyLlmError,
   describeLlmError,
@@ -573,7 +574,15 @@ async function verifyPersonaValidation(): Promise<void> {
     assert(llm.calls[1]?.user.includes('LATIN script only') || llm.calls[1]?.system.includes('LATIN script only'), 'tuzatish izohi');
   });
 
-  await checkAsync(report, "persona (uz): kirill qolsa -> birinchi persona qoladi, logga yoziladi", async () => {
+  await checkAsync(report, "persona (uz): o'zbek kirill -> LLM'siz lotinga o'giriladi", async () => {
+    const uzCyr = { ...latinPersona, openingLine: 'Ассалому алайкум, нархини билмоқчи эдим.' };
+    const llm = new FakeTrainerLlm([uzCyr]);
+    const card = await generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound' });
+    assertEqual(card.openingLine, "Assalomu alaykum, narxini bilmoqchi edim.", "lotinga o'girildi");
+    assertEqual(llm.callCount, 1, "qo'shimcha chaqiruv yo'q");
+  });
+
+  await checkAsync(report, "persona (uz): begona til qolsa -> yashiriladi (neytral salom), logga yoziladi", async () => {
     const warnings: string[] = [];
     const logger = {
       info: () => undefined,
@@ -584,9 +593,10 @@ async function verifyPersonaValidation(): Promise<void> {
     };
     const llm = new FakeTrainerLlm([cyrillicPersona, cyrillicPersona]);
     const card = await generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound', logger });
-    assert(card.openingLine.includes('Здравствуйте'), 'sessiya to\'xtamaydi');
+    assertEqual(card.openingLine, 'Assalomu alaykum.', "begona ochilish gapi ko'rsatilmaydi");
     assertEqual(llm.callCount, 2, "uchinchi chaqiruv yo'q");
     assert(warnings.some((w) => w.includes('openingLine')), 'logda maydon nomi');
+    assertEqual(nonLatinWords(card.openingLine).length, 0, "lotin bo'lmagan matn yo'q");
   });
 
   await checkAsync(report, "persona (ru): yozuv tekshirilmaydi", async () => {
@@ -1269,7 +1279,24 @@ async function verifyEngineWithDb(): Promise<void> {
       assert(llm.calls[2]?.system.includes('LATIN script only') ?? false, 'tuzatish izohi');
     });
 
-    await checkAsync(report, "mijoz javobi (uz): kirill qolsa -> javob qoladi, logga yoziladi", async () => {
+    await checkAsync(report, "mijoz javobi (uz): o'zbek kirill -> LLM'siz o'giriladi", async () => {
+      const llm = new FakeTrainerLlm([
+        personaScript('outbound'),
+        fakeTurn({ reply: 'Яхши, нархи қанча?' }),
+      ]);
+      const engine = createTrainingEngine({
+        withTenant,
+        getBusinessProfile: getProfile,
+        llm,
+        random: () => 0.9,
+      });
+      const started = await engine.startSession(ctxA, { archetypeKey: 'negotiator' });
+      const turn = await engine.takeTurn(ctxA, { sessionId: started.sessionId, sellerText: 'salom' });
+      assertEqual(turn.customerReply, 'Yaxshi, narxi qancha?', "lotinga o'girildi");
+      assertEqual(llm.callCount, 2, "qo'shimcha chaqiruv yo'q");
+    });
+
+    await checkAsync(report, "mijoz javobi (uz): begona til qolsa -> neytral gap, logga yoziladi", async () => {
       const warnings: string[] = [];
       const llm = new FakeTrainerLlm([
         personaScript('outbound'),
@@ -1291,7 +1318,7 @@ async function verifyEngineWithDb(): Promise<void> {
       });
       const started = await engine.startSession(ctxA, { archetypeKey: 'negotiator' });
       const turn = await engine.takeTurn(ctxA, { sessionId: started.sessionId, sellerText: 'salom' });
-      assert(turn.customerReply.includes('Хорошо'), 'javob saqlanadi');
+      assertEqual(turn.customerReply, CUSTOMER_LANGUAGE_FALLBACK, "begona javob ko'rsatilmaydi");
       assertEqual(llm.callCount, 3, "uchinchi urinish yo'q");
       assert(warnings.some((w) => w.includes('lotin')), 'ogohlantirish logda');
     });

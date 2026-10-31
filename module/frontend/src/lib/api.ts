@@ -171,6 +171,9 @@ export interface ResultPayload {
     redLineViolations?: RedLineViolationView[];
     /** Skript bo'lmasa `null`/yo'q. */
     scriptAdherence?: ScriptStageView[] | null;
+    /** Til tekshiruvi: yashirilgan maydonlar o'rnida "Bu qism to'g'ri tilda yaratilmadi". */
+    languageCheck?: { transliterated: number; regenerated: number; hidden: string[] };
+    lowQualityReasons?: Array<'evidence' | 'language'>;
   } | null;
   keyMoments: Array<{ turnSeq: number; kind: string; explanation: string }>;
   model: string | null;

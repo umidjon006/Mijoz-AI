@@ -15,7 +15,13 @@ import {
   PersonaGenerationError,
   trainingErrorFromLlm,
 } from './errors.js';
-import { findScriptViolations, scriptCorrectionNote } from './language.js';
+import {
+  classifyUzText,
+  enforceUzLatin,
+  findScriptViolations,
+  scriptCorrectionNote,
+  type EditableText,
+} from './language.js';
 import { extractPriceFigures, offerPriceFigures } from './offer-facts.js';
 import type { TrainerLlm, TrainingLogger } from './ports.js';
 import { buildPersonaSystemPrompt, buildPersonaUserPrompt } from './prompts.js';
@@ -191,6 +197,27 @@ export interface GeneratePersonaInput {
   logger?: TrainingLogger;
 }
 
+/** Persona matnlari — tahrirlanadigan ko'rinishda (til himoyasi uchun). */
+export function personaEditableFields(card: PersonaCard): EditableText[] {
+  const fields: EditableText[] = [
+    { id: 'name', text: card.name, set: (v) => (card.name = v) },
+    { id: 'role', text: card.role, set: (v) => (card.role = v) },
+    { id: 'openingLine', text: card.openingLine, set: (v) => (card.openingLine = v) },
+    { id: 'situation', text: card.situation, set: (v) => (card.situation = v) },
+    { id: 'goal', text: card.goal, set: (v) => (card.goal = v) },
+  ];
+  if (card.hiddenNeed !== null) {
+    fields.push({ id: 'hiddenNeed', text: card.hiddenNeed, set: (v) => (card.hiddenNeed = v) });
+  }
+  card.hiddenFacts.forEach((text, i) =>
+    fields.push({ id: `hiddenFacts.${i}`, text, set: (v) => (card.hiddenFacts[i] = v) }),
+  );
+  card.objections.forEach((o) =>
+    fields.push({ id: `objections.${o.key}`, text: o.text, set: (v) => (o.text = v) }),
+  );
+  return fields;
+}
+
 /** Sotuvchiga ko'rinadigan persona matnlari (ochilish gapi va keyin oshkor qilinadiganlar). */
 export function personaUserFacingText(card: PersonaCard): Array<{ field: string; text: string }> {
   return [
@@ -267,24 +294,38 @@ export async function generatePersonaCard({
     });
   };
 
-  // Til `uz`: lotin bo'lmagan harflar — bitta tuzatish urinishi, keyin log.
+  // Til `uz`: foydalanuvchi persona matnini (ochilish gapi, keyin oshkor
+  // qilinadigan kartalar) HECH QACHON lotin bo'lmagan holda ko'rmaydi:
+  // kirill -> lotin; begona til -> bitta tuzatish urinishi; baribir begona
+  // bo'lsa maydon yashiriladi (ochilish gapi — neytral salom, ism — "Mijoz").
   const checkScript = async (card: PersonaCard): Promise<PersonaCard> => {
     if (language !== 'uz') return card;
     const violations = findScriptViolations(personaUserFacingText(card));
     if (violations.length === 0) return card;
-    try {
-      const retried = await request(scriptCorrectionNote(violations));
-      if (findScriptViolations(personaUserFacingText(retried)).length === 0) return retried;
-    } catch {
-      // Tuzatish muvaffaqiyatsiz — birinchi (yaroqli) persona bilan davom etamiz.
+
+    let chosen = card;
+    const hasForeign = personaUserFacingText(card).some((f) => classifyUzText(f.text) === 'foreign');
+    if (hasForeign) {
+      try {
+        chosen = await request(scriptCorrectionNote(violations));
+      } catch {
+        // Tuzatish muvaffaqiyatsiz — birinchi (yaroqli) persona bilan davom etamiz.
+      }
     }
-    logger?.warn(
-      { violations },
-      `persona matnida lotin bo'lmagan harflar qoldi: ${violations
-        .map((v) => `${v.field}: ${v.words.join(', ')}`)
-        .join('; ')}`.slice(0, 500),
-    );
-    return card;
+
+    const fixed = structuredClone(chosen);
+    const report = await enforceUzLatin(personaEditableFields(fixed), async () => new Map());
+    for (const id of report.hidden) {
+      if (id === 'openingLine') fixed.openingLine = 'Assalomu alaykum.';
+      if (id === 'name') fixed.name = 'Mijoz';
+    }
+    if (report.hidden.length > 0) {
+      logger?.warn(
+        { hidden: report.hidden },
+        `persona: begona tildagi maydonlar yashirildi: ${report.hidden.join(', ')}`,
+      );
+    }
+    return fixed;
   };
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {

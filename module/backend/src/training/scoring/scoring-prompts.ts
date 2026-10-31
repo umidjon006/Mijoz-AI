@@ -16,7 +16,7 @@ import type { KeyMomentCandidate, ScoringTurn, SessionMetrics } from './metrics.
 import type { PlaybookCriterion } from './rubric.js';
 import type { SalesScript } from './sales-script.js';
 
-export const SCORING_PROMPT_VERSION = 'scoring-v2';
+export const SCORING_PROMPT_VERSION = 'scoring-v3';
 
 export interface ScoringPromptInput {
   criteria: readonly PlaybookCriterion[];
@@ -166,9 +166,13 @@ export function buildScoringSystemPrompt({
     'Each explanation: one or two sentences on what changed at that turn and why.',
     '',
     '## Language',
-    'All text you write for the trainee (comment, summary, strengths, improvements, betterPhrasing, explanation)',
-    'MUST be in Uzbek, Latin script, plain spoken style. Evidence quotes stay exactly as in the transcript.',
-    'Never mix in Cyrillic letters, Russian or Mongolian words — every word you write must be Uzbek Latin.',
+    'ALL text you write (comment, summary, strengths, improvements, betterPhrasing, key moment explanations,',
+    'red-line explanations, script comments) MUST be Uzbek in the LATIN script, plain spoken style.',
+    '- NEVER use Cyrillic — not even for Uzbek words (write "so\'radi", never "сўради").',
+    '- Never use Russian, Mongolian or any other language, not even single words.',
+    '- Only evidence quotes are copied exactly as in the transcript.',
+    'Example of the required style:',
+    '  "Siz mijozning ehtiyojini yaxshi so\'radingiz, lekin narxni aniq aytmadingiz va keyingi qadamni kelishmadingiz."',
     '',
     '## Output',
     'Return JSON only:',

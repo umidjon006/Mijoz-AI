@@ -26,7 +26,12 @@ import {
   type PersonaDirection,
   type PersonaLanguage,
 } from './persona.js';
-import { findScriptViolations, nonLatinWords, scriptCorrectionNote } from './language.js';
+import {
+  findScriptViolations,
+  guardCustomerReply,
+  nonLatinWords,
+  scriptCorrectionNote,
+} from './language.js';
 import type {
   PriceCall,
   TokenUsage,
@@ -338,30 +343,25 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
           }
         }
 
-        // Yozuv: o'zbekcha mijoz javobida kirill/boshqa alifbo harflari bo'lmasin.
-        // Bitta tuzatish urinishi; o'tmasa — javob qoladi, lekin logga yoziladi.
+        // Til (uz): sotuvchi HECH QACHON lotin bo'lmagan javob ko'rmaydi.
+        //  - o'zbek kirill -> kodda lotinga o'giriladi (LLM'siz);
+        //  - begona til -> bitta tuzatish urinishi; yana begona bo'lsa javob
+        //    neytral gapga almashtiriladi (holat o'zgarishlari saqlanadi) va logga yoziladi.
         if (persona.language === 'uz') {
           const badWords = nonLatinWords(result.reply);
-          if (badWords.length > 0) {
-            let fixed = false;
-            try {
-              const retryResult = await call(
-                scriptCorrectionNote(findScriptViolations([{ field: 'reply', text: result.reply }])),
-              );
-              if (nonLatinWords(retryResult.reply).length === 0) {
-                result = retryResult;
-                applied = applyTurnResult(state, retryResult, persona, archetype);
-                fixed = true;
-              }
-            } catch {
-              // Tuzatish muvaffaqiyatsiz — birinchi javob bilan davom etamiz.
-            }
-            if (!fixed) {
-              deps.logger?.warn(
-                { sessionId: input.sessionId, words: badWords },
-                `mijoz javobida lotin bo'lmagan harflar qoldi: ${badWords.join(', ')}`,
-              );
-            }
+          const first = result;
+          const guarded = await guardCustomerReply(first, () =>
+            call(scriptCorrectionNote(findScriptViolations([{ field: 'reply', text: first.reply }]))),
+          );
+          result = guarded.result;
+          if (guarded.outcome === 'regenerated') {
+            applied = applyTurnResult(state, guarded.stateSource, persona, archetype);
+          }
+          if (guarded.outcome === 'fallback') {
+            deps.logger?.warn(
+              { sessionId: input.sessionId, words: badWords },
+              `mijoz javobi begona tilda qoldi — neytral gap bilan almashtirildi: ${badWords.join(', ')}`,
+            );
           }
         }
 

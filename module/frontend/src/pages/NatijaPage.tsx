@@ -191,7 +191,15 @@ export function NatijaPage({
           {result.error ? ` (${result.error})` : ''} {rescoreButton}
         </Notice>
       ) : null}
-      {result.quality === 'low' ? <Notice kind="warn">{mashq.qualityLowNotice}</Notice> : null}
+      {result.quality === 'low' &&
+      (result.coaching?.lowQualityReasons ?? ['evidence']).includes('evidence') ? (
+        <Notice kind="warn">{mashq.qualityLowNotice}</Notice>
+      ) : null}
+      {result.quality === 'low' && result.coaching?.lowQualityReasons?.includes('language') ? (
+        <Notice kind="warn">
+          {mashq.qualityLanguageNotice} {rescoreButton}
+        </Notice>
+      ) : null}
 
       <RedLineViolations
         violations={result.coaching?.redLineViolations}
@@ -299,6 +307,7 @@ export function NatijaPage({
         <button type="button" className="mq-btn" onClick={onAnotherCustomer}>
           {mashq.tryAnother}
         </button>
+        {result.status === 'done' ? rescoreButton : null}
         {result.model ? (
           <span className="mq-muted mq-small">
             {result.model} · {result.promptVersion} · v{result.version}

@@ -511,6 +511,12 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
 - **Ball:** `skillScore = Σ(score/3 × weight) / Σ(baholangan vazn) × 100`.
   `null` baho nolga aylanmaydi. `skillScore` va `outcome` — ikki alohida son.
 - **Versiyalash:** qayta baholash eski natijani o'chirmaydi (`version + 1`).
+- **Qayta tekshirish:** `npm run rescore -- --latest` — oxirgi tugagan
+  sessiyani qayta baholaydi (yangi versiya) va saqlangan debriefning har
+  maydoni tilini tekshirib chiqaradi (`TIL: OK` yoki muammoli maydonlar).
+  `--check-only` — LLM'siz, faqat oxirgi natijani tekshiradi;
+  `npm run rescore -- <sessionId>` — aniq sessiya. UI'da ham debrief pastida
+  "Qayta baholash" tugmasi bor.
 - **Osilib qolgan baholash.** Baholash server jarayoni ichida fon rejimida
   ketadi; server to'xtasa (Ctrl+C) natija `pending` da qolardi. Endi server
   startida baholash timeout'idan (`TRAINER_SCORING_TIMEOUT_MS`) eski
@@ -535,10 +541,22 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
   "kuchli tomon" kodda olib tashlanadi. Promptda yana ikki qat'iy qoida:
   kuchli tomonlar profilga zid gapni maqtamaydi; maslahat profilda bor faktni
   "bilmayman" deyishni taklif qilmaydi.
-- **Yozuv tekshiruvi (uz).** Mijoz javobi, persona va debriefdagi model
-  yozgan har matn kodda tekshiriladi: lotin bo'lmagan harf (kirill, mo'g'ul
-  va h.k.) bo'lsa — bitta tuzatish urinishi, o'tmasa natija saqlanadi va
-  logga ogohlantirish yoziladi. Iqtiboslar (transkriptdan aynan) tekshirilmaydi.
+- **Til himoyasi (uz).** Foydalanuvchi HECH QACHON lotin bo'lmagan matn
+  ko'rmaydi. Model yozgan har maydon (mezon izohlari, xulosa, kuchli
+  tomonlar, maslahatlar, muhim lahzalar, qizil chiziq va skript izohlari,
+  mijoz javobi, persona) tasniflanadi:
+  - **lotin o'zbekcha** — joyida;
+  - **o'zbek kirill** (faqat o'zbek kirill alifbosi harflari, ў қ ғ ҳ bilan) —
+    kodda deterministik lotinga o'giriladi (`ў→o'`, `ғ→g'`, `қ→q`, `ҳ→h`,
+    `ш→sh`, `ч→ch`, `ё→yo`, `ю→yu`, `я→ya`, `е→ye` so'z boshida/unlidan
+    keyin, `ц→ts/s`, `ъ→'`), LLM chaqirilmaydi;
+  - **boshqa til / aralash begona so'zlar** (mo'g'ul `ө ү`, rus yoki mo'g'ul
+    so'zlari) — FAQAT shu maydonlar bitta qo'shimcha chaqiruvda qayta
+    yaratiladi; baribir yaroqsiz bo'lsa maydon o'rnida **"Bu qism to'g'ri
+    tilda yaratilmadi"** chiqadi va natija `quality: low` (UI'da sababi va
+    "Qayta baholash" tugmasi). Mijoz javobi uchun: bitta qayta urinish,
+    keyin neytral gap ("Kechirasiz, tushunmadim...").
+  Iqtiboslar (transkriptdan aynan) tekshirilmaydi.
 - **Mijoz narxni oldindan bilmaydi.** Persona-card'dagi `focusOffer` —
   profildagi to'liq satr (narx, muddat bilan) — faqat baholash uchun. Mijoz
   promptiga faqat taklif **nomi** beriladi; mijoz narx/muddat/shartni faqat

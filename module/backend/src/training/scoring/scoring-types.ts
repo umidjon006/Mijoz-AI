@@ -77,6 +77,13 @@ export interface CoachingResult {
   redLineViolations?: RedLineViolation[];
   /** Skript berilgan bo'lsa — har bosqich natijasi; aks holda `null`/yo'q. */
   scriptAdherence?: ScriptStageResult[] | null;
+  /**
+   * Til tekshiruvi (uz): nechta maydon kirilldan o'girildi, qayta yaratildi va
+   * qaysilari yashirildi (o'rniga "Bu qism to'g'ri tilda yaratilmadi").
+   */
+  languageCheck?: { transliterated: number; regenerated: number; hidden: string[] };
+  /** `quality: 'low'` sababi(lar)i — UI mos ogohlantirishni ko'rsatadi. */
+  lowQualityReasons?: Array<'evidence' | 'language'>;
 }
 
 export interface KeyMomentResult {

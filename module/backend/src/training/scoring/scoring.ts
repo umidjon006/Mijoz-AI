@@ -17,7 +17,14 @@ import {
   isCorrectableLlmError,
   TrainingError,
 } from '../errors.js';
-import { findScriptViolations, scriptCorrectionNote, type ScriptViolation } from '../language.js';
+import {
+  enforceUzLatin,
+  LANGUAGE_PLACEHOLDER,
+  UZ_LATIN_REWRITE_SYSTEM,
+  type EditableText,
+  type RegenerateFields,
+  type UzLatinReport,
+} from '../language.js';
 import { personaCardSchema, type PersonaCard } from '../persona.js';
 import type { BusinessProfile } from '../profile-schema.js';
 import type {
@@ -429,28 +436,55 @@ export function processScriptAdherence(
  * Sotuvchiga ko'rinadigan, MODEL YOZGAN matnlar (iqtiboslar emas — ular
  * transkriptdan aynan olinadi). Til `uz` bo'lganda yozuv tekshiruvi uchun.
  */
+export function userFacingScoringFields(processed: ProcessedScoring): EditableText[] {
+  const fields: EditableText[] = [];
+  const add = (id: string, text: string, set: (value: string) => void): void => {
+    fields.push({ id, text, set });
+  };
+  for (const c of processed.criteria) {
+    add(`criteria.${c.code}.comment`, c.comment, (v) => (c.comment = v));
+  }
+  const coaching = processed.coaching;
+  add('coaching.summary', coaching.summary, (v) => (coaching.summary = v));
+  coaching.strengths.forEach((text, i) => add(`coaching.strengths.${i}`, text, (v) => (coaching.strengths[i] = v)));
+  coaching.improvements.forEach((item, i) => {
+    add(`coaching.improvements.${i}.title`, item.title, (v) => (item.title = v));
+    add(`coaching.improvements.${i}.why`, item.why, (v) => (item.why = v));
+    add(`coaching.improvements.${i}.betterPhrasing`, item.betterPhrasing, (v) => (item.betterPhrasing = v));
+  });
+  for (const m of processed.keyMoments) {
+    add(`keyMoments.T${m.turnSeq}.explanation`, m.explanation, (v) => (m.explanation = v));
+  }
+  (coaching.redLineViolations ?? []).forEach((r, i) =>
+    add(`redLineViolations.${i}.explanation`, r.explanation, (v) => (r.explanation = v)),
+  );
+  (coaching.scriptAdherence ?? []).forEach((st, i) =>
+    add(`scriptAdherence.${i}.comment`, st.comment, (v) => (st.comment = v)),
+  );
+  return fields;
+}
+
+/** Faqat matnlar (tekshiruv/log uchun). */
 export function userFacingScoringText(
   processed: ProcessedScoring,
 ): Array<{ field: string; text: string }> {
-  const fields: Array<{ field: string; text: string }> = [];
-  for (const c of processed.criteria) fields.push({ field: `criteria.${c.code}.comment`, text: c.comment });
-  fields.push({ field: 'coaching.summary', text: processed.coaching.summary });
-  processed.coaching.strengths.forEach((text, i) => fields.push({ field: `coaching.strengths.${i}`, text }));
-  processed.coaching.improvements.forEach((item, i) => {
-    fields.push({ field: `coaching.improvements.${i}.title`, text: item.title });
-    fields.push({ field: `coaching.improvements.${i}.why`, text: item.why });
-    fields.push({ field: `coaching.improvements.${i}.betterPhrasing`, text: item.betterPhrasing });
-  });
-  for (const m of processed.keyMoments) {
-    fields.push({ field: `keyMoments.T${m.turnSeq}`, text: m.explanation });
-  }
-  (processed.coaching.redLineViolations ?? []).forEach((v, i) =>
-    fields.push({ field: `redLineViolations.${i}.explanation`, text: v.explanation }),
-  );
-  (processed.coaching.scriptAdherence ?? []).forEach((s, i) =>
-    fields.push({ field: `scriptAdherence.${i}.comment`, text: s.comment }),
-  );
-  return fields;
+  return userFacingScoringFields(processed).map((f) => ({ field: f.id, text: f.text }));
+}
+
+const rewriteSchema = z.object({
+  fields: z.array(z.object({ id: z.string().min(1), text: z.string().min(1).max(1200) })).max(80),
+});
+
+/**
+ * Til `uz`: debriefdagi model yozgan HAR maydon — kirill bo'lsa lotinga
+ * o'giriladi, begona til bo'lsa FAQAT o'sha maydonlar bitta chaqiruvda qayta
+ * yaratiladi, baribir yaroqsiz bo'lsa yashiriladi (`LANGUAGE_PLACEHOLDER`).
+ */
+export async function enforceScoringLanguage(
+  processed: ProcessedScoring,
+  regenerate: RegenerateFields,
+): Promise<UzLatinReport> {
+  return await enforceUzLatin(userFacingScoringFields(processed), regenerate, LANGUAGE_PLACEHOLDER);
 }
 
 // ---------------------------------------------------------------------------
@@ -616,8 +650,6 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
       }
       const processContext: ProcessScoringContext = { redLines: profile?.redLines ?? [], script };
       const language = deps.language ?? 'uz';
-      const scriptIssues = (p: ProcessedScoring): ScriptViolation[] =>
-        language === 'uz' ? findScriptViolations(userFacingScoringText(p)) : [];
 
       // 4. LLM (tranzaksiyadan TASHQARIDA — tarmoq chaqiruvi qulf ushlab turmasin).
       let usage: TokenUsage | undefined;
@@ -665,31 +697,18 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
         }
         let processed = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
 
-        // 5. Dalillar ko'p yiqilsa YOKI matnda lotin bo'lmagan harflar bo'lsa —
-        //    BITTA qayta urinish (ikkala tuzatish izohi bitta so'rovda).
-        const evidenceBad = processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO;
-        const scriptBad = scriptIssues(processed);
-        if (evidenceBad || scriptBad.length > 0) {
+        // 5. Dalillar ko'p yiqilsa — bitta qayta urinish.
+        if (processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO) {
           const correction = [
-            ...(evidenceBad
-              ? [
-                  'Your evidence quotes failed verification. Problems:',
-                  ...processed.failureNotes.map((note) => `- ${note}`),
-                  'Copy the quotes character-by-character from SELLER lines in the transcript.',
-                  'If you cannot find a real quote for a criterion, set its score to null instead of inventing one.',
-                ]
-              : []),
-            ...(scriptBad.length > 0 ? [scriptCorrectionNote(scriptBad)] : []),
+            'Your evidence quotes failed verification. Problems:',
+            ...processed.failureNotes.map((note) => `- ${note}`),
+            'Copy the quotes character-by-character from SELLER lines in the transcript.',
+            'If you cannot find a real quote for a criterion, set its score to null instead of inventing one.',
           ].join('\n');
           try {
             raw = await call(correction);
             const retried = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
-            const retriedScript = scriptIssues(retried).length;
-            // Dalillar yomonlashmasa va yozuv xatolari ko'paymasa — yangisini olamiz.
-            if (
-              retried.evidenceFailureRatio <= processed.evidenceFailureRatio &&
-              retriedScript <= scriptBad.length
-            ) {
+            if (retried.evidenceFailureRatio <= processed.evidenceFailureRatio) {
               processed = retried;
             }
           } catch (err) {
@@ -697,15 +716,52 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           }
         }
 
-        const remainingScript = scriptIssues(processed);
-        if (remainingScript.length > 0) {
-          deps.logger?.warn(
-            { sessionId, scriptViolations: remainingScript },
-            `debriefda lotin bo'lmagan harflar qoldi (qayta urinishdan keyin): ${remainingScript
-              .map((v) => `${v.field}: ${v.words.join(', ')}`)
-              .join('; ')}`.slice(0, 500),
-          );
+        // 6. Til (uz): foydalanuvchi HECH QACHON lotin bo'lmagan matn ko'rmaydi.
+        //    Kirill -> lotin (kod); begona til -> faqat o'sha maydonlar bitta
+        //    chaqiruvda qayta; baribir yaroqsiz -> yashiriladi, quality=low.
+        let languageReport: UzLatinReport | null = null;
+        if (language === 'uz') {
+          const regenerate: RegenerateFields = async (bad) => {
+            const req = {
+              stage: 'training.scoring.language',
+              system: UZ_LATIN_REWRITE_SYSTEM,
+              user: JSON.stringify({ fields: bad }),
+              schema: rewriteSchema,
+              outputSchema: rewriteSchema,
+            };
+            let out: z.infer<typeof rewriteSchema>;
+            if (typeof llm.completeJsonWithUsage === 'function') {
+              const res = await llm.completeJsonWithUsage(req);
+              costUsd += priceCall && res.usage ? Math.max(0, priceCall(res.usage)) : 0;
+              out = res.value;
+            } else {
+              out = await llm.completeJson(req);
+            }
+            const wanted = new Set(bad.map((f) => f.id));
+            return new Map(out.fields.filter((f) => wanted.has(f.id)).map((f) => [f.id, f.text]));
+          };
+          languageReport = await enforceScoringLanguage(processed, regenerate);
+          if (languageReport.hidden.length > 0 || languageReport.regenerated.length > 0) {
+            deps.logger?.warn(
+              { sessionId, language: languageReport },
+              `debrief tili: ${languageReport.transliterated.length} o'girildi, ` +
+                `${languageReport.regenerated.length} qayta yaratildi, ${languageReport.hidden.length} yashirildi`,
+            );
+          }
         }
+        const languageLow = (languageReport?.hidden.length ?? 0) > 0;
+        const evidenceLow = processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO;
+        if (languageReport) {
+          processed.coaching.languageCheck = {
+            transliterated: languageReport.transliterated.length,
+            regenerated: languageReport.regenerated.length,
+            hidden: languageReport.hidden,
+          };
+        }
+        processed.coaching.lowQualityReasons = [
+          ...(evidenceLow ? (['evidence'] as const) : []),
+          ...(languageLow ? (['language'] as const) : []),
+        ];
         if (processed.droppedNotes.length > 0) {
           deps.logger?.warn(
             { sessionId, dropped: processed.droppedNotes },
@@ -713,8 +769,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           );
         }
 
-        const quality: ScoringQuality =
-          processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO ? 'low' : 'ok';
+        const quality: ScoringQuality = evidenceLow || languageLow ? 'low' : 'ok';
         const { skillScore } = computeSkillScore(processed.criteria);
 
         await withTenant(ctx.businessId, async (tx) => {

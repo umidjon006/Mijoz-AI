@@ -488,6 +488,7 @@ async function main(): Promise<void> {
     'verify-bakeoff',
     'db-local',
     'diag-llm',
+    'rescore',
   ];
 
   for (const name of entryPoints) {
