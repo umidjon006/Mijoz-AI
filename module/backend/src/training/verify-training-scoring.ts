@@ -594,17 +594,17 @@ function verifyProcessing(): void {
 // 6 + 7. DB va route'lar
 // ---------------------------------------------------------------------------
 function appUrl(): string {
-  const port = process.env.POSTGRES_PORT ?? '55433';
+  const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
-    process.env.TRAINING_DATABASE_URL ??
+    process.env.TRAINING_DATABASE_URL?.trim() ||
     `postgres://trainer_app:trainer_app@127.0.0.1:${port}/sotuv_trener`
   );
 }
 
 function superUrl(): string {
-  const port = process.env.POSTGRES_PORT ?? '55433';
+  const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
-    process.env.SUPERUSER_DATABASE_URL ??
+    process.env.SUPERUSER_DATABASE_URL?.trim() ||
     `postgres://postgres:postgres@127.0.0.1:${port}/sotuv_trener`
   );
 }

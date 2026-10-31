@@ -34,7 +34,8 @@
     "db:local:start": "tsx --env-file-if-exists=.env src/db-local.ts start",
     "db:local:stop": "tsx --env-file-if-exists=.env src/db-local.ts stop",
     "db:local:status": "tsx --env-file-if-exists=.env src/db-local.ts status",
-    "verify:env": "tsx --env-file-if-exists=.env src/verify-env.ts"
+    "verify:env": "tsx --env-file-if-exists=.env src/verify-env.ts",
+    "diag:llm": "tsx --env-file-if-exists=.env src/diag-llm.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

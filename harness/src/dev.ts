@@ -6,7 +6,7 @@
  * Qo'shimcha paket (concurrently) kerak bo'lmasligi uchun oddiy spawn.
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import './env.js';
+import { envInt } from './env.js';
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -67,5 +67,5 @@ process.on('SIGTERM', stop);
 run('backend', 'npm', ['run', 'serve']);
 run('frontend', 'npm', ['run', 'ui:dev']);
 
-console.log('\nBackend: http://127.0.0.1:' + (process.env.HARNESS_PORT ?? '5180'));
-console.log('UI:      http://127.0.0.1:' + (process.env.UI_PORT ?? '5181') + '\n');
+console.log('\nBackend: http://127.0.0.1:' + envInt('HARNESS_PORT', 5180, { min: 1, max: 65535 }));
+console.log('UI:      http://127.0.0.1:' + envInt('UI_PORT', 5181, { min: 1, max: 65535 }) + '\n');

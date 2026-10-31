@@ -30,13 +30,18 @@ async function request<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    let detail = '';
+    const raw = await response.text().catch(() => '');
+    let detail = raw;
     try {
-      detail = JSON.stringify(await response.json());
+      // Server: { error, message, category? } — `message` toifa bilan boshlanadi (`[timeout] ...`).
+      const body = JSON.parse(raw) as { error?: string; message?: string; category?: string };
+      if (body.message) {
+        detail = `${body.error ?? 'xato'}: ${body.message}`;
+      }
     } catch {
-      detail = await response.text().catch(() => '');
+      // JSON emas — matnning o'zi.
     }
-    throw new Error(`${response.status} ${detail.slice(0, 300)}`);
+    throw new Error(`${response.status} ${detail.slice(0, 400)}`);
   }
 
   if (response.status === 204) return undefined as T;

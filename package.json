@@ -36,6 +36,7 @@
     "db:local:start": "npm run db:local:start -w sotuv-trener-harness",
     "db:local:stop": "npm run db:local:stop -w sotuv-trener-harness",
     "db:local:status": "npm run db:local:status -w sotuv-trener-harness",
-    "verify:env": "npm run verify:env -w sotuv-trener-harness"
+    "verify:env": "npm run verify:env -w sotuv-trener-harness",
+    "diag:llm": "npm run diag:llm -w sotuv-trener-harness --"
   }
 }

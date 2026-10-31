@@ -12,7 +12,12 @@
  *    tranzaksiyada.
  */
 import { getArchetype, type Archetype, type ArchetypeKey } from './archetypes.js';
-import { TrainingError } from './errors.js';
+import {
+  describeLlmError,
+  isCorrectableLlmError,
+  TrainingError,
+  trainingErrorFromLlm,
+} from './errors.js';
 import {
   generatePersonaCard,
   personaCardSchema,
@@ -272,6 +277,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
             }),
             user,
             schema: turnResultParser,
+            outputSchema: turnResultSchema,
           };
           const out = await callLlm(llm, req);
           if (out.usage) {
@@ -287,16 +293,23 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         try {
           result = await call();
         } catch (err) {
+          // Timeout / HTTP xato — shakl muammosi emas: tuzatuvchi qayta so'rov yo'q.
+          if (!isCorrectableLlmError(err)) {
+            throw trainingErrorFromLlm('llm_invalid_output', 'mijoz navbati olinmadi', err);
+          }
           guardRetried = true;
-          const detail = err instanceof Error ? err.message : String(err);
+          const detail = describeLlmError(err);
           try {
             result = await call(
               `Your previous answer did not match the required JSON shape: ${detail}. Return valid JSON with all required fields.`,
             );
           } catch (err2) {
+            if (!isCorrectableLlmError(err2)) {
+              throw trainingErrorFromLlm('llm_invalid_output', 'mijoz navbati olinmadi', err2);
+            }
             throw new TrainingError(
               'llm_invalid_output',
-              "model javobi sxemaga tushmadi (qayta urinishdan keyin ham)",
+              `model javobi sxemaga tushmadi (qayta urinishdan keyin ham): ${describeLlmError(err2)}`,
               err2,
             );
           }

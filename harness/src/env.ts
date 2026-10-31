@@ -116,6 +116,10 @@ export function loadHarnessEnv(options: LoadHarnessEnvOptions = {}): EnvLoadResu
   if (found) {
     const parsed = parseEnvFile(readFileSync(path, 'utf8'));
     for (const [key, value] of Object.entries(parsed)) {
+      // `tsx --env-file-if-exists=.env` faylni BIZDAN OLDIN o'qib, `KEY=` ni
+      // bo'sh satr qilib qo'yadi. Bo'sh = sozlanmagan: uni olib tashlaymiz,
+      // aks holda `?? default` lar bo'sh satrni "qiymat bor" deb oladi.
+      if (value === '' && env[key] === '') delete env[key];
       // Shell/CI env'i ustun: allaqachon berilgan qiymatga tegmaymiz.
       if (env[key] !== undefined && env[key] !== '') {
         overridden.push(key);
@@ -134,6 +138,47 @@ export function loadHarnessEnv(options: LoadHarnessEnvOptions = {}): EnvLoadResu
   const result: EnvLoadResult = { found, path, applied, overridden, empty };
   if (useCache) cached = result;
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Env'dan o'qish yordamchilari: BO'SH qiymat hamma joyda "default" degani.
+// ---------------------------------------------------------------------------
+
+/** Qiymat (trim qilingan) yoki `undefined` — bo'sh satr ham `undefined`. */
+export function envStr(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env[name]?.trim();
+  return value ? value : undefined;
+}
+
+/**
+ * Butun son. Bo'sh/yo'q -> `fallback`. Noto'g'ri (son emas yoki chegaradan
+ * tashqari) qiymat jim e'tiborsiz qoldirilMAYDI — xato tashlanadi.
+ */
+export function envInt(
+  name: string,
+  fallback: number,
+  { min = 0, max = Number.MAX_SAFE_INTEGER, env = process.env }: {
+    min?: number;
+    max?: number;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): number {
+  const raw = envStr(name, env);
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${name}="${raw}" noto'g'ri: ${min}..${max} oralig'idagi butun son kutiladi`);
+  }
+  return n;
+}
+
+/** Bayroq: bo'sh/yo'q -> `fallback`; `1/true/yes/on` -> true; `0/false/no/off` -> false. */
+export function envBool(name: string, fallback: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = envStr(name, env)?.toLowerCase();
+  if (raw === undefined) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  throw new Error(`${name}="${raw}" noto'g'ri: 1 yoki 0 kutiladi`);
 }
 
 /** Faqat testlar uchun: keshni tozalaydi. */

@@ -13,7 +13,7 @@
  * (`demo-llm.ts`) — UI ni kalitsiz ham sinash mumkin.
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import './env.js';
+import { envBool, envInt, envStr } from './env.js';
 
 import Fastify from 'fastify';
 
@@ -41,8 +41,9 @@ import {
 import { priceCall } from './llm-anthropic.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
-const PORT = Number(process.env.HARNESS_PORT ?? 5180);
-const PROFILE_KEY = process.env.HARNESS_PROFILE ?? listDemoProfileKeys()[0] ?? '';
+// Bo'sh qiymat = default (avval bo'sh HARNESS_PORT port 0 ga aylanardi).
+const PORT = envInt('HARNESS_PORT', 5180, { min: 1, max: 65535 });
+const PROFILE_KEY = envStr('HARNESS_PROFILE') ?? listDemoProfileKeys()[0] ?? '';
 
 async function main(): Promise<void> {
   const profile = loadDemoProfile(PROFILE_KEY);
@@ -71,7 +72,7 @@ async function main(): Promise<void> {
   const llm = turnLlm.llm;
   const scoringLlm = scoringResolved.llm;
 
-  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'warn' } });
+  const app = Fastify({ logger: { level: envStr('LOG_LEVEL') ?? 'warn' } });
 
   const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm, priceCall });
   const scoring = createScoringService({
@@ -81,7 +82,9 @@ async function main(): Promise<void> {
     logger: app.log,
   });
 
-  const fakeAuth = process.env.HARNESS_AUTH === '1';
+  // Default YOQILGAN: bo'sh HARNESS_AUTH avval auth'ni o'chirib, UI 401 olardi.
+  // O'chirish faqat aniq HARNESS_AUTH=0 bilan.
+  const fakeAuth = envBool('HARNESS_AUTH', true);
 
   await registerTrainingRoutes(app, {
     engine,

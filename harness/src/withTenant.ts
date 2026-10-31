@@ -17,17 +17,17 @@ import { Pool } from 'pg';
 import type { TrainingTx, WithTenant } from '../../module/backend/src/training/ports.js';
 
 export function appDatabaseUrl(): string {
-  const port = process.env.POSTGRES_PORT ?? '55433';
+  const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
-    process.env.TRAINING_DATABASE_URL ??
+    process.env.TRAINING_DATABASE_URL?.trim() ||
     `postgres://trainer_app:trainer_app@127.0.0.1:${port}/sotuv_trener`
   );
 }
 
 export function superuserDatabaseUrl(): string {
-  const port = process.env.POSTGRES_PORT ?? '55433';
+  const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
-    process.env.SUPERUSER_DATABASE_URL ??
+    process.env.SUPERUSER_DATABASE_URL?.trim() ||
     `postgres://postgres:postgres@127.0.0.1:${port}/sotuv_trener`
   );
 }

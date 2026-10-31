@@ -11,7 +11,12 @@
 import { z } from 'zod';
 
 import { getArchetype } from '../archetypes.js';
-import { TrainingError } from '../errors.js';
+import {
+  classifyLlmError,
+  describeLlmError,
+  isCorrectableLlmError,
+  TrainingError,
+} from '../errors.js';
 import { personaCardSchema, type PersonaCard } from '../persona.js';
 import type {
   PriceCall,
@@ -422,6 +427,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           system: buildScoringSystemPrompt(promptInput),
           user: buildScoringUserPrompt(promptInput),
           schema: { parse: (raw: unknown): LlmScoring => llmScoringSchema.parse(coerceLlmScoring(raw)) },
+          outputSchema: llmScoringSchema,
         };
         if (typeof llm.completeJsonWithUsage === 'function') {
           const out = await llm.completeJsonWithUsage(req);
@@ -433,7 +439,17 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
       };
 
       try {
-        let raw = await call();
+        let raw: LlmScoring;
+        try {
+          raw = await call();
+        } catch (err) {
+          // Faqat javob SHAKLI xato bo'lsa — bitta tuzatuvchi qayta so'rov.
+          // Timeout / HTTP xato darhol `failed` ga tushadi (haqiqiy toifasi bilan).
+          if (!isCorrectableLlmError(err)) throw err;
+          raw = await call(
+            `Your previous answer was rejected: ${describeLlmError(err)}. Return a single valid JSON object with all required fields.`,
+          );
+        }
         let processed = processLlmScoring(raw, rubric.criteria, turns, candidates);
 
         // 5. Dalillar ko'p yiqilsa — bitta qayta urinish.
@@ -477,7 +493,8 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
 
         return { resultId, version, status: 'done', quality, skillScore };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        // Haqiqiy toifa bilan: `[timeout] ...`, `[http] ... HTTP 429 ...`, `[schema] ...`.
+        const message = describeLlmError(err);
         await withTenant(ctx.businessId, async (tx) => {
           await repo.finishResult(tx, {
             resultId,
@@ -493,7 +510,10 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
             error: message.slice(0, 1000),
           });
         });
-        deps.logger?.error({ err, sessionId }, 'baholash muvaffaqiyatsiz');
+        deps.logger?.error(
+          { err, sessionId, llmErrorKind: classifyLlmError(err) },
+          `baholash muvaffaqiyatsiz: ${message}`,
+        );
         return { resultId, version, status: 'failed', quality: 'ok', skillScore: null };
       }
     },

@@ -8,7 +8,7 @@
  */
 import { defineConfig } from 'drizzle-kit';
 
-const port = process.env.POSTGRES_PORT ?? '55433';
+const port = process.env.POSTGRES_PORT?.trim() || '55433';
 
 export default defineConfig({
   dialect: 'postgresql',
@@ -16,7 +16,7 @@ export default defineConfig({
   out: './drizzle',
   dbCredentials: {
     url:
-      process.env.SUPERUSER_DATABASE_URL ??
+      process.env.SUPERUSER_DATABASE_URL?.trim() ||
       `postgres://postgres:postgres@127.0.0.1:${port}/sotuv_trener`,
   },
   verbose: true,

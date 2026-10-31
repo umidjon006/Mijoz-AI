@@ -27,10 +27,18 @@ import { Pool } from 'pg';
 
 import { ARCHETYPES, ARCHETYPE_KEYS, getArchetype, type Archetype } from './archetypes.js';
 import { createTrainingEngine } from './engine.js';
-import { PersonaGenerationError, TrainingError } from './errors.js';
+import {
+  classifyLlmError,
+  describeLlmError,
+  isCorrectableLlmError,
+  LlmCallError,
+  PersonaGenerationError,
+  TrainingError,
+} from './errors.js';
 import {
   generatePersonaCard,
   makePersonaCardSchema,
+  personaCardSchema,
   type PersonaCard,
 } from './persona.js';
 import type { GetBusinessProfile, TrainingContext, TrainingTx, WithTenant } from './ports.js';
@@ -481,6 +489,72 @@ async function verifyPersonaValidation(): Promise<void> {
     assert(second.user.includes('focusOffer'), 'retry promptida xato tafsiloti bo\'lishi kerak');
   });
 
+  /** Har chaqiruvda berilgan xatoni tashlaydigan LLM (chaqiruvlar sanaladi). */
+  const throwingLlm = (err: unknown) => {
+    const llm = {
+      calls: 0,
+      async completeJson<T>(): Promise<T> {
+        llm.calls += 1;
+        throw err;
+      },
+    };
+    return llm;
+  };
+
+  await checkAsync(report, 'persona: timeout -> llm_timeout, tuzatuvchi qayta so\'rov YO\'Q', async () => {
+    const llm = throwingLlm(new LlmCallError('timeout', '60000 ms ichida javob kelmadi'));
+    await assertThrows(
+      () => generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound' }),
+      (err) =>
+        err instanceof TrainingError &&
+        err.code === 'llm_timeout' &&
+        err.llmErrorKind === 'timeout' &&
+        err.message.includes('[timeout]') &&
+        !err.message.includes('validatsiya'),
+      'llm_timeout kutilgan (validatsiya xatosi EMAS)',
+    );
+    assertEqual(llm.calls, 1, 'timeout modulda qayta so\'ralmaydi (adapter o\'zi 1 marta takrorlaydi)');
+  });
+
+  await checkAsync(report, 'persona: HTTP 429 -> llm_provider_error, status va xabar bilan', async () => {
+    const llm = throwingLlm(
+      new LlmCallError('http', 'HTTP 429: quota', { status: 429, providerMessage: 'Quota exceeded' }),
+    );
+    await assertThrows(
+      () => generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound' }),
+      (err) =>
+        err instanceof TrainingError &&
+        err.code === 'llm_provider_error' &&
+        err.message.includes('HTTP 429') &&
+        err.message.includes('Quota exceeded'),
+      'llm_provider_error kutilgan',
+    );
+    assertEqual(llm.calls, 1, 'HTTP xato qayta so\'ralmaydi');
+  });
+
+  await checkAsync(report, 'persona: invalid_json -> tuzatib qayta so\'raladi (2 chaqiruv)', async () => {
+    const llm = throwingLlm(new LlmCallError('invalid_json', 'model javobidan JSON ajratib olinmadi'));
+    await assertThrows(
+      () => generatePersonaCard({ llm, profile: PROFILE, archetype, direction: 'inbound' }),
+      (err) => err instanceof PersonaGenerationError && err.message.includes('[invalid_json]'),
+      'PersonaGenerationError [invalid_json] kutilgan',
+    );
+    assertEqual(llm.calls, 2, 'shakl xatosi bir marta tuzatiladi');
+  });
+
+  check(report, 'xato toifalari: ZodError/AbortError/SyntaxError/LlmCallError', () => {
+    const zodErr = personaCardSchema.safeParse({}).error;
+    assertEqual(classifyLlmError(zodErr), 'schema', 'ZodError -> schema');
+    const abort = new Error('This operation was aborted');
+    abort.name = 'AbortError';
+    assertEqual(classifyLlmError(abort), 'timeout', 'AbortError -> timeout');
+    assertEqual(classifyLlmError(new SyntaxError('x')), 'invalid_json', 'SyntaxError -> invalid_json');
+    assertEqual(classifyLlmError(new Error('boshqa')), 'unknown', 'boshqa -> unknown');
+    assert(isCorrectableLlmError(zodErr), 'schema tuzatiladi');
+    assert(!isCorrectableLlmError(abort), 'timeout tuzatilmaydi');
+    assert(describeLlmError(abort).startsWith('[timeout]'), 'tavsif toifadan boshlanadi');
+  });
+
   await checkAsync(report, 'noto\'g\'ri e\'tiroz soni rad etiladi, to\'g\'risi qabul qilinadi', async () => {
     const llm = new FakeTrainerLlm([
       fakePersona({ objectionKeys: ['only_one'], severity: 3, focusOffer: FIRST_OFFER }),
@@ -700,17 +774,17 @@ function verifyPrompts(): void {
 // 3 + 6. Engine (haqiqiy DB, cheklangan rol)
 // ---------------------------------------------------------------------------
 function appUrl(): string {
-  const port = process.env.POSTGRES_PORT ?? '55433';
+  const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
-    process.env.TRAINING_DATABASE_URL ??
+    process.env.TRAINING_DATABASE_URL?.trim() ||
     `postgres://trainer_app:trainer_app@127.0.0.1:${port}/sotuv_trener`
   );
 }
 
 function superUrl(): string {
-  const port = process.env.POSTGRES_PORT ?? '55433';
+  const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
-    process.env.SUPERUSER_DATABASE_URL ??
+    process.env.SUPERUSER_DATABASE_URL?.trim() ||
     `postgres://postgres:postgres@127.0.0.1:${port}/sotuv_trener`
   );
 }

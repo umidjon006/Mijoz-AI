@@ -10,7 +10,10 @@
  *      shell env'i fayldan ustun turadi;
  *   3. provayder aniqlash (anthropic, openai-compatible, DEMO_LLM, xatolar);
  *   4. startup qatori: kalitning QIYMATI va to'liq URL hech qachon chiqmaydi;
- *   5. kirish nuqtalari `.env` ni haqiqatan import qiladimi (statik tekshiruv).
+ *   5. kirish nuqtalari `.env` ni haqiqatan import qiladimi (statik tekshiruv);
+ *   6. bo'sh qiymat = default (port, auth, JSON rejimi, reasoning, timeout);
+ *   7. so'rov tanasi: TRAINER_JSON_MODE haqiqatan formatni almashtiradi;
+ *   8. adapter xato toifalari, timeout qayta urinishi, log qatori (soxta fetch).
  */
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,11 +28,21 @@ import {
   section,
 } from '../../module/backend/src/training/testing/assert.js';
 import {
+  envBool,
+  envInt,
+  envStr,
   harnessEnvPath,
   harnessRoot,
   loadHarnessEnv,
   parseEnvFile,
 } from './env.js';
+import { LlmCallError } from '../../module/backend/src/training/errors.js';
+import { personaCardSchema } from '../../module/backend/src/training/persona.js';
+import { turnResultSchema } from '../../module/backend/src/training/state.js';
+import { llmScoringSchema } from '../../module/backend/src/training/scoring/scoring.js';
+import { buildChatBody, createOpenAiCompatibleLlm } from './llm-openai-compatible.js';
+import { zodToJsonSchema } from './zod-json-schema.js';
+import { z } from 'zod';
 import {
   baseUrlHost,
   createTrainerLlm,
@@ -135,6 +148,16 @@ async function main(): Promise<void> {
     assertEqual(Number(env.HARNESS_PORT ?? 5180), 5180, 'default port saqlanadi');
   });
 
+  await checkAsync(report, "`--env-file` qo'ygan bo'sh satr process.env dan OLIB TASHLANADI", async () => {
+    const path = join(dir, 'node-empty.env');
+    await writeFile(path, 'HARNESS_PORT=\nHARNESS_AUTH=\n');
+    // tsx --env-file-if-exists=.env aynan shunday qiladi: KEY= -> ''.
+    const env: NodeJS.ProcessEnv = { HARNESS_PORT: '', HARNESS_AUTH: '' };
+    loadHarnessEnv({ path, env });
+    assert(!('HARNESS_PORT' in env), "HARNESS_PORT o'chirildi");
+    assert(!('HARNESS_AUTH' in env), "HARNESS_AUTH o'chirildi");
+  });
+
   check(report, "bo'sh shell qiymati fayl qiymatiga yo'l beradi", () => {
     const env: NodeJS.ProcessEnv = { TRAINER_MODEL: '' };
     loadHarnessEnv({ path: join(dir, 'prec.env'), env });
@@ -175,6 +198,29 @@ async function main(): Promise<void> {
   });
 
   // -------------------------------------------------------------------------
+  section("[2b] bo'sh qiymat = default");
+
+  check(report, "envStr/envInt/envBool: bo'sh va bo'shliq -> default", () => {
+    const env: NodeJS.ProcessEnv = { A: '', B: '   ', P: '', F: '' };
+    assertEqual(envStr('A', env), undefined, "bo'sh -> undefined");
+    assertEqual(envStr('B', env), undefined, "bo'shliq -> undefined");
+    assertEqual(envInt('P', 5180, { env }), 5180, "bo'sh port -> 5180 (0 EMAS)");
+    assertEqual(envBool('F', true, env), true, "bo'sh HARNESS_AUTH -> yoqilgan");
+    assertEqual(envBool('F', true, { F: '0' }), false, 'aniq 0 -> o\'chirilgan');
+    assertEqual(envInt('P', 1, { env: { P: ' 42 ' } }), 42, 'trim');
+  });
+
+  check(report, "envInt: noto'g'ri qiymat jim o'tmaydi", () => {
+    let caught = false;
+    try {
+      envInt('P', 1, { min: 1, max: 65535, env: { P: 'abc' } });
+    } catch {
+      caught = true;
+    }
+    assert(caught, 'xato tashlandi');
+  });
+
+  // -------------------------------------------------------------------------
   section('[3] provayder aniqlash');
 
   check(report, 'default: anthropic + ANTHROPIC_API_KEY', () => {
@@ -201,6 +247,71 @@ async function main(): Promise<void> {
     assertEqual(config.scoringModel, 'gemini-3.8-flash', 'baholash modeli');
     assert(config.hasKey, 'kalit bor');
   });
+
+  const geminiBase = {
+    TRAINER_PROVIDER: 'openai-compatible',
+    TRAINER_API_KEY_ENV: 'GEMINI_API_KEY',
+    TRAINER_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    TRAINER_MODEL: 'gemini-3.8-flash',
+    GEMINI_API_KEY: FAKE_KEY,
+  };
+
+  check(report, "yangi sozlamalar: bo'sh qiymat -> xavfsiz default", () => {
+    const config = resolveProviderConfig({
+      ...geminiBase,
+      TRAINER_JSON_MODE: '',
+      TRAINER_REASONING_EFFORT: '',
+      TRAINER_SCORING_REASONING_EFFORT: '',
+      TRAINER_TIMEOUT_MS: '',
+      TRAINER_SCORING_TIMEOUT_MS: '',
+      TRAINER_SCORING_MODEL: '',
+      DEMO_LLM: '',
+    });
+    assertEqual(config.jsonMode, 'object', 'json default');
+    assertEqual(config.reasoningEffort, null, 'reasoning yuborilmaydi');
+    assertEqual(config.scoringReasoningEffort, null, 'baholash reasoning yuborilmaydi');
+    assertEqual(config.timeoutMs, 60_000, 'timeout default');
+    assertEqual(config.scoringTimeoutMs, 120_000, 'baholash timeout default');
+    assertEqual(config.scoringModel, 'gemini-3.8-flash', "bo'sh baholash modeli -> TRAINER_MODEL");
+  });
+
+  check(report, 'TRAINER_JSON_MODE / reasoning / timeout qiymatlari o\'qiladi', () => {
+    const config = resolveProviderConfig({
+      ...geminiBase,
+      TRAINER_JSON_MODE: 'schema',
+      TRAINER_REASONING_EFFORT: 'minimal',
+      TRAINER_SCORING_REASONING_EFFORT: 'low',
+      TRAINER_TIMEOUT_MS: '30000',
+      TRAINER_SCORING_TIMEOUT_MS: '180000',
+    });
+    assertEqual(config.jsonMode, 'schema', 'schema');
+    assertEqual(config.reasoningEffort, 'minimal', 'mijoz reasoning');
+    assertEqual(config.scoringReasoningEffort, 'low', 'baholash reasoning');
+    assertEqual(config.timeoutMs, 30_000, 'timeout');
+    assertEqual(config.scoringTimeoutMs, 180_000, 'baholash timeout');
+    assertEqual(
+      resolveProviderConfig({ ...geminiBase, TRAINER_JSON_MODE: 'json_object' }).jsonMode,
+      'object',
+      'eski nom json_object -> object',
+    );
+  });
+
+  for (const [name, value] of [
+    ['TRAINER_JSON_MODE', 'yaml'],
+    ['TRAINER_REASONING_EFFORT', 'max'],
+    ['TRAINER_TIMEOUT_MS', 'abc'],
+    ['TRAINER_SCORING_TIMEOUT_MS', '10'],
+  ] as const) {
+    check(report, `${name}=${value} -> ProviderConfigError`, () => {
+      let caught: unknown;
+      try {
+        resolveProviderConfig({ ...geminiBase, [name]: value });
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof ProviderConfigError, 'ProviderConfigError');
+    });
+  }
 
   check(report, "kalit bo'sh bo'lsa hasKey=false", () => {
     const config = resolveProviderConfig({ ANTHROPIC_API_KEY: '   ' });
@@ -325,6 +436,16 @@ async function main(): Promise<void> {
     assert(line.includes('TOPILMADI'), '.env topilmagani aytiladi');
   });
 
+  check(report, 'startup qatorida json/reasoning/timeout ko\'rinadi', () => {
+    const line = startupLine(
+      resolveProviderConfig({ ...geminiBase, TRAINER_REASONING_EFFORT: 'none' }),
+      emptyLoad,
+    );
+    assert(line.includes('json=object'), 'json rejimi');
+    assert(line.includes('reasoning=none/default'), 'reasoning');
+    assert(line.includes('timeout=60s/120s'), 'timeout');
+  });
+
   // -------------------------------------------------------------------------
   section('[5] kirish nuqtalari env.js ni import qiladi');
 
@@ -345,6 +466,7 @@ async function main(): Promise<void> {
     'bakeoff-score',
     'verify-bakeoff',
     'db-local',
+    'diag-llm',
   ];
 
   for (const name of entryPoints) {
@@ -369,6 +491,195 @@ async function main(): Promise<void> {
       .map(([name]) => name);
     assertEqual(missing.join(','), '', `flag tushib qolgan skriptlar: ${missing.join(', ')}`);
   });
+
+  // -------------------------------------------------------------------------
+  section("[6] so'rov tanasi: TRAINER_JSON_MODE formatni almashtiradi");
+
+  const input = { system: 'S', user: 'U', outputSchema: personaCardSchema, stage: 'training.persona' };
+  const base = { model: 'm', maxTokens: 100 };
+
+  check(report, 'schema -> response_format json_schema (strict)', () => {
+    const body = buildChatBody(input, { ...base, jsonMode: 'schema' });
+    const rf = body.response_format as { type: string; json_schema: { strict: boolean; schema: unknown } };
+    assertEqual(rf.type, 'json_schema', 'type');
+    assertEqual(rf.json_schema.strict, true, 'strict');
+    assert(rf.json_schema.schema !== null, 'sxema bor');
+  });
+
+  check(report, 'object -> json_object; prompt -> response_format yo\'q', () => {
+    const obj = buildChatBody(input, { ...base, jsonMode: 'object' });
+    assertEqual((obj.response_format as { type: string }).type, 'json_object', 'object');
+    const prompt = buildChatBody(input, { ...base, jsonMode: 'prompt' });
+    assert(!('response_format' in prompt), 'prompt rejimida response_format yo\'q');
+  });
+
+  check(report, 'schema, lekin outputSchema yo\'q -> json_object ga tushadi', () => {
+    const body = buildChatBody({ ...input, outputSchema: undefined }, { ...base, jsonMode: 'schema' });
+    assertEqual((body.response_format as { type: string }).type, 'json_object', 'fallback');
+  });
+
+  check(report, 'reasoning_effort faqat berilganda yuboriladi', () => {
+    assert(!('reasoning_effort' in buildChatBody(input, { ...base, jsonMode: 'object' })), 'yo\'q');
+    const body = buildChatBody(input, { ...base, jsonMode: 'object', reasoningEffort: 'minimal' });
+    assertEqual(body.reasoning_effort, 'minimal', 'bor');
+  });
+
+  check(report, 'modulning 3 ta sxemasi JSON Schema ga aylanadi', () => {
+    for (const [name, schema] of [
+      ['persona', personaCardSchema],
+      ['turn', turnResultSchema],
+      ['scoring', llmScoringSchema],
+    ] as const) {
+      const json = zodToJsonSchema(schema) as {
+        type: string;
+        required: string[];
+        properties: Record<string, unknown>;
+        additionalProperties: boolean;
+      } | null;
+      assert(json !== null, `${name}: sxema yasaldi`);
+      assertEqual(json.type, 'object', `${name}: object`);
+      assertEqual(json.additionalProperties, false, `${name}: additionalProperties=false`);
+      assertEqual(
+        json.required.join(','),
+        Object.keys(json.properties).join(','),
+        `${name}: hamma maydon majburiy (strict)`,
+      );
+    }
+  });
+
+  check(report, 'nullable: type[] va anyOf uslublari', () => {
+    const schema = z.object({ note: z.string().nullable() });
+    const a = zodToJsonSchema(schema, 'type-array') as { properties: { note: unknown } };
+    assertEqual(JSON.stringify(a.properties.note), '{"type":["string","null"]}', 'type[]');
+    const b = zodToJsonSchema(schema, 'anyOf') as { properties: { note: unknown } };
+    assertEqual(
+      JSON.stringify(b.properties.note),
+      '{"anyOf":[{"type":"string"},{"type":"null"}]}',
+      'anyOf',
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  section('[7] adapter: xato toifalari, timeout qayta urinishi, log (soxta fetch)');
+
+  const realFetch = globalThis.fetch;
+  const okBody = (content: string) =>
+    JSON.stringify({
+      choices: [{ message: { content }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    });
+  const tinySchema = z.object({ a: z.number() });
+  const req = { stage: 'training.turn', system: 's', user: 'u', schema: tinySchema };
+
+  /** Skriptlangan fetch: har chaqiruvga navbatdagi javob; 'hang' — abort'gacha kutadi. */
+  function stubFetch(script: Array<{ status: number; body: string } | 'hang'>) {
+    const seen: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const step = script.shift();
+      if (step === 'hang' || step === undefined) {
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('This operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      }
+      return new Response(step.body, { status: step.status });
+    }) as typeof fetch;
+    return seen;
+  }
+
+  function makeLlm(lines: string[], timeoutMs = 50) {
+    return createOpenAiCompatibleLlm({
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: FAKE_KEY,
+      model: 'gemini-3.8-flash',
+      timeoutMs,
+      log: (line) => lines.push(line),
+    });
+  }
+
+  async function caught(fn: () => Promise<unknown>): Promise<unknown> {
+    try {
+      await fn();
+    } catch (err) {
+      return err;
+    }
+    throw new Error('xato kutilgan edi');
+  }
+
+  try {
+    await checkAsync(report, 'timeout: BIR marta qayta, keyin LlmCallError(timeout)', async () => {
+      const seen = stubFetch(['hang', 'hang']);
+      const lines: string[] = [];
+      const err = await caught(() => makeLlm(lines).completeJson(req));
+      assert(err instanceof LlmCallError && err.kind === 'timeout', 'timeout toifasi');
+      assertEqual(seen.length, 2, '2 ta so\'rov (1 + 1 qayta)');
+      assertEqual(lines.length, 2, 'har urinishga bitta log qatori');
+      assert(lines[0]?.includes('outcome=timeout'), 'logda outcome=timeout');
+    });
+
+    await checkAsync(report, 'timeout, keyin muvaffaqiyat -> qiymat qaytadi', async () => {
+      const seen = stubFetch(['hang', { status: 200, body: okBody('{"a":1}') }]);
+      const value = await makeLlm([]).completeJson(req);
+      assertEqual(value.a, 1, 'qiymat');
+      assertEqual(seen.length, 2, '2 ta so\'rov');
+    });
+
+    await checkAsync(report, 'HTTP 429: qayta urinilmaydi, status va qisqa xabar, kalit YO\'Q', async () => {
+      const seen = stubFetch([
+        {
+          status: 429,
+          body: JSON.stringify({ error: { message: `Quota exceeded for key ${FAKE_KEY}` } }),
+        },
+      ]);
+      const lines: string[] = [];
+      const err = await caught(() => makeLlm(lines).completeJson(req));
+      assert(err instanceof LlmCallError && err.kind === 'http', 'http toifasi');
+      assertEqual((err as LlmCallError).status, 429, 'status');
+      assert((err as LlmCallError).providerMessage?.includes('Quota exceeded') ?? false, 'provayder xabari');
+      assert(!(err as Error).message.includes(FAKE_KEY), 'xato matnida kalit yo\'q');
+      assert(!lines.join('\n').includes(FAKE_KEY), 'logda kalit yo\'q');
+      assertEqual(seen.length, 1, 'bitta so\'rov');
+      assert(lines[0]?.includes('outcome=http_429'), 'logda outcome=http_429');
+    });
+
+    await checkAsync(report, 'JSON emas -> invalid_json; kesilgan javob shuni aytadi', async () => {
+      stubFetch([
+        {
+          status: 200,
+          body: JSON.stringify({ choices: [{ message: { content: '{"a":' }, finish_reason: 'length' }] }),
+        },
+      ]);
+      const err = await caught(() => makeLlm([]).completeJson(req));
+      assert(err instanceof LlmCallError && err.kind === 'invalid_json', 'invalid_json');
+      assert((err as Error).message.includes('max_tokens'), 'kesilgani aytiladi');
+    });
+
+    await checkAsync(report, 'sxemaga tushmasa -> ZodError, adapter qayta so\'ramaydi', async () => {
+      const seen = stubFetch([{ status: 200, body: okBody('{"a":"bir"}') }]);
+      const lines: string[] = [];
+      const err = await caught(() => makeLlm(lines).completeJson(req));
+      assert(err instanceof Error && err.name === 'ZodError', 'ZodError');
+      assertEqual(seen.length, 1, 'bitta so\'rov (tuzatish modulda)');
+      assert(lines[0]?.includes('outcome=schema'), 'logda outcome=schema');
+    });
+
+    await checkAsync(report, 'log qatori: stage, model, latency, tokens, outcome', async () => {
+      stubFetch([{ status: 200, body: okBody('{"a":2}') }]);
+      const lines: string[] = [];
+      await makeLlm(lines).completeJson(req);
+      assertEqual(lines.length, 1, 'bitta qator');
+      const line = lines[0] ?? '';
+      for (const part of ['[llm]', 'stage=training.turn', 'model=gemini-3.8-flash', 'latency=', 'tokens=10/5', 'outcome=ok']) {
+        assert(line.includes(part), `qatorda "${part}"`);
+      }
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 
   console.log(
     `\nNatija: ${report.passed} o'tdi, ${report.failed} xato, ${report.skipped} tashlab ketildi.`,

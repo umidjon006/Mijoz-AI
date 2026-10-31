@@ -41,6 +41,8 @@ const STATUS_BY_CODE: Record<TrainingErrorCode, number> = {
   profile_missing: 409,
   persona_generation_failed: 502,
   llm_invalid_output: 502,
+  llm_timeout: 504,
+  llm_provider_error: 502,
   session_not_found: 404,
   session_forbidden: 404,
   session_not_active: 409,
@@ -196,7 +198,18 @@ export async function registerTrainingRoutes(
         return reply.code(400).send({ error: 'validation_failed', issues: err.issues });
       }
       if (isTrainingError(err)) {
-        return reply.code(STATUS_BY_CODE[err.code]).send({ error: err.code, message: err.message });
+        const status = STATUS_BY_CODE[err.code];
+        if (status >= 500) {
+          deps.logger?.warn(
+            { code: err.code, llmErrorKind: err.llmErrorKind },
+            `training: ${err.code}: ${err.message}`,
+          );
+        }
+        return reply.code(status).send({
+          error: err.code,
+          message: err.message,
+          ...(err.llmErrorKind ? { category: err.llmErrorKind } : {}),
+        });
       }
       deps.logger?.error({ err }, 'training: kutilmagan xato');
       return reply.code(500).send({ error: 'internal_error' });

@@ -128,7 +128,14 @@ const result = await engine.takeTurn(ctx, { sessionId, sellerText });
 
 Xatolar: `TrainingError.code` -> HTTP:
 `profile_missing` 409, `session_not_found` 404, `session_forbidden` 403,
-`session_not_active` 409, `persona_generation_failed` / `llm_invalid_output` 502.
+`session_not_active` 409, `persona_generation_failed` / `llm_invalid_output` 502,
+`llm_timeout` 504, `llm_provider_error` 502. LLM xatolarida javobda
+`category` (`timeout` | `http` | `invalid_json` | `schema`) ham bo'ladi.
+
+Adapteringiz yiqilganda `errors.ts` dagi `LlmCallError(kind, message, {status, providerMessage})`
+ni tashlasa, modul timeout/HTTP xatoni "tuzatib qayta so'ramaydi" va sababni
+to'g'ri ko'rsatadi. Tashlamasa ham ishlaydi: `ZodError` -> `schema`,
+`AbortError` -> `timeout`, `SyntaxError` -> `invalid_json` deb tanib olinadi.
 
 ## 4b. Motor (Step 2): nima qanday ishlaydi
 

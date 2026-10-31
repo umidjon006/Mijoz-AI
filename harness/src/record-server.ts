@@ -8,7 +8,7 @@
  * hech qanday provayderga yuborilmaydi (uni `bench-stt` keyin o'zi yuboradi).
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import './env.js';
+import { envInt } from './env.js';
 
 import { createServer } from 'node:http';
 import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
@@ -22,7 +22,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const webDir = resolve(here, '../web');
 const samplesDir = resolve(here, '../benchmark/samples');
 
-const PORT = Number(process.env.BENCH_PORT ?? 5174);
+const PORT = envInt('BENCH_PORT', 5174, { min: 1, max: 65535 });
 
 async function savedSampleNumbers(): Promise<number[]> {
   try {

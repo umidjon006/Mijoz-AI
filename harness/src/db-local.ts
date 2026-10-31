@@ -17,7 +17,7 @@
  * `harness/.pg-local`), `PG_BIN` (topilmasa avtomatik qidiriladi).
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import './env.js';
+import { envStr } from './env.js';
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const PORT = process.env.POSTGRES_PORT ?? '55433';
+const PORT = envStr('POSTGRES_PORT') ?? '55433';
 const DB_NAME = 'sotuv_trener';
 const SUPERUSER = 'postgres';
 const dataDir = process.env.PG_LOCAL_DATA?.trim() || resolve(harnessRoot, '.pg-local');

@@ -9,7 +9,12 @@
 import { z } from 'zod';
 
 import type { Archetype } from './archetypes.js';
-import { PersonaGenerationError } from './errors.js';
+import {
+  describeLlmError,
+  isCorrectableLlmError,
+  PersonaGenerationError,
+  trainingErrorFromLlm,
+} from './errors.js';
 import type { TrainerLlm } from './ports.js';
 import { buildPersonaSystemPrompt, buildPersonaUserPrompt } from './prompts.js';
 import type { BusinessProfile } from './profile-schema.js';
@@ -185,6 +190,10 @@ function issuesToText(err: unknown): string {
  * Bitta LLM chaqiruvi bilan persona-card yasaydi. Validatsiya o'tmasa —
  * xato matni qo'shilgan holda BIR marta qayta uriniladi; yana o'tmasa
  * `PersonaGenerationError`.
+ *
+ * Timeout / HTTP xato — JAVOB SHAKLI muammosi emas: tuzatuvchi qayta so'rov
+ * yuborilmaydi (adapter timeout'ni o'zi bir marta takrorlaydi), xato darhol
+ * haqiqiy toifasi bilan (`llm_timeout` / `llm_provider_error`) chiqadi.
  */
 export async function generatePersonaCard({
   llm,
@@ -214,15 +223,19 @@ export async function generatePersonaCard({
         system: buildPersonaSystemPrompt(promptInput),
         user: buildPersonaUserPrompt(promptInput),
         schema,
+        outputSchema: personaCardSchema,
       });
     } catch (err) {
+      if (!isCorrectableLlmError(err)) {
+        throw trainingErrorFromLlm('persona_generation_failed', 'persona-card yaratilmadi', err);
+      }
       lastError = err;
       correction = `Your previous JSON was rejected: ${issuesToText(err)}. Fix exactly these problems and return the full JSON again.`;
     }
   }
 
   throw new PersonaGenerationError(
-    `persona-card ${2} urinishdan keyin ham validatsiyadan o'tmadi: ${issuesToText(lastError)}`,
+    `persona-card 2 urinishdan keyin ham yaroqsiz: ${describeLlmError(lastError)}`,
     lastError,
   );
 }

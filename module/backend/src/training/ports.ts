@@ -36,7 +36,21 @@ export interface TrainerLlmRequest<T> {
   user: string;
   /** Javob JSON'ini tekshiradigan zod sxema (yoki unga mos validator). */
   schema: { parse: (input: unknown) => T };
+  /**
+   * IXTIYORIY: javob SHAKLINING zod tavsifi (yumshoq tozalashdan keyingi
+   * yakuniy shakl). Tuzilmali chiqishni (`json_schema`) qo'llaydigan adapter
+   * undan JSON Schema yasashi mumkin; boshqalar e'tiborsiz qoldiradi.
+   * Tekshiruv baribir `schema.parse` bilan qilinadi.
+   */
+  outputSchema?: unknown;
 }
+
+/**
+ * Adapter LLM chaqiruvi yiqilganda `errors.ts` dagi `LlmCallError` ni
+ * (`kind`: timeout | http | invalid_json | schema) tashlashi TAVSIYA etiladi —
+ * shunda modul shakl xatosini qayta so'raydi, timeout/HTTP xatoni esa
+ * darhol haqiqiy toifasi bilan foydalanuvchiga ko'rsatadi.
+ */
 
 /**
  * LLM porti — asosiy repodagi `LlmClient` bilan bir xil shakl

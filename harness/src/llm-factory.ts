@@ -7,23 +7,39 @@
  *   TRAINER_SCORING_MODEL  baholash modeli (berilmasa TRAINER_MODEL)
  *   TRAINER_API_KEY_ENV kalit qaysi env o'zgaruvchisida (kalitning O'ZI emas)
  *   TRAINER_BASE_URL    `openai-compatible` uchun majburiy
+ *   TRAINER_JSON_MODE   schema | object | prompt          (default: object)
+ *   TRAINER_REASONING_EFFORT          mijoz navbati (va persona) uchun
+ *   TRAINER_SCORING_REASONING_EFFORT  baholash uchun
+ *                       none | minimal | low | medium | high; bo'sh — yuborilmaydi
+ *                       (provayder default'i). Faqat `openai-compatible`.
+ *   TRAINER_TIMEOUT_MS          bitta so'rov chegarasi, mijoz/persona (default 60000)
+ *   TRAINER_SCORING_TIMEOUT_MS  bitta so'rov chegarasi, baholash     (default 120000)
  *   DEMO_LLM=1          soxta (demo) LLM — faqat ANIQ so'ralganda
+ *
+ * Hamma joyda BO'SH qiymat = "default" (o'zgaruvchi yo'qdek).
  *
  * MUHIM: kalit yo'q bo'lsa demo LLM'ga JIM O'TILMAYDI. Yo aniq `DEMO_LLM=1`
  * qo'yiladi, yo skript tushunarli ogohlantirish bilan to'xtaydi.
  */
 // ENG BIRINCHI: `.env` ni yuklaydi (import tartibi qanday bo'lsa ham).
-import { harnessEnv, type EnvLoadResult } from './env.js';
+import { envInt, envStr, harnessEnv, type EnvLoadResult } from './env.js';
 
 import type { TrainerLlm } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
 import { createDemoLlm } from './demo-llm.js';
 import { createAnthropicTrainerLlm, DEFAULT_TRAINER_MODEL } from './llm-anthropic.js';
-import { createOpenAiCompatibleLlm } from './llm-openai-compatible.js';
+import { createOpenAiCompatibleLlm, type JsonMode } from './llm-openai-compatible.js';
 
 export type TrainerProvider = 'anthropic' | 'openai-compatible';
 
 export const DEFAULT_SCORING_MODEL = 'claude-sonnet-5-5';
+export const DEFAULT_TIMEOUT_MS = 60_000;
+export const DEFAULT_SCORING_TIMEOUT_MS = 120_000;
+export const DEFAULT_JSON_MODE: JsonMode = 'object';
+/** Baholash JSON'i katta (mezonlar + coaching) — 1024 token kesib qo'yardi. */
+export const SCORING_MAX_TOKENS = 4096;
+export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 export interface ProviderConfig {
   provider: TrainerProvider;
@@ -36,6 +52,12 @@ export interface ProviderConfig {
   demoRequested: boolean;
   /** `keyEnv` to'ldirilganmi. */
   hasKey: boolean;
+  jsonMode: JsonMode;
+  /** `null` — yuborilmaydi (provayder default'i). */
+  reasoningEffort: ReasoningEffort | null;
+  scoringReasoningEffort: ReasoningEffort | null;
+  timeoutMs: number;
+  scoringTimeoutMs: number;
 }
 
 export class MissingLlmKeyError extends Error {
@@ -55,9 +77,38 @@ export class ProviderConfigError extends Error {
 }
 
 /** Env'ni o'qib, qaysi provayder va qaysi model ishlatilishini aniqlaydi. */
+function parseJsonMode(env: NodeJS.ProcessEnv): JsonMode {
+  const raw = envStr('TRAINER_JSON_MODE', env);
+  if (raw === undefined) return DEFAULT_JSON_MODE;
+  // Eski nomlar ham qabul qilinadi.
+  if (raw === 'schema' || raw === 'json_schema') return 'schema';
+  if (raw === 'object' || raw === 'json_object') return 'object';
+  if (raw === 'prompt') return 'prompt';
+  throw new ProviderConfigError(
+    `TRAINER_JSON_MODE "${raw}" noto'g'ri — faqat schema | object | prompt`,
+  );
+}
+
+function parseEffort(name: string, env: NodeJS.ProcessEnv): ReasoningEffort | null {
+  const raw = envStr(name, env)?.toLowerCase();
+  if (raw === undefined) return null;
+  if ((REASONING_EFFORTS as readonly string[]).includes(raw)) return raw as ReasoningEffort;
+  throw new ProviderConfigError(
+    `${name} "${raw}" noto'g'ri — ${REASONING_EFFORTS.join(' | ')} yoki bo'sh`,
+  );
+}
+
+function parseTimeout(name: string, fallback: number, env: NodeJS.ProcessEnv): number {
+  try {
+    return envInt(name, fallback, { min: 1_000, max: 600_000, env });
+  } catch (err) {
+    throw new ProviderConfigError(err instanceof Error ? err.message : String(err));
+  }
+}
+
 export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): ProviderConfig {
-  const demoRequested = env.DEMO_LLM === '1';
-  const raw = (env.TRAINER_PROVIDER ?? 'anthropic').trim();
+  const demoRequested = envStr('DEMO_LLM', env) === '1';
+  const raw = envStr('TRAINER_PROVIDER', env) ?? 'anthropic';
 
   if (raw !== 'anthropic' && raw !== 'openai-compatible') {
     throw new ProviderConfigError(
@@ -67,11 +118,10 @@ export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): Pro
   const provider: TrainerProvider = raw;
 
   const keyEnv =
-    env.TRAINER_API_KEY_ENV?.trim() ||
-    (provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : '');
+    envStr('TRAINER_API_KEY_ENV', env) ?? (provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : '');
 
   if (provider === 'openai-compatible') {
-    if (!env.TRAINER_BASE_URL?.trim()) {
+    if (!envStr('TRAINER_BASE_URL', env)) {
       throw new ProviderConfigError(
         "TRAINER_PROVIDER=openai-compatible uchun TRAINER_BASE_URL majburiy",
       );
@@ -81,7 +131,7 @@ export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): Pro
         "TRAINER_PROVIDER=openai-compatible uchun TRAINER_API_KEY_ENV majburiy (kalit NOMI)",
       );
     }
-    if (!env.TRAINER_MODEL?.trim()) {
+    if (!envStr('TRAINER_MODEL', env)) {
       throw new ProviderConfigError(
         "TRAINER_PROVIDER=openai-compatible uchun TRAINER_MODEL majburiy",
       );
@@ -89,19 +139,24 @@ export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): Pro
   }
 
   const model =
-    env.TRAINER_MODEL?.trim() || (provider === 'anthropic' ? DEFAULT_TRAINER_MODEL : '');
+    envStr('TRAINER_MODEL', env) ?? (provider === 'anthropic' ? DEFAULT_TRAINER_MODEL : '');
   const scoringModel =
-    env.TRAINER_SCORING_MODEL?.trim() ||
+    envStr('TRAINER_SCORING_MODEL', env) ??
     (provider === 'anthropic' ? DEFAULT_SCORING_MODEL : model);
 
   return {
     provider,
     keyEnv,
-    baseUrl: env.TRAINER_BASE_URL?.trim() || null,
+    baseUrl: envStr('TRAINER_BASE_URL', env) ?? null,
     model,
     scoringModel,
     demoRequested,
-    hasKey: Boolean(keyEnv && env[keyEnv]?.trim()),
+    hasKey: Boolean(keyEnv && envStr(keyEnv, env)),
+    jsonMode: parseJsonMode(env),
+    reasoningEffort: parseEffort('TRAINER_REASONING_EFFORT', env),
+    scoringReasoningEffort: parseEffort('TRAINER_SCORING_REASONING_EFFORT', env),
+    timeoutMs: parseTimeout('TRAINER_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, env),
+    scoringTimeoutMs: parseTimeout('TRAINER_SCORING_TIMEOUT_MS', DEFAULT_SCORING_TIMEOUT_MS, env),
   };
 }
 
@@ -137,24 +192,30 @@ export function createTrainerLlm({
     throw new MissingLlmKeyError(config);
   }
 
-  const apiKey = process.env[config.keyEnv] as string;
+  const apiKey = (process.env[config.keyEnv] as string).trim();
   const model = scoring ? config.scoringModel : config.model;
+  const timeoutMs = scoring ? config.scoringTimeoutMs : config.timeoutMs;
+  const maxTokens = scoring ? SCORING_MAX_TOKENS : undefined;
 
   if (config.provider === 'anthropic') {
     return {
-      llm: createAnthropicTrainerLlm({ apiKey, model }),
+      llm: createAnthropicTrainerLlm({ apiKey, model, timeoutMs, ...(maxTokens ? { maxTokens } : {}) }),
       provider: 'anthropic',
       model,
       isDemo: false,
     };
   }
 
+  const effort = scoring ? config.scoringReasoningEffort : config.reasoningEffort;
   return {
     llm: createOpenAiCompatibleLlm({
       apiKey,
       baseUrl: config.baseUrl as string,
       model,
-      jsonMode: (process.env.TRAINER_JSON_MODE as 'json_object' | 'prompt' | undefined) ?? 'json_object',
+      jsonMode: config.jsonMode,
+      timeoutMs,
+      ...(maxTokens ? { maxTokens } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
     }),
     provider: 'openai-compatible',
     model,
@@ -223,6 +284,15 @@ export function startupLine(
   if (config.model) parts.push(`model=${config.model}`);
   if (config.scoringModel && config.scoringModel !== config.model) {
     parts.push(`baholash=${config.scoringModel}`);
+  }
+  if (!config.demoRequested) {
+    if (config.provider === 'openai-compatible') {
+      parts.push(`json=${config.jsonMode}`);
+      parts.push(
+        `reasoning=${config.reasoningEffort ?? 'default'}/${config.scoringReasoningEffort ?? 'default'}`,
+      );
+    }
+    parts.push(`timeout=${config.timeoutMs / 1000}s/${config.scoringTimeoutMs / 1000}s`);
   }
   parts.push(
     config.keyEnv

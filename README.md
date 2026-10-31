@@ -180,15 +180,48 @@ ahamiyatsiz. Ikki qoida:
 
 - **shell env'i `.env` dan ustun**: `TRAINER_MODEL=x npm run play` `.env` dagi
   qiymatni bosib o'tadi;
-- **`KEY=` (bo'sh qiymat) — "sozlanmagan"**: bunday nom umuman qo'yilmaydi,
-  shuning uchun default qiymatlar (port, model) ishlashda davom etadi.
+- **`KEY=` (bo'sh qiymat) — "sozlanmagan"**: hamma joyda default ishlatiladi
+  (`--env-file` qo'ygan bo'sh satr ham olib tashlanadi). Masalan, bo'sh
+  `HARNESS_PORT` — 5180 (avval port 0 bo'lib qolardi), bo'sh `HARNESS_AUTH` —
+  soxta auth YOQILGAN (o'chirish faqat aniq `HARNESS_AUTH=0` bilan).
+
+Qo'shimcha sozlamalar (hammasi ixtiyoriy, bo'sh = default):
+
+| O'zgaruvchi | Default | Nima qiladi |
+|---|---|---|
+| `TRAINER_JSON_MODE` | `object` | `schema` — `response_format: json_schema` (strict, sxema moduldagi zod'dan); `object` — `json_object`; `prompt` — `response_format` yuborilmaydi. Faqat `openai-compatible`. |
+| `TRAINER_REASONING_EFFORT` | yuborilmaydi | mijoz navbati va persona uchun `reasoning_effort` (`none` \| `minimal` \| `low` \| `medium` \| `high`). Faqat `openai-compatible`. |
+| `TRAINER_SCORING_REASONING_EFFORT` | yuborilmaydi | xuddi shu, baholash uchun. |
+| `TRAINER_TIMEOUT_MS` | `60000` | bitta so'rov chegarasi (mijoz/persona). |
+| `TRAINER_SCORING_TIMEOUT_MS` | `120000` | bitta so'rov chegarasi (baholash). |
+| `TRAINER_LLM_LOG` | `1` | `0` — har chaqiruv log qatorini o'chiradi. |
+
+**Xatolar toifalanadi** — `timeout` (biz uzdik), `http` (status + provayderning
+qisqa xabari), `invalid_json`, `schema`. Timeout ko'pi bilan **bir marta**
+qayta uriniladi; HTTP xato qayta urinilmaydi; faqat `invalid_json`/`schema`
+tuzatuvchi prompt bilan qayta so'raladi. UI va logda haqiqiy toifa ko'rinadi
+(`llm_timeout` 504, `llm_provider_error` 502, masalan
+`persona-card yaratilmadi: [timeout] ...: 60000 ms ichida javob kelmadi`).
+
+Har bir LLM chaqiruvi stderr'ga bitta qator yozadi:
+
+```
+[llm] stage=training.persona model=gemini-3.8-flash latency=4210ms tokens=812/430 outcome=ok
+[llm] stage=training.turn model=gemini-3.8-flash latency=60002ms tokens=- outcome=timeout · 60000 ms ichida javob kelmadi
+```
+
+**Provayderni tekshirish:** `npm run diag:llm` sozlangan provayderga 7 ta
+kichik HAQIQIY so'rov yuboradi (oddiy matn; `json_object`; `json_schema`
+strict ikki xil null yozuvi bilan; `reasoning_effort` = none / minimal / low)
+va har biri uchun HTTP status, kechikish, tokenlar, javob o'qilganini jadvalda
+ko'rsatadi. `-- --scoring` — baholash modelini sinaydi. Kalit chiqmaydi.
 
 Har skript startida bir qator chiqadi — provayder, baseUrl'ning **faqat host**
 qismi, model nomlari va kalit o'rnatilgan-yo'qligi (kalitning qiymati
 **hech qachon** chiqmaydi):
 
 ```
-LLM sozlamasi: provayder=openai-compatible · host=generativelanguage.googleapis.com · model=gemini-3.8-flash · kalit GEMINI_API_KEY=o'rnatilgan · env=harness/.env (9 ta o'zgaruvchi)
+LLM sozlamasi: provayder=openai-compatible · host=generativelanguage.googleapis.com · model=gemini-3.8-flash · json=object · reasoning=low/default · timeout=90s/180s · kalit GEMINI_API_KEY=o'rnatilgan · env=harness/.env (9 ta o'zgaruvchi)
 ```
 
 **Kalit yo'q bo'lsa demo LLM'ga JIM O'TILMAYDI.** `play`, `serve` va `dev`
@@ -207,15 +240,36 @@ TRAINER_MODEL=claude-haiku-5-5
 TRAINER_SCORING_MODEL=claude-sonnet-5-5
 ```
 
-Gemini (OpenAI-mos endpoint):
+Gemini (OpenAI-mos endpoint) — `diag:llm` natijalariga ko'ra tavsiya:
 
 ```bash
 TRAINER_PROVIDER=openai-compatible
 TRAINER_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
 TRAINER_API_KEY_ENV=GEMINI_API_KEY
 GEMINI_API_KEY=...
-TRAINER_MODEL=gemini-2.5-flash
+TRAINER_MODEL=gemini-3.8-flash
+TRAINER_JSON_MODE=object
+TRAINER_REASONING_EFFORT=low
+TRAINER_SCORING_REASONING_EFFORT=
+TRAINER_TIMEOUT_MS=90000
+TRAINER_SCORING_TIMEOUT_MS=180000
 ```
+
+Nega shunday (`gemini-3.8-flash`, 2026-10-31 dagi `diag:llm`):
+
+- `reasoning_effort=minimal` — **400** ("Thinking level MINIMAL is not
+  supported for this model"); `low` va `none` darhol rad etilmadi, lekin
+  bu o'lchovda endpoint band bo'lgani uchun javobi ham kelmadi. `low` —
+  Gemini 3 ning hujjatlashtirilgan darajasi, shuning uchun mijoz uchun `low`;
+  baholashda sifat muhim — provayder default'i (bo'sh).
+- `json_schema` strict — `anyOf` null yozuvi bilan **200**, javob o'qildi
+  (adapter shu yozuvni ishlatadi). Lekin faqat kichik sxemada sinaldi;
+  persona/baholash sxemalarida tasdiqlanmaguncha `object` xavfsizroq.
+  `npm run play` bilan sinab ko'rib, `TRAINER_JSON_MODE=schema` ga o'tish mumkin.
+- Kechikish juda katta va beqaror: 2 tokenli matn javobi **57 s**, bir nechta
+  **503** ("high demand") va timeout'lar. 60 s chegara bunday paytda sog'lom
+  javobni ham uzib qo'yadi, shuning uchun 90 s / 180 s. Agar `[llm]` qatorlarida
+  latency doim 30 s dan oshsa — muammo modelda/kvotada, sozlamada emas.
 
 Groq:
 
