@@ -341,10 +341,18 @@ export async function registerTrainingRoutes(
   app.post(`${prefix}/sessions/:id/score`, async (req, reply) =>
     guard(req, reply, 'training:use', async (ctx) => {
       const { id } = idParams.parse(req.params);
-      // Sessiya mavjudligini va egasini oldin tekshiramiz (404/403 to'g'ri chiqsin).
-      await deps.scoring.getLatestAnyResult(ctx, id);
-      scoreInBackground(ctx, id);
-      return reply.code(202).send({ status: 'pending' });
+      // Versiya DARHOL band qilinadi (sessiya qulfi ostida). Shu sessiya uchun
+      // baholash allaqachon ketayotgan bo'lsa — yangisi boshlanmaydi, mavjudi
+      // qaytariladi (tugmani ko'p bosish parallel run'lar yaratmaydi).
+      const request = await deps.scoring.requestScoring(ctx, id);
+      request.done?.catch((err: unknown) => {
+        deps.logger?.error({ err, sessionId: id }, 'fon rejimidagi baholash muvaffaqiyatsiz');
+      });
+      return reply.code(202).send({
+        status: 'pending',
+        version: request.version,
+        alreadyRunning: request.alreadyRunning,
+      });
     }),
   );
 
@@ -354,7 +362,8 @@ export async function registerTrainingRoutes(
       const session = await deps.engine.getSession(ctx, { sessionId: id });
       const ended = session.status !== 'active';
       const done = await deps.scoring.getLatestResult(ctx, id);
-      const any = done ?? (await deps.scoring.getLatestAnyResult(ctx, id));
+      const latest = await deps.scoring.getLatestAnyResult(ctx, id);
+      const any = done ?? latest;
 
       if (!any) {
         return reply.code(404).send({ error: 'result_not_found' });
@@ -368,6 +377,16 @@ export async function registerTrainingRoutes(
         endReason: session.endReason,
         transcript: session.transcript,
         result: resultPayload(any),
+        // Oxirgi run holati (pending/failed bo'lishi mumkin) — `result` esa
+        // oxirgi TUGALLANGAN natija. UI qayta baholash jarayonini shundan ko'radi.
+        latestRun: latest
+          ? {
+              version: latest.version,
+              status: latest.status,
+              error: latest.error,
+              createdAt: latest.createdAt,
+            }
+          : null,
         revealed: ended ? revealPersona(session.persona, metrics) : null,
       };
     }),

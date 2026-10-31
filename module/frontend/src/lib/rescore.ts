@@ -29,3 +29,36 @@ export function canOfferRescore(
   const clientAge = pendingSeenSinceMs === null ? 0 : nowMs - pendingSeenSinceMs;
   return Math.max(serverAge, clientAge) >= RESCORE_PENDING_AFTER_MS;
 }
+
+/** Oxirgi baholash run'i (pending/failed bo'lishi mumkin). */
+export interface LatestRunInput {
+  version: number;
+  status: 'pending' | 'done' | 'failed';
+  error: string | null;
+  createdAt: string;
+}
+
+export interface ScoringRunState {
+  /** Baholash ketmoqda (yoki biz so'ragan versiya hali ko'rinmadi) — tugma o'chiq. */
+  inProgress: boolean;
+  /** Ko'rsatilayotgan natijadan YANGIROQ run muvaffaqiyatsiz tugagan. */
+  failedRun: LatestRunInput | null;
+}
+
+/**
+ * Debrief sahifasidagi baholash holati.
+ *  - `latestRun` — server bergan oxirgi run (yo'q bo'lsa natijaning o'zi);
+ *  - `awaitingVersion` — "Qayta baholash" bosilganda server qaytargan versiya:
+ *    u ko'rinmaguncha (va pending bo'lsa) tugma o'chiq turadi.
+ */
+export function scoringRunState(
+  result: LatestRunInput,
+  latestRun: LatestRunInput | null | undefined,
+  awaitingVersion: number | null,
+): ScoringRunState {
+  const run = latestRun ?? result;
+  const inProgress =
+    run.status === 'pending' || (awaitingVersion !== null && run.version < awaitingVersion);
+  const failedRun = run.status === 'failed' && run.version > result.version ? run : null;
+  return { inProgress, failedRun };
+}

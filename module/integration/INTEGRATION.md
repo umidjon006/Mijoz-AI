@@ -270,6 +270,13 @@ chaqiring — eski `pending` lar `failed` ("server qayta ishga tushdi") bo'ladi
 va UI "Qayta baholash" tugmasini ko'rsatadi. Navbat (job queue) ishlatsangiz,
 bu vazifani navbatning retry mexanizmi bajaradi.
 
+**Bir vaqtda bitta baholash:** `scoring.requestScoring(ctx, id)` versiyani
+sessiya qulfi (`FOR UPDATE`) ostida band qiladi; `pending` run bor bo'lsa
+yangisini boshlamaydi (`alreadyRunning: true`). `pendingStaleAfterMs`
+(default 10 daqiqa) dan eski `pending` o'lik hisoblanadi. `GET /result`
+javobida `latestRun` (oxirgi run holati) bor — UI qayta baholash jarayonini
+shundan kuzatadi.
+
 **Fon rejimi:** bu modulda `POST /sessions/:id/score` 202 qaytaradi va
 baholash shu jarayon ichida fon rejimida ketadi. Asosiy repoda buni
 o'zingizning `analysis_job` navbatingiz bilan almashtiring: route faqat job

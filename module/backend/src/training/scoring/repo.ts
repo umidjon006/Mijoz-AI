@@ -33,6 +33,18 @@ export async function getSessionForScoring(
   return rows[0];
 }
 
+/**
+ * Sessiya qatorini tranzaksiya oxirigacha qulflaydi (`FOR UPDATE`): bir
+ * sessiyani parallel baholash so'rovlari shu yerda navbatga turadi.
+ */
+export async function lockSessionForScoring(tx: TrainingTx, sessionId: string): Promise<void> {
+  await tx
+    .select({ id: trainingSession.id })
+    .from(trainingSession)
+    .where(eq(trainingSession.id, sessionId))
+    .for('update');
+}
+
 export async function getTurnsForScoring(
   tx: TrainingTx,
   sessionId: string,

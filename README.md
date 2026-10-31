@@ -511,6 +511,13 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
 - **Ball:** `skillScore = Σ(score/3 × weight) / Σ(baholangan vazn) × 100`.
   `null` baho nolga aylanmaydi. `skillScore` va `outcome` — ikki alohida son.
 - **Versiyalash:** qayta baholash eski natijani o'chirmaydi (`version + 1`).
+- **Bir sessiyada bitta baholash.** `POST /sessions/:id/score` sessiya
+  qatorini DB'da qulflaydi (`SELECT ... FOR UPDATE`) va `pending` run bor
+  bo'lsa yangisini boshlamaydi — 202 bilan o'sha run'ni qaytaradi
+  (`{version, alreadyRunning: true}`). "Qayta baholash" tugmasi bosilishi
+  bilan o'chadi, "Baholanmoqda…" ko'rsatadi va run tugaguncha (done yoki
+  failed) o'chiq turadi; yangi natija avtomatik chiqadi. Faqat
+  `4 × TRAINER_SCORING_TIMEOUT_MS` dan eski `pending` "o'lik" hisoblanadi.
 - **Qayta tekshirish:** `npm run rescore -- --latest` — oxirgi tugagan
   sessiyani qayta baholaydi (yangi versiya) va saqlangan debriefning har
   maydoni tilini tekshirib chiqaradi (`TIL: OK` yoki muammoli maydonlar).

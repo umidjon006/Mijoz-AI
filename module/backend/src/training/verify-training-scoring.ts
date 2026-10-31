@@ -35,7 +35,14 @@ import { getArchetype } from './archetypes.js';
 import { createTrainingEngine } from './engine.js';
 import type { PersonaCard } from './persona.js';
 import { makePersonaCardSchema } from './persona.js';
-import type { GetBusinessProfile, TrainingContext, TrainingTx, WithTenant } from './ports.js';
+import type {
+  GetBusinessProfile,
+  TrainerLlm,
+  TrainerLlmRequest,
+  TrainingContext,
+  TrainingTx,
+  WithTenant,
+} from './ports.js';
 import { profileSchema, type BusinessProfile } from './profile-schema.js';
 import { registerTrainingRoutes, revealPersona } from './routes.js';
 import {
@@ -89,7 +96,11 @@ import {
   nonLatinWords,
   transliterateUzCyrillic,
 } from './language.js';
-import { canOfferRescore, RESCORE_PENDING_AFTER_MS } from '../../../frontend/src/lib/rescore.js';
+import {
+  canOfferRescore,
+  RESCORE_PENDING_AFTER_MS,
+  scoringRunState,
+} from '../../../frontend/src/lib/rescore.js';
 import type { CriterionResult } from './scoring/scoring-types.js';
 import {
   assert,
@@ -950,6 +961,24 @@ function verifyRescoreRule(): void {
     assert(canOfferRescore({ status: 'pending', createdAt }, t0 + 180_000, t0), '3:00 da bor');
   });
 
+  check(report, "tugma holati: run ketayotganda o'chiq, tugagach (done/failed) yoqiladi", () => {
+    const done = { version: 3, status: 'done' as const, error: null, createdAt };
+    // Qayta baholash bosildi, server v4 ni qaytardi, sahifada hali v3 done.
+    assert(scoringRunState(done, done, 4).inProgress, "v4 ko'rinmaguncha o'chiq");
+    const pending4 = { version: 4, status: 'pending' as const, error: null, createdAt };
+    assert(scoringRunState(done, pending4, 4).inProgress, 'v4 pending — o\'chiq');
+    // v4 tugadi -> route uni `result` qilib qaytaradi.
+    const done4 = { ...pending4, status: 'done' as const };
+    assert(!scoringRunState(done4, done4, 4).inProgress, 'v4 done — yoqiladi');
+    // v4 yiqildi -> oldingi v3 ko'rsatiladi, xato haqida xabar, tugma yoqiladi.
+    const failed4 = { ...pending4, status: 'failed' as const, error: 'timeout' };
+    const failedState = scoringRunState(done, failed4, 4);
+    assert(!failedState.inProgress, 'failed — yoqiladi');
+    assertEqual(failedState.failedRun?.version, 4, "yangi run xatosi ko'rsatiladi");
+    // Eski server (latestRun yo'q) bilan ham ishlaydi.
+    assert(!scoringRunState(done, undefined, null).inProgress, 'latestRun yo\'q');
+  });
+
   check(report, 'pending: server soati boshqacha bo\'lsa ham brauzer kuzatgan vaqt yetadi', () => {
     const futureCreated = new Date(t0 + 60 * 60_000).toISOString(); // server soati 1 soat oldinda
     assert(
@@ -1486,6 +1515,118 @@ async function verifyDbAndRoutes(): Promise<void> {
       const after = await withTenant(bizA, async (tx) => scoringRepo.listResultVersions(tx, sessionId));
       assertEqual(after.length, before + 1, 'yangi versiya');
       assert(after.some((v) => v.id === oldId && v.status === 'failed'), 'eski failed versiya saqlanadi');
+    });
+
+    // --- 6c-6. Bir sessiyada bitta baholash (tugmani ko'p bosish) --------
+    /** Chaqiruvlarni "ochish"gacha ushlab turadigan LLM — run'lar ustma-ust tushsin. */
+    const gatedLlm = (script: unknown[]) => {
+      const inner = new FakeTrainerLlm(script);
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const llm: TrainerLlm & { calls: number } = {
+        calls: 0,
+        async completeJson<T>(req: TrainerLlmRequest<T>): Promise<T> {
+          llm.calls += 1;
+          await gate;
+          return inner.completeJson(req);
+        },
+      };
+      return { llm, release: () => release() };
+    };
+
+    await checkAsync(report, '5 ta tez requestScoring -> aynan BITTA run (DB qulfi)', async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      const versionsBefore = await withTenant(bizA, async (tx) => scoringRepo.listResultVersions(tx, sessionId));
+      const { llm, release } = gatedLlm([scoringPayload(), scoringPayload()]);
+      const scoring = createScoringService({ withTenant, llm });
+
+      const requests = await Promise.all(
+        Array.from({ length: 5 }, () => scoring.requestScoring(ctxA, sessionId)),
+      );
+      assertEqual(requests.filter((r) => !r.alreadyRunning).length, 1, 'faqat bittasi yangi');
+      assertEqual(new Set(requests.map((r) => r.version)).size, 1, 'hammasi bitta versiyani oladi');
+      assertEqual(requests.filter((r) => r.done !== null).length, 1, 'bitta bajarish');
+
+      release();
+      await Promise.all(requests.map((r) => r.done).filter((d) => d !== null));
+      const versionsAfter = await withTenant(bizA, async (tx) => scoringRepo.listResultVersions(tx, sessionId));
+      assertEqual(versionsAfter.length, versionsBefore.length + 1, 'bitta yangi versiya');
+      assertEqual(llm.calls, 1, 'LLM bir marta chaqirildi');
+      assertEqual(versionsAfter[0]?.status, 'done', 'tugadi');
+
+      // Tugagandan keyin yangi qayta baholash yana mumkin.
+      const next = await scoring.requestScoring(ctxA, sessionId);
+      assertEqual(next.alreadyRunning, false, "tugagach yangi run boshlanadi");
+      await next.done;
+    });
+
+    await checkAsync(report, "5 ta tez POST /score -> hammasi 202, aynan BITTA run; /result latestRun beradi", async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      const { llm, release } = gatedLlm([scoringPayload()]);
+      const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm: new FakeTrainerLlm([]) });
+      const scoring = createScoringService({ withTenant, llm });
+      const app = Fastify();
+      await registerTrainingRoutes(app, {
+        engine,
+        scoring,
+        withTenant,
+        getContext: () => ctxA,
+        config: { autoScoreOnEnd: false, rateLimitPerMinute: 100 },
+      });
+      await app.ready();
+
+      const url = `/api/v1/training/sessions/${sessionId}/score`;
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, () => app.inject({ method: 'POST', url, payload: {} })),
+      );
+      for (const res of responses) assertEqual(res.statusCode, 202, '202');
+      const bodies = responses.map((r) => r.json() as { version: number; alreadyRunning: boolean });
+      assertEqual(bodies.filter((b) => !b.alreadyRunning).length, 1, 'bitta yangi run');
+      assertEqual(new Set(bodies.map((b) => b.version)).size, 1, 'bitta versiya');
+
+      const during = (await app.inject({ url: `/api/v1/training/sessions/${sessionId}/result` })).json() as {
+        latestRun: { status: string; version: number } | null;
+      };
+      assertEqual(during.latestRun?.status, 'pending', 'latestRun pending');
+
+      release();
+      let status = 'pending';
+      for (let i = 0; i < 100 && status === 'pending'; i += 1) {
+        await new Promise((r) => setTimeout(r, 20));
+        status = (await scoring.getLatestAnyResult(ctxA, sessionId))?.status ?? 'pending';
+      }
+      assertEqual(status, 'done', 'fon run tugadi');
+      assertEqual(llm.calls, 1, 'LLM bir marta');
+      const after = (await app.inject({ url: `/api/v1/training/sessions/${sessionId}/result` })).json() as {
+        result: { version: number; status: string };
+        latestRun: { status: string; version: number } | null;
+      };
+      assertEqual(after.result.status, 'done', "yangi natija ko'rinadi");
+      assertEqual(after.result.version, bodies[0]?.version, 'aynan o\'sha versiya');
+      await app.close();
+    });
+
+    await checkAsync(report, "o'lik pending (pendingStaleAfterMs dan eski) yangi run'ga to'sqinlik qilmaydi", async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      await withTenant(bizA, async (tx) => {
+        await scoringRepo.insertPendingResult(tx, {
+          businessId: bizA,
+          sessionId,
+          version: (await scoringRepo.maxResultVersion(tx, sessionId)) + 1,
+          metrics: { sellerTurns: 3 } as never,
+          createdAt: new Date(Date.now() - 60 * 60_000),
+        });
+      });
+      const scoring = createScoringService({
+        withTenant,
+        llm: new FakeTrainerLlm([scoringPayload()]),
+        pendingStaleAfterMs: 5 * 60_000,
+      });
+      const result = await scoring.scoreSession(ctxA, sessionId);
+      assertEqual(result.alreadyRunning ?? false, false, 'yangi run boshlandi');
+      assertEqual(result.status, 'done', 'tugadi');
     });
 
     // --- 6d. Past sifat (dalillar yiqiladi) -----------------------------

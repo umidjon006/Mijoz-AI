@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
 import type { ResultResponse, TrainingApi } from '../lib/api.js';
-import { canOfferRescore } from '../lib/rescore.js';
+import { canOfferRescore, scoringRunState } from '../lib/rescore.js';
 import {
   EmptyState,
   formatDuration,
@@ -53,7 +53,10 @@ export function NatijaPage({
   const [error, setError] = useState<string | null>(null);
   const [timedOut, setTimedOut] = useState(false);
   const [highlight, setHighlight] = useState<number | null>(null);
+  /** "Qayta baholash" so'rovi yuborilmoqda (javob kelguncha). */
   const [rescoring, setRescoring] = useState(false);
+  /** Server qaytargan run versiyasi — u tugaguncha tugma o'chiq. */
+  const awaitingVersion = useRef<number | null>(null);
   /** Qayta baholashdan keyin poll'ni QAYTA boshlash uchun. */
   const [pollKey, setPollKey] = useState(0);
   const attempts = useRef(0);
@@ -63,17 +66,20 @@ export function NatijaPage({
   const load = useCallback(async (): Promise<'pending' | 'done' | 'missing'> => {
     try {
       const response = await api.getResult(sessionId);
-      const { status, version } = response.result;
-      if (status === 'pending') {
-        if (pendingSeen.current?.version !== version) {
-          pendingSeen.current = { version, since: Date.now() };
+      const run = response.latestRun ?? response.result;
+      if (run.status === 'pending') {
+        if (pendingSeen.current?.version !== run.version) {
+          pendingSeen.current = { version: run.version, since: Date.now() };
         }
       } else {
         pendingSeen.current = null;
       }
+      const state = scoringRunState(response.result, response.latestRun, awaitingVersion.current);
+      // Biz so'ragan run tugadi (done yoki failed) — tugma yana yoqiladi.
+      if (!state.inProgress) awaitingVersion.current = null;
       setData(response);
       setError(null);
-      return response.result.status === 'pending' ? 'pending' : 'done';
+      return state.inProgress || response.result.status === 'pending' ? 'pending' : 'done';
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // Natija hali yaratilmagan bo'lishi mumkin (404) — kutamiz.
@@ -109,11 +115,14 @@ export function NatijaPage({
   }, [load, pollKey]);
 
   async function rescore(): Promise<void> {
+    // Tugma DARHOL o'chadi; server ham bir sessiyada bitta run'ga ruxsat beradi.
+    if (rescoring || awaitingVersion.current !== null) return;
     setRescoring(true);
     setTimedOut(false);
     try {
-      await api.requestScore(sessionId);
-      // Yangi versiya `pending` — poll'ni boshidan boshlaymiz.
+      const response = await api.requestScore(sessionId);
+      // Yangi yoki allaqachon ketayotgan run — tugaguncha kuzatamiz.
+      awaitingVersion.current = response.version;
       pendingSeen.current = null;
       setPollKey((key) => key + 1);
     } catch (err) {
@@ -160,15 +169,22 @@ export function NatijaPage({
 
   const { result, revealed, transcript } = data;
   const metrics = result.metrics;
-  const offerRescore = canOfferRescore(result, Date.now(), pendingSeen.current?.since ?? null);
+  const latestRun = data.latestRun ?? null;
+  const runState = scoringRunState(result, latestRun, awaitingVersion.current);
+  const run = latestRun ?? result;
+  // Run 3 daqiqadan beri pending — server to'xtagan bo'lishi mumkin: tugmani qaytaramiz
+  // (server baribir ketayotgan run'ni qaytaradi, yangisini boshlamaydi).
+  const stuck = run.status === 'pending' && canOfferRescore(run, Date.now(), pendingSeen.current?.since ?? null);
+  const busy = rescoring || (runState.inProgress && !stuck);
   const rescoreButton = (
     <button
       type="button"
       className="mq-btn mq-small"
-      disabled={rescoring}
+      disabled={busy}
+      aria-busy={busy}
       onClick={() => void rescore()}
     >
-      {mashq.scoreAgain}
+      {busy ? mashq.scoring : mashq.scoreAgain}
     </button>
   );
 
@@ -179,13 +195,23 @@ export function NatijaPage({
         <OutcomeBadge outcome={data.outcome} />
       </div>
 
-      {result.status === 'pending' ? (
-        <Notice kind={offerRescore ? 'warn' : 'info'}>
-          {offerRescore ? mashq.scoringStuck : `${mashq.scoring} ${mashq.scoringHint}`}{' '}
-          {offerRescore ? rescoreButton : null}
+      {runState.inProgress || rescoring ? (
+        <Notice kind={stuck ? 'warn' : 'info'}>
+          {stuck
+            ? mashq.scoringStuck
+            : result.status === 'pending'
+              ? `${mashq.scoring} ${mashq.scoringHint}`
+              : `${mashq.scoring} ${mashq.rescoringHint}`}{' '}
+          {stuck ? rescoreButton : null}
         </Notice>
       ) : null}
-      {result.status === 'failed' ? (
+      {runState.failedRun ? (
+        <Notice kind="error">
+          {mashq.rescoreFailed}
+          {runState.failedRun.error ? ` (${runState.failedRun.error})` : ''} {rescoreButton}
+        </Notice>
+      ) : null}
+      {result.status === 'failed' && !runState.inProgress ? (
         <Notice kind="error">
           {mashq.scoringFailed}
           {result.error ? ` (${result.error})` : ''} {rescoreButton}

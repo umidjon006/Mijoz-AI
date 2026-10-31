@@ -182,14 +182,32 @@ export interface ResultPayload {
   createdAt: string;
 }
 
+export interface LatestRunView {
+  version: number;
+  status: 'pending' | 'done' | 'failed';
+  error: string | null;
+  createdAt: string;
+}
+
 export interface ResultResponse {
   sessionId: string;
   archetypeKey: string;
   outcome: string | null;
   endReason: string | null;
   transcript: TranscriptTurn[];
+  /** Oxirgi TUGALLANGAN natija (bo'lmasa oxirgi run). */
   result: ResultPayload;
+  /** Oxirgi run holati (qayta baholash ketayotganini shu ko'rsatadi). */
+  latestRun?: LatestRunView | null;
   revealed: RevealedPersona | null;
+}
+
+export interface ScoreRequestResponse {
+  status: 'pending';
+  /** Ketayotgan run versiyasi (yangi yoki allaqachon ketayotgan). */
+  version: number;
+  /** `true` — yangi run boshlanmadi, mavjudi davom etmoqda. */
+  alreadyRunning: boolean;
 }
 
 export interface SessionListItem {
@@ -231,7 +249,7 @@ export interface TrainingApi {
   listSessions(): Promise<SessionListItem[]>;
   takeTurn(sessionId: string, text: string): Promise<TurnResponse>;
   endSession(sessionId: string, reason?: string): Promise<void>;
-  requestScore(sessionId: string): Promise<void>;
+  requestScore(sessionId: string): Promise<ScoreRequestResponse>;
   getResult(sessionId: string): Promise<ResultResponse>;
   myStats(): Promise<StatsResponse>;
   userStats(userId: string): Promise<StatsResponse>;
@@ -269,8 +287,11 @@ export function createTrainingApi(request: ApiRequest, prefix = '/api/v1/trainin
         body: reason ? { reason } : {},
       });
     },
-    async requestScore(sessionId) {
-      await request(`${prefix}/sessions/${sessionId}/score`, { method: 'POST', body: {} });
+    requestScore(sessionId) {
+      return request<ScoreRequestResponse>(`${prefix}/sessions/${sessionId}/score`, {
+        method: 'POST',
+        body: {},
+      });
     },
     getResult(sessionId) {
       return request<ResultResponse>(`${prefix}/sessions/${sessionId}/result`);

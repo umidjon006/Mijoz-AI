@@ -132,6 +132,8 @@ async function main(): Promise<void> {
       priceCall,
       getBusinessProfile: async () => business.profile,
       getSalesScript: async () => business.script,
+    // Bir sessiyada bir vaqtda bitta baholash; shundan eski `pending` — o'lik (jarayon to'xtagan).
+    pendingStaleAfterMs: config.scoringTimeoutMs * 4,
       logger: {
         info: () => undefined,
         warn: (_obj, msg) => msg && console.warn(`  [ogohlantirish] ${msg}`),
@@ -141,6 +143,13 @@ async function main(): Promise<void> {
 
     console.log('Qayta baholanmoqda (yangi versiya)...');
     const result = await scoring.scoreSession(ctx, sessionId);
+    if (result.alreadyRunning) {
+      console.log(
+        `Bu sessiya uchun baholash allaqachon ketmoqda (v${result.version}) — yangisi boshlanmadi. ` +
+          'Tugagach qayta ishga tushiring yoki --check-only bilan natijani ko\'ring.',
+      );
+      return;
+    }
     const after = await withTenant(DEMO_BUSINESS_ID, async (tx) =>
       scoringRepo.getLatestResult(tx, sessionId),
     );

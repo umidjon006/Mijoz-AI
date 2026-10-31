@@ -81,6 +81,8 @@ async function main(): Promise<void> {
     // Baholash sotuvchining da'volarini shu faktlar bilan tekshiradi.
     getBusinessProfile,
     getSalesScript: async () => business.script,
+    // Bir sessiyada bir vaqtda bitta baholash; shundan eski `pending` — o'lik (jarayon to'xtagan).
+    pendingStaleAfterMs: config.scoringTimeoutMs * 4,
     logger: app.log,
   });
 

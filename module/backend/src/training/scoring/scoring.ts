@@ -502,6 +502,11 @@ export interface ScoringDeps {
   getBusinessProfile?: GetBusinessProfile;
   /** Sotuv skripti — bo'lsa "Skriptga moslik" bo'limi qo'shiladi. */
   getSalesScript?: GetSalesScript;
+  /**
+   * Shundan eski `pending` "o'lik" hisoblanadi (jarayon to'xtagan) va yangi
+   * baholashga to'sqinlik qilmaydi. Default 10 daqiqa.
+   */
+  pendingStaleAfterMs?: number;
   /** Debrief tili; `uz` — lotin yozuvi kodda tekshiriladi. Default `uz`. */
   language?: 'uz' | 'ru' | 'mixed';
   priceCall?: PriceCall;
@@ -512,14 +517,51 @@ export interface ScoringDeps {
 export interface ScoreSessionResult {
   resultId: string;
   version: number;
-  status: 'done' | 'failed';
+  /** `pending` — shu sessiya uchun boshqa baholash allaqachon ketmoqda (`alreadyRunning`). */
+  status: 'done' | 'failed' | 'pending';
   quality: ScoringQuality;
   skillScore: number | null;
+  alreadyRunning?: boolean;
+}
+
+export interface ScoringRequest {
+  resultId: string;
+  version: number;
+  /** `true` — yangi run boshlanmadi, mavjud `pending` qaytarildi. */
+  alreadyRunning: boolean;
+  /** Yangi run bo'lsa — uning tugashi; mavjud bo'lsa `null`. */
+  done: Promise<ScoreSessionResult> | null;
+}
+
+interface Reservation {
+  alreadyRunning: false;
+  resultId: string;
+  version: number;
+  persona: PersonaCard;
+  turns: ScoringTurn[];
+  archetype: ReturnType<typeof getArchetype>;
+  metrics: SessionMetrics;
+  candidates: KeyMomentCandidate[];
+}
+
+interface ExistingRun {
+  alreadyRunning: true;
+  resultId: string;
+  version: number;
 }
 
 export interface ScoringService {
-  /** Tugagan sessiyani baholaydi va YANGI versiya yozadi. */
+  /**
+   * Tugagan sessiyani baholaydi va YANGI versiya yozadi. Shu sessiya uchun
+   * baholash allaqachon ketayotgan bo'lsa — yangisini boshlamaydi
+   * (`status: 'pending', alreadyRunning: true`).
+   */
   scoreSession(ctx: TrainingContext, sessionId: string): Promise<ScoreSessionResult>;
+  /**
+   * Route uchun: versiyani DARHOL band qiladi (yoki mavjud `pending` ni
+   * qaytaradi), bajarish esa `done` da — fon rejimida kutiladi.
+   */
+  requestScoring(ctx: TrainingContext, sessionId: string): Promise<ScoringRequest>;
   /** Oxirgi tugallangan natija (yo'q bo'lsa `null`). */
   getLatestResult(ctx: TrainingContext, sessionId: string): Promise<repo.TrainingResultRow | null>;
   /**
@@ -546,6 +588,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
   const { withTenant, llm, priceCall } = deps;
   const getPlaybook: GetPlaybook = deps.getPlaybook ?? (async () => null);
   const now = deps.now ?? ((): Date => new Date());
+  const pendingStaleAfterMs = deps.pendingStaleAfterMs ?? 10 * 60 * 1000;
 
   async function load(ctx: TrainingContext, sessionId: string): Promise<LoadedSession> {
     return await withTenant(ctx.businessId, async (tx) => {
@@ -578,241 +621,311 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
     });
   }
 
-  return {
-    async scoreSession(ctx, sessionId) {
-      const { session, persona, turns } = await load(ctx, sessionId);
-      const archetype = getArchetype(session.archetypeKey);
-      const metrics: SessionMetrics = computeMetrics(session, turns, archetype, persona);
-      const candidates = keyMomentCandidates(turns, persona);
+  /**
+   * Bitta sessiya uchun bir vaqtda FAQAT BITTA baholash.
+   *
+   * DB darajasida: sessiya qatori `SELECT ... FOR UPDATE` bilan qulflanadi
+   * (parallel so'rovlar shu yerda navbatga turadi), keyin `pending` versiya
+   * bor-yo'qligi tekshiriladi. Bor bo'lsa — yangisi boshlanmaydi, o'sha
+   * qaytariladi. Faqat `pendingStaleAfterMs` dan eski `pending` (jarayon
+   * o'lgan) `failed` qilinib, yangisi boshlanadi.
+   */
+  async function reserve(
+    ctx: TrainingContext,
+    sessionId: string,
+  ): Promise<Reservation | ExistingRun> {
+    const { session, persona, turns } = await load(ctx, sessionId);
+    const archetype = getArchetype(session.archetypeKey);
+    const metrics: SessionMetrics = computeMetrics(session, turns, archetype, persona);
+    const candidates = keyMomentCandidates(turns, persona);
 
-      // 1. Versiya band qilinadi (pending). Eski versiyalar tegilmaydi.
-      const { resultId, version } = await withTenant(ctx.businessId, async (tx) => {
-        const nextVersion = (await repo.maxResultVersion(tx, sessionId)) + 1;
-        const id = await repo.insertPendingResult(tx, {
-          businessId: ctx.businessId,
-          sessionId,
-          version: nextVersion,
-          metrics,
-          createdAt: now(),
+    return await withTenant(ctx.businessId, async (tx): Promise<Reservation | ExistingRun> => {
+      await repo.lockSessionForScoring(tx, sessionId);
+      const pending = await repo.getLatestResult(tx, sessionId, 'pending');
+      if (pending) {
+        const age = now().getTime() - new Date(pending.createdAt).getTime();
+        if (age < pendingStaleAfterMs) {
+          return { alreadyRunning: true, resultId: pending.id, version: pending.version };
+        }
+        await repo.failStalePendingResults(tx, {
+          olderThan: new Date(now().getTime() - pendingStaleAfterMs),
+          error: STALE_PENDING_ERROR,
         });
-        return { resultId: id, version: nextVersion };
+      }
+      // Versiya band qilinadi (pending). Eski versiyalar tegilmaydi.
+      const nextVersion = (await repo.maxResultVersion(tx, sessionId)) + 1;
+      const id = await repo.insertPendingResult(tx, {
+        businessId: ctx.businessId,
+        sessionId,
+        version: nextVersion,
+        metrics,
+        createdAt: now(),
+      });
+      return {
+        alreadyRunning: false,
+        resultId: id,
+        version: nextVersion,
+        persona,
+        turns,
+        archetype,
+        metrics,
+        candidates,
+      };
+    });
+  }
+
+  /** Band qilingan (pending) versiyani bajaradi: LLM, tekshiruvlar, natijani yozish. */
+  async function execute(
+    ctx: TrainingContext,
+    sessionId: string,
+    r: Reservation,
+  ): Promise<ScoreSessionResult> {
+    const { persona, turns, archetype, metrics, candidates, resultId, version } = r;
+
+    // 2. Juda kam mazmun -> LLM chaqirilmaydi.
+    if (metrics.sellerTurns < MIN_SELLER_TURNS_FOR_SCORING) {
+      const coaching: CoachingResult = {
+        summary:
+          `Bu sessiyada sotuvchining faqat ${metrics.sellerTurns} ta navbati bor — ` +
+          'baholash uchun yetarli emas. Kamida 3-4 marta gaplashib ko\'ring, ' +
+          'keyin natija to\'liq chiqadi.',
+        strengths: [],
+        improvements: [],
+      };
+      await withTenant(ctx.businessId, async (tx) => {
+        await repo.finishResult(tx, {
+          resultId,
+          status: 'done',
+          quality: 'insufficient',
+          skillScore: null,
+          criteria: [],
+          coaching,
+          keyMoments: [],
+          model: null,
+          promptVersion: SCORING_PROMPT_VERSION,
+          costUsd: 0,
+          error: null,
+        });
+      });
+      return { resultId, version, status: 'done', quality: 'insufficient', skillScore: null };
+    }
+
+    // 3. Rubrika.
+    let playbook: PlaybookSubset | null = null;
+    try {
+      playbook = await getPlaybook(ctx.businessId);
+    } catch (err) {
+      deps.logger?.warn({ err }, 'getPlaybook xato berdi — standart rubrika ishlatiladi');
+    }
+    const rubric = resolveRubric(playbook);
+
+    // Biznes faktlari va skript (xato bo'lsa — ularsiz davom etamiz, lekin logga yozamiz).
+    let profile: BusinessProfile | null = null;
+    let script: SalesScript | null = null;
+    try {
+      profile = (await deps.getBusinessProfile?.(ctx.businessId)) ?? null;
+    } catch (err) {
+      deps.logger?.warn({ err }, 'getBusinessProfile xato berdi — faktlar tekshirilmaydi');
+    }
+    try {
+      script = (await deps.getSalesScript?.(ctx.businessId)) ?? null;
+    } catch (err) {
+      deps.logger?.warn({ err }, 'getSalesScript xato berdi — skriptga moslik baholanmaydi');
+    }
+    const processContext: ProcessScoringContext = { redLines: profile?.redLines ?? [], script };
+    const language = deps.language ?? 'uz';
+
+    // 4. LLM (tranzaksiyadan TASHQARIDA — tarmoq chaqiruvi qulf ushlab turmasin).
+    let usage: TokenUsage | undefined;
+    let costUsd = 0;
+
+    const call = async (correction?: string): Promise<LlmScoring> => {
+      const promptInput: ScoringPromptInput = {
+        criteria: rubric.criteria,
+        archetype,
+        persona,
+        metrics,
+        turns,
+        candidates,
+        profile,
+        script,
+        ...(correction ? { correction } : {}),
+      };
+      const req = {
+        stage: 'training.scoring',
+        system: buildScoringSystemPrompt(promptInput),
+        user: buildScoringUserPrompt(promptInput),
+        schema: { parse: (raw: unknown): LlmScoring => llmScoringSchema.parse(coerceLlmScoring(raw)) },
+        outputSchema: llmScoringSchema,
+      };
+      if (typeof llm.completeJsonWithUsage === 'function') {
+        const out = await llm.completeJsonWithUsage(req);
+        usage = out.usage;
+        costUsd += priceCall && out.usage ? Math.max(0, priceCall(out.usage)) : 0;
+        return out.value;
+      }
+      return await llm.completeJson(req);
+    };
+
+    try {
+      let raw: LlmScoring;
+      try {
+        raw = await call();
+      } catch (err) {
+        // Faqat javob SHAKLI xato bo'lsa — bitta tuzatuvchi qayta so'rov.
+        // Timeout / HTTP xato darhol `failed` ga tushadi (haqiqiy toifasi bilan).
+        if (!isCorrectableLlmError(err)) throw err;
+        raw = await call(
+          `Your previous answer was rejected: ${describeLlmError(err)}. Return a single valid JSON object with all required fields.`,
+        );
+      }
+      let processed = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
+
+      // 5. Dalillar ko'p yiqilsa — bitta qayta urinish.
+      if (processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO) {
+        const correction = [
+          'Your evidence quotes failed verification. Problems:',
+          ...processed.failureNotes.map((note) => `- ${note}`),
+          'Copy the quotes character-by-character from SELLER lines in the transcript.',
+          'If you cannot find a real quote for a criterion, set its score to null instead of inventing one.',
+        ].join('\n');
+        try {
+          raw = await call(correction);
+          const retried = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
+          if (retried.evidenceFailureRatio <= processed.evidenceFailureRatio) {
+            processed = retried;
+          }
+        } catch (err) {
+          deps.logger?.warn({ err }, 'baholashni qayta urinish muvaffaqiyatsiz');
+        }
+      }
+
+      // 6. Til (uz): foydalanuvchi HECH QACHON lotin bo'lmagan matn ko'rmaydi.
+      //    Kirill -> lotin (kod); begona til -> faqat o'sha maydonlar bitta
+      //    chaqiruvda qayta; baribir yaroqsiz -> yashiriladi, quality=low.
+      let languageReport: UzLatinReport | null = null;
+      if (language === 'uz') {
+        const regenerate: RegenerateFields = async (bad) => {
+          const req = {
+            stage: 'training.scoring.language',
+            system: UZ_LATIN_REWRITE_SYSTEM,
+            user: JSON.stringify({ fields: bad }),
+            schema: rewriteSchema,
+            outputSchema: rewriteSchema,
+          };
+          let out: z.infer<typeof rewriteSchema>;
+          if (typeof llm.completeJsonWithUsage === 'function') {
+            const res = await llm.completeJsonWithUsage(req);
+            costUsd += priceCall && res.usage ? Math.max(0, priceCall(res.usage)) : 0;
+            out = res.value;
+          } else {
+            out = await llm.completeJson(req);
+          }
+          const wanted = new Set(bad.map((f) => f.id));
+          return new Map(out.fields.filter((f) => wanted.has(f.id)).map((f) => [f.id, f.text]));
+        };
+        languageReport = await enforceScoringLanguage(processed, regenerate);
+        if (languageReport.hidden.length > 0 || languageReport.regenerated.length > 0) {
+          deps.logger?.warn(
+            { sessionId, language: languageReport },
+            `debrief tili: ${languageReport.transliterated.length} o'girildi, ` +
+              `${languageReport.regenerated.length} qayta yaratildi, ${languageReport.hidden.length} yashirildi`,
+          );
+        }
+      }
+      const languageLow = (languageReport?.hidden.length ?? 0) > 0;
+      const evidenceLow = processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO;
+      if (languageReport) {
+        processed.coaching.languageCheck = {
+          transliterated: languageReport.transliterated.length,
+          regenerated: languageReport.regenerated.length,
+          hidden: languageReport.hidden,
+        };
+      }
+      processed.coaching.lowQualityReasons = [
+        ...(evidenceLow ? (['evidence'] as const) : []),
+        ...(languageLow ? (['language'] as const) : []),
+      ];
+      if (processed.droppedNotes.length > 0) {
+        deps.logger?.warn(
+          { sessionId, dropped: processed.droppedNotes },
+          'baholash: tekshiruvdan o\'tmagan qismlar olib tashlandi',
+        );
+      }
+
+      const quality: ScoringQuality = evidenceLow || languageLow ? 'low' : 'ok';
+      const { skillScore } = computeSkillScore(processed.criteria);
+
+      await withTenant(ctx.businessId, async (tx) => {
+        await repo.finishResult(tx, {
+          resultId,
+          status: 'done',
+          quality,
+          skillScore,
+          criteria: processed.criteria,
+          coaching: processed.coaching,
+          keyMoments: processed.keyMoments,
+          model: usage?.model ?? null,
+          promptVersion: SCORING_PROMPT_VERSION,
+          costUsd,
+          error: null,
+        });
       });
 
-      // 2. Juda kam mazmun -> LLM chaqirilmaydi.
-      if (metrics.sellerTurns < MIN_SELLER_TURNS_FOR_SCORING) {
-        const coaching: CoachingResult = {
-          summary:
-            `Bu sessiyada sotuvchining faqat ${metrics.sellerTurns} ta navbati bor — ` +
-            'baholash uchun yetarli emas. Kamida 3-4 marta gaplashib ko\'ring, ' +
-            'keyin natija to\'liq chiqadi.',
-          strengths: [],
-          improvements: [],
-        };
-        await withTenant(ctx.businessId, async (tx) => {
-          await repo.finishResult(tx, {
-            resultId,
-            status: 'done',
-            quality: 'insufficient',
-            skillScore: null,
-            criteria: [],
-            coaching,
-            keyMoments: [],
-            model: null,
-            promptVersion: SCORING_PROMPT_VERSION,
-            costUsd: 0,
-            error: null,
-          });
+      return { resultId, version, status: 'done', quality, skillScore };
+    } catch (err) {
+      // Haqiqiy toifa bilan: `[timeout] ...`, `[http] ... HTTP 429 ...`, `[schema] ...`.
+      const message = describeLlmError(err);
+      await withTenant(ctx.businessId, async (tx) => {
+        await repo.finishResult(tx, {
+          resultId,
+          status: 'failed',
+          quality: 'ok',
+          skillScore: null,
+          criteria: [],
+          coaching: null,
+          keyMoments: [],
+          model: usage?.model ?? null,
+          promptVersion: SCORING_PROMPT_VERSION,
+          costUsd,
+          error: message.slice(0, 1000),
         });
-        return { resultId, version, status: 'done', quality: 'insufficient', skillScore: null };
-      }
+      });
+      deps.logger?.error(
+        { err, sessionId, llmErrorKind: classifyLlmError(err) },
+        `baholash muvaffaqiyatsiz: ${message}`,
+      );
+      return { resultId, version, status: 'failed', quality: 'ok', skillScore: null };
+    }
+  }
 
-      // 3. Rubrika.
-      let playbook: PlaybookSubset | null = null;
-      try {
-        playbook = await getPlaybook(ctx.businessId);
-      } catch (err) {
-        deps.logger?.warn({ err }, 'getPlaybook xato berdi — standart rubrika ishlatiladi');
+  return {
+    async requestScoring(ctx, sessionId) {
+      const r = await reserve(ctx, sessionId);
+      if (r.alreadyRunning) {
+        return { resultId: r.resultId, version: r.version, alreadyRunning: true, done: null };
       }
-      const rubric = resolveRubric(playbook);
-
-      // Biznes faktlari va skript (xato bo'lsa — ularsiz davom etamiz, lekin logga yozamiz).
-      let profile: BusinessProfile | null = null;
-      let script: SalesScript | null = null;
-      try {
-        profile = (await deps.getBusinessProfile?.(ctx.businessId)) ?? null;
-      } catch (err) {
-        deps.logger?.warn({ err }, 'getBusinessProfile xato berdi — faktlar tekshirilmaydi');
-      }
-      try {
-        script = (await deps.getSalesScript?.(ctx.businessId)) ?? null;
-      } catch (err) {
-        deps.logger?.warn({ err }, 'getSalesScript xato berdi — skriptga moslik baholanmaydi');
-      }
-      const processContext: ProcessScoringContext = { redLines: profile?.redLines ?? [], script };
-      const language = deps.language ?? 'uz';
-
-      // 4. LLM (tranzaksiyadan TASHQARIDA — tarmoq chaqiruvi qulf ushlab turmasin).
-      let usage: TokenUsage | undefined;
-      let costUsd = 0;
-
-      const call = async (correction?: string): Promise<LlmScoring> => {
-        const promptInput: ScoringPromptInput = {
-          criteria: rubric.criteria,
-          archetype,
-          persona,
-          metrics,
-          turns,
-          candidates,
-          profile,
-          script,
-          ...(correction ? { correction } : {}),
-        };
-        const req = {
-          stage: 'training.scoring',
-          system: buildScoringSystemPrompt(promptInput),
-          user: buildScoringUserPrompt(promptInput),
-          schema: { parse: (raw: unknown): LlmScoring => llmScoringSchema.parse(coerceLlmScoring(raw)) },
-          outputSchema: llmScoringSchema,
-        };
-        if (typeof llm.completeJsonWithUsage === 'function') {
-          const out = await llm.completeJsonWithUsage(req);
-          usage = out.usage;
-          costUsd += priceCall && out.usage ? Math.max(0, priceCall(out.usage)) : 0;
-          return out.value;
-        }
-        return await llm.completeJson(req);
+      return {
+        resultId: r.resultId,
+        version: r.version,
+        alreadyRunning: false,
+        done: execute(ctx, sessionId, r),
       };
+    },
 
-      try {
-        let raw: LlmScoring;
-        try {
-          raw = await call();
-        } catch (err) {
-          // Faqat javob SHAKLI xato bo'lsa — bitta tuzatuvchi qayta so'rov.
-          // Timeout / HTTP xato darhol `failed` ga tushadi (haqiqiy toifasi bilan).
-          if (!isCorrectableLlmError(err)) throw err;
-          raw = await call(
-            `Your previous answer was rejected: ${describeLlmError(err)}. Return a single valid JSON object with all required fields.`,
-          );
-        }
-        let processed = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
-
-        // 5. Dalillar ko'p yiqilsa — bitta qayta urinish.
-        if (processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO) {
-          const correction = [
-            'Your evidence quotes failed verification. Problems:',
-            ...processed.failureNotes.map((note) => `- ${note}`),
-            'Copy the quotes character-by-character from SELLER lines in the transcript.',
-            'If you cannot find a real quote for a criterion, set its score to null instead of inventing one.',
-          ].join('\n');
-          try {
-            raw = await call(correction);
-            const retried = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
-            if (retried.evidenceFailureRatio <= processed.evidenceFailureRatio) {
-              processed = retried;
-            }
-          } catch (err) {
-            deps.logger?.warn({ err }, 'baholashni qayta urinish muvaffaqiyatsiz');
-          }
-        }
-
-        // 6. Til (uz): foydalanuvchi HECH QACHON lotin bo'lmagan matn ko'rmaydi.
-        //    Kirill -> lotin (kod); begona til -> faqat o'sha maydonlar bitta
-        //    chaqiruvda qayta; baribir yaroqsiz -> yashiriladi, quality=low.
-        let languageReport: UzLatinReport | null = null;
-        if (language === 'uz') {
-          const regenerate: RegenerateFields = async (bad) => {
-            const req = {
-              stage: 'training.scoring.language',
-              system: UZ_LATIN_REWRITE_SYSTEM,
-              user: JSON.stringify({ fields: bad }),
-              schema: rewriteSchema,
-              outputSchema: rewriteSchema,
-            };
-            let out: z.infer<typeof rewriteSchema>;
-            if (typeof llm.completeJsonWithUsage === 'function') {
-              const res = await llm.completeJsonWithUsage(req);
-              costUsd += priceCall && res.usage ? Math.max(0, priceCall(res.usage)) : 0;
-              out = res.value;
-            } else {
-              out = await llm.completeJson(req);
-            }
-            const wanted = new Set(bad.map((f) => f.id));
-            return new Map(out.fields.filter((f) => wanted.has(f.id)).map((f) => [f.id, f.text]));
-          };
-          languageReport = await enforceScoringLanguage(processed, regenerate);
-          if (languageReport.hidden.length > 0 || languageReport.regenerated.length > 0) {
-            deps.logger?.warn(
-              { sessionId, language: languageReport },
-              `debrief tili: ${languageReport.transliterated.length} o'girildi, ` +
-                `${languageReport.regenerated.length} qayta yaratildi, ${languageReport.hidden.length} yashirildi`,
-            );
-          }
-        }
-        const languageLow = (languageReport?.hidden.length ?? 0) > 0;
-        const evidenceLow = processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO;
-        if (languageReport) {
-          processed.coaching.languageCheck = {
-            transliterated: languageReport.transliterated.length,
-            regenerated: languageReport.regenerated.length,
-            hidden: languageReport.hidden,
-          };
-        }
-        processed.coaching.lowQualityReasons = [
-          ...(evidenceLow ? (['evidence'] as const) : []),
-          ...(languageLow ? (['language'] as const) : []),
-        ];
-        if (processed.droppedNotes.length > 0) {
-          deps.logger?.warn(
-            { sessionId, dropped: processed.droppedNotes },
-            'baholash: tekshiruvdan o\'tmagan qismlar olib tashlandi',
-          );
-        }
-
-        const quality: ScoringQuality = evidenceLow || languageLow ? 'low' : 'ok';
-        const { skillScore } = computeSkillScore(processed.criteria);
-
-        await withTenant(ctx.businessId, async (tx) => {
-          await repo.finishResult(tx, {
-            resultId,
-            status: 'done',
-            quality,
-            skillScore,
-            criteria: processed.criteria,
-            coaching: processed.coaching,
-            keyMoments: processed.keyMoments,
-            model: usage?.model ?? null,
-            promptVersion: SCORING_PROMPT_VERSION,
-            costUsd,
-            error: null,
-          });
-        });
-
-        return { resultId, version, status: 'done', quality, skillScore };
-      } catch (err) {
-        // Haqiqiy toifa bilan: `[timeout] ...`, `[http] ... HTTP 429 ...`, `[schema] ...`.
-        const message = describeLlmError(err);
-        await withTenant(ctx.businessId, async (tx) => {
-          await repo.finishResult(tx, {
-            resultId,
-            status: 'failed',
-            quality: 'ok',
-            skillScore: null,
-            criteria: [],
-            coaching: null,
-            keyMoments: [],
-            model: usage?.model ?? null,
-            promptVersion: SCORING_PROMPT_VERSION,
-            costUsd,
-            error: message.slice(0, 1000),
-          });
-        });
-        deps.logger?.error(
-          { err, sessionId, llmErrorKind: classifyLlmError(err) },
-          `baholash muvaffaqiyatsiz: ${message}`,
-        );
-        return { resultId, version, status: 'failed', quality: 'ok', skillScore: null };
+    async scoreSession(ctx, sessionId) {
+      const r = await reserve(ctx, sessionId);
+      if (r.alreadyRunning) {
+        return {
+          resultId: r.resultId,
+          version: r.version,
+          status: 'pending',
+          quality: 'ok',
+          skillScore: null,
+          alreadyRunning: true,
+        };
       }
+      return await execute(ctx, sessionId, r);
     },
 
     async getLatestResult(ctx, sessionId) {
