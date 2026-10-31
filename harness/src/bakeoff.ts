@@ -11,6 +11,9 @@
  *    uchun to'xtatilgan ishni qaytadan boshlash shart emas (resume);
  *  - pulli chaqiruvlardan OLDIN taxminiy narx chiqadi va tasdiq so'raladi.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';

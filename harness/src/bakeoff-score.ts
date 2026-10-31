@@ -7,6 +7,9 @@
  * Baholar bo'lmasa ham ishlaydi — lekin unda xulosa faqat kod o'lchovlariga
  * tayanadi va buni aniq aytadi.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';

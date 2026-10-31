@@ -8,6 +8,9 @@
  * Kalit kerak: AZURE_SPEECH_KEY + AZURE_SPEECH_REGION, GOOGLE_API_KEY.
  * Bu chaqiruvlar bepul (ovoz sintez qilinmaydi).
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

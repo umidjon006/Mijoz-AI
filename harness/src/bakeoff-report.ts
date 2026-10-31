@@ -8,6 +8,9 @@
  *
  * `mapping.json` ni baholashdan OLDIN ochmang — butun ma'no shunda.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 

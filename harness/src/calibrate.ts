@@ -12,6 +12,9 @@
  * DIQQAT: pul sarflaydi. Boshlashdan oldin taxminiy narx chiqadi va
  * tasdiqlash so'raladi (`--yes` bilan o'tkazib yuborish mumkin).
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 
@@ -28,6 +31,7 @@ import {
   MissingLlmKeyError,
   printDemoBanner,
   printMissingKeyBanner,
+  startupLine,
 } from './llm-factory.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
@@ -98,6 +102,8 @@ async function main(): Promise<void> {
   const pool = createPool(appDatabaseUrl());
   const withTenant = createWithTenant(pool);
   const getBusinessProfile: GetBusinessProfile = async () => profile;
+  console.log(startupLine());
+
   let resolved;
   try {
     resolved = createTrainerLlm({ profile });

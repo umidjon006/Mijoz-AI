@@ -10,6 +10,9 @@
  * uchun skript faqat o'lchaydi va baholash sahifasini yasaydi — tabiiylik va
  * raqamlarning tushunarliligini ODAM 1–5 ball bilan baholaydi.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';

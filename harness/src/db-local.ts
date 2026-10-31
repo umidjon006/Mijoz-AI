@@ -16,6 +16,9 @@
  * Env: `POSTGRES_PORT` (default 55433), `PG_LOCAL_DATA` (default
  * `harness/.pg-local`), `PG_BIN` (topilmasa avtomatik qidiriladi).
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

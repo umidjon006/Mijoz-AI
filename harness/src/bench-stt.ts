@@ -8,6 +8,9 @@
  * Pulli API chaqirilishidan oldin taxminiy narx chiqadi va tasdiq so'raladi.
  * Audio hech qayerga saqlanmaydi va log qilinmaydi (faqat natija JSON yoziladi).
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';

@@ -12,6 +12,9 @@
  *   5. narx taxminlagichi;
  *   6. odam baholarini birlashtirish va reyting/tavsiya.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

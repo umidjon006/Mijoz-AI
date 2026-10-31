@@ -174,6 +174,23 @@ qilinadi: **`TRAINER_PROVIDER`** (`anthropic` | `openai-compatible`),
 emas, NOMI) va **`TRAINER_MODEL`**. Baholash uchun alohida
 `TRAINER_SCORING_MODEL` (berilmasa `TRAINER_MODEL`).
 
+`.env` har bir harness skriptida **birinchi navbatda** yuklanadi va yo'l
+harness papkasiga nisbatan hisoblanadi — qaysi papkadan ishga tushirishingiz
+ahamiyatsiz. Ikki qoida:
+
+- **shell env'i `.env` dan ustun**: `TRAINER_MODEL=x npm run play` `.env` dagi
+  qiymatni bosib o'tadi;
+- **`KEY=` (bo'sh qiymat) — "sozlanmagan"**: bunday nom umuman qo'yilmaydi,
+  shuning uchun default qiymatlar (port, model) ishlashda davom etadi.
+
+Har skript startida bir qator chiqadi — provayder, baseUrl'ning **faqat host**
+qismi, model nomlari va kalit o'rnatilgan-yo'qligi (kalitning qiymati
+**hech qachon** chiqmaydi):
+
+```
+LLM sozlamasi: provayder=openai-compatible · host=generativelanguage.googleapis.com · model=gemini-3.8-flash · kalit GEMINI_API_KEY=o'rnatilgan · env=harness/.env (9 ta o'zgaruvchi)
+```
+
 **Kalit yo'q bo'lsa demo LLM'ga JIM O'TILMAYDI.** `play`, `serve` va `dev`
 tushunarli banner chiqarib to'xtaydi. Soxta rejim faqat ataylab
 `DEMO_LLM=1` qo'yilganda ishlaydi — unda terminalda ham, UI'da ham qizil

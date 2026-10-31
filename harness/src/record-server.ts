@@ -7,6 +7,9 @@
  * Faqat localhost'da tinglaydi. Audio shu papkadan tashqariga chiqmaydi va
  * hech qanday provayderga yuborilmaydi (uni `bench-stt` keyin o'zi yuboradi).
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { createServer } from 'node:http';
 import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';

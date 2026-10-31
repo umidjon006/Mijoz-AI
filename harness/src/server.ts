@@ -12,6 +12,9 @@
  * LLM: `ANTHROPIC_API_KEY` bo'lsa haqiqiy model, bo'lmasa demo LLM
  * (`demo-llm.ts`) — UI ni kalitsiz ham sinash mumkin.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import Fastify from 'fastify';
 
 import { registerTrainingRoutes } from '../../module/backend/src/training/routes.js';
@@ -33,6 +36,7 @@ import {
   printMissingKeyBanner,
   ProviderConfigError,
   resolveProviderConfig,
+  startupLine,
 } from './llm-factory.js';
 import { priceCall } from './llm-anthropic.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
@@ -50,6 +54,7 @@ async function main(): Promise<void> {
 
   // Kalit yo'q bo'lsa JIM demo'ga o'tilmaydi: yo DEMO_LLM=1, yo to'xtash.
   const config = resolveProviderConfig();
+  console.log(startupLine(config));
   let turnLlm;
   let scoringResolved;
   try {

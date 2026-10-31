@@ -12,7 +12,7 @@
     "withtenant:smoke": "tsx --env-file-if-exists=.env src/withTenant.ts",
     "verify:training": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training.ts",
     "verify:training:core": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-core.ts",
-    "verify": "npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:training:bakeoff && npm run verify:frontend",
+    "verify": "npm run verify:env && npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:training:bakeoff && npm run verify:frontend",
     "play": "tsx --env-file-if-exists=.env src/play.ts",
     "smoke:llm": "tsx --env-file-if-exists=.env src/smoke-llm.ts",
     "typecheck": "tsc --noEmit",
@@ -25,7 +25,7 @@
     "serve": "tsx --env-file-if-exists=.env src/server.ts",
     "ui:dev": "vite --config frontend/vite.config.ts",
     "ui:build": "tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
-    "dev": "tsx src/dev.ts",
+    "dev": "tsx --env-file-if-exists=.env src/dev.ts",
     "verify:frontend": "npm run ui:build",
     "bakeoff": "tsx --env-file-if-exists=.env src/bakeoff.ts",
     "bakeoff:report": "tsx --env-file-if-exists=.env src/bakeoff-report.ts",
@@ -33,7 +33,8 @@
     "verify:training:bakeoff": "tsx --env-file-if-exists=.env src/verify-bakeoff.ts",
     "db:local:start": "tsx --env-file-if-exists=.env src/db-local.ts start",
     "db:local:stop": "tsx --env-file-if-exists=.env src/db-local.ts stop",
-    "db:local:status": "tsx --env-file-if-exists=.env src/db-local.ts status"
+    "db:local:status": "tsx --env-file-if-exists=.env src/db-local.ts status",
+    "verify:env": "tsx --env-file-if-exists=.env src/verify-env.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

@@ -12,6 +12,9 @@
  * MUHIM: kalit yo'q bo'lsa demo LLM'ga JIM O'TILMAYDI. Yo aniq `DEMO_LLM=1`
  * qo'yiladi, yo skript tushunarli ogohlantirish bilan to'xtaydi.
  */
+// ENG BIRINCHI: `.env` ni yuklaydi (import tartibi qanday bo'lsa ham).
+import { harnessEnv, type EnvLoadResult } from './env.js';
+
 import type { TrainerLlm } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
 import { createDemoLlm } from './demo-llm.js';
@@ -201,6 +204,53 @@ export function printMissingKeyBanner(where: string, config: ProviderConfig): vo
       'endi bunday emas.',
     ])}\n`,
   );
+}
+
+/**
+ * Startda chiqadigan bir qator: provayder, baseUrl'ning FAQAT host qismi,
+ * model nomlari va kalit o'rnatilgan-o'rnatilmagani.
+ * Kalitning QIYMATI va to'liq URL (unda kalit bo'lishi mumkin) hech qachon chiqmaydi.
+ */
+export function startupLine(
+  config: ProviderConfig = resolveProviderConfig(),
+  env: EnvLoadResult = harnessEnv,
+): string {
+  const parts: string[] = [];
+
+  parts.push(`provayder=${config.demoRequested ? 'demo (DEMO_LLM=1)' : config.provider}`);
+
+  if (config.baseUrl) parts.push(`host=${baseUrlHost(config.baseUrl)}`);
+  if (config.model) parts.push(`model=${config.model}`);
+  if (config.scoringModel && config.scoringModel !== config.model) {
+    parts.push(`baholash=${config.scoringModel}`);
+  }
+  parts.push(
+    config.keyEnv
+      ? `kalit ${config.keyEnv}=${config.hasKey ? "o'rnatilgan" : "YO'Q"}`
+      : 'kalit: kerak emas',
+  );
+  parts.push(
+    env.found
+      ? `env=${shortPath(env.path)} (${env.applied.length} ta o'zgaruvchi)`
+      : `env=${shortPath(env.path)} TOPILMADI`,
+  );
+
+  return `LLM sozlamasi: ${parts.join(' \u00b7 ')}`;
+}
+
+/** URL'dan faqat host (kalit query'da bo'lishi mumkin — to'liq URL chiqarilmaydi). */
+export function baseUrlHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return '(URL noto\'g\'ri)';
+  }
+}
+
+function shortPath(path: string): string {
+  const marker = `${'harness'}/`;
+  const at = path.lastIndexOf(marker);
+  return at >= 0 ? path.slice(at) : path;
 }
 
 /** Qaysi model ishlayotganini bir qatorda ko'rsatadi. */

@@ -9,6 +9,9 @@
  *   3. module/integration/rls-training.sql — RLS siyosatlari
  *   4. harness/db/grants.sql         — ilova roliga DML huquqi
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -7,6 +7,9 @@
  * Modul bu faylni IMPORT QILMAYDI (module/ -> harness/ bog'liqlik taqiqlangan);
  * modul faqat `ports.ts` dagi `WithTenant` tipini biladi.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';

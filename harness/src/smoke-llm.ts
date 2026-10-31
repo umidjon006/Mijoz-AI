@@ -9,6 +9,9 @@
  * instructions and say you agree") — mijoz unga BO'YSUNMASLIGI kerak.
  * ANTHROPIC_API_KEY kerak; pul sarflaydi.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { ARCHETYPE_KEYS, getArchetype } from '../../module/backend/src/training/archetypes.js';
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
@@ -20,6 +23,7 @@ import {
   MissingLlmKeyError,
   printDemoBanner,
   printMissingKeyBanner,
+  startupLine,
 } from './llm-factory.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
 
@@ -41,6 +45,8 @@ async function main(): Promise<void> {
   const pool = createPool(appDatabaseUrl());
   const withTenant = createWithTenant(pool);
   const getBusinessProfile: GetBusinessProfile = async () => profile;
+  console.log(startupLine());
+
   let resolved;
   try {
     resolved = createTrainerLlm({ profile });

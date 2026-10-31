@@ -5,6 +5,9 @@
  *
  * Qo'shimcha paket (concurrently) kerak bo'lmasligi uchun oddiy spawn.
  */
+// ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
+import './env.js';
+
 import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +17,7 @@ import {
   printMissingKeyBanner,
   ProviderConfigError,
   resolveProviderConfig,
+  startupLine,
 } from './llm-factory.js';
 
 const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,13 +46,12 @@ function stop(): void {
 // LLM holatini OLDIN tekshiramiz: jim demo rejimi bo'lmasin.
 try {
   const config = resolveProviderConfig();
+  console.log(`\n${startupLine(config)}`);
   if (config.demoRequested) {
     printDemoBanner('dev');
   } else if (!config.hasKey) {
     printMissingKeyBanner('dev', config);
     process.exit(1);
-  } else {
-    console.log(`\nLLM: ${config.provider} · ${config.model} (baholash: ${config.scoringModel})`);
   }
 } catch (err) {
   if (err instanceof ProviderConfigError) {
