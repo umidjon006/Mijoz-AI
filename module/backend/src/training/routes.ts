@@ -31,6 +31,8 @@ import type {
   RevealedPersona,
 } from './scoring/scoring-types.js';
 import type { WithTenant } from './ports.js';
+import { VOICE_AUDIO, VOICE_LIMITS } from './voice/ports.js';
+import type { VoiceService } from './voice/voice-turn.js';
 
 export type TrainingPermission = 'training:use' | 'training:view:all';
 
@@ -46,6 +48,14 @@ const STATUS_BY_CODE: Record<TrainingErrorCode, number> = {
   session_not_found: 404,
   session_forbidden: 404,
   session_not_active: 409,
+  // Ovoz: format/hajm xatosi — mijoz tomonning xatosi, qayta urinish mantiqsiz.
+  voice_unsupported_media: 415,
+  voice_audio_too_large: 413,
+  // Qulf va byudjet — vaqtinchalik/holat xatosi.
+  voice_turn_in_progress: 409,
+  voice_budget_exhausted: 409,
+  // Audio keldi, lekin nutq tanilmadi (chegara tugadi) — matnga o'tish kerak.
+  voice_not_recognized: 422,
 };
 
 export interface TrainingRoutesConfig {
@@ -70,6 +80,11 @@ export interface TrainingRoutesDeps {
   getContext: (req: FastifyRequest) => Promise<TrainingContext> | TrainingContext;
   /** Ruxsat tekshiruvi; ruxsat bo'lmasa xato tashlashi kerak. */
   authorize?: (ctx: TrainingContext, permission: TrainingPermission) => Promise<void> | void;
+  /**
+   * Ovozli navbat. Berilmasa `/voice-turn` route'i UMUMAN ro'yxatga
+   * olinmaydi (matnli rejim o'zgarmaydi).
+   */
+  voice?: VoiceService;
   config?: TrainingRoutesConfig;
   logger?: TrainingLogger;
 }
@@ -392,6 +407,83 @@ export async function registerTrainingRoutes(
     }),
   );
 
+  // -------------------------------------------------------------------------
+  // Ovozli navbat (Step 3 Phase B). `deps.voice` berilmasa — route yo'q.
+  // -------------------------------------------------------------------------
+  if (deps.voice) {
+    const voice = deps.voice;
+
+    // Xom WAV. Fastify'da bunday parser bo'lmasa `audio/wav` 415 bo'lardi.
+    // Bir ildiz instansiyada ikki marta ro'yxatga olinmasligi uchun tekshiramiz.
+    for (const mime of [VOICE_AUDIO.mime, 'audio/x-wav', 'audio/wave']) {
+      if (!app.hasContentTypeParser(mime)) {
+        app.addContentTypeParser(mime, { parseAs: 'buffer' }, (_req, body, done) => {
+          done(null, body);
+        });
+      }
+    }
+
+    app.post(
+      `${prefix}/sessions/:id/voice-turn`,
+      // Hajm chegarasi Fastify darajasida: katta yozuv handler'ga YETIB
+      // kelmaydi (413), ya'ni xotira ham band qilinmaydi.
+      { bodyLimit: VOICE_LIMITS.maxBytes },
+      async (req, reply) =>
+        guard(req, reply, 'training:use', async (ctx) => {
+          const { id } = idParams.parse(req.params);
+          const mime = (req.headers['content-type'] ?? '').toString();
+          const body = req.body;
+
+          // Parser `audio/wav` bo'lmasa (masalan JSON yuborilgan) — 415.
+          if (!Buffer.isBuffer(body)) {
+            throw new TrainingError(
+              'voice_unsupported_media',
+              `kutilgan ${VOICE_AUDIO.mime}, kelgan "${mime.slice(0, 80)}"`,
+            );
+          }
+
+          const result = await voice.takeVoiceTurn(ctx, {
+            sessionId: id,
+            audio: body,
+            mime,
+          });
+
+          if (result.ended && autoScore) scoreInBackground(ctx, id);
+
+          return {
+            sellerText: result.sellerText,
+            customerText: result.customerText,
+            tone: result.tone,
+            // Audio FAQAT shu javobda qaytadi va saqlanmaydi.
+            audio: result.audio.toString('base64'),
+            audioMime: result.audioMime,
+            needsRepeat: result.needsRepeat,
+            ended: result.ended,
+            outcome: result.outcome ?? null,
+            endReason: result.endReason ?? null,
+            turnCount: result.turnCount,
+            ...(allowDebug ? { debug: { timings: result.timings, costUsd: result.costUsd } } : {}),
+          };
+        }),
+    );
+
+    /** `inbound` sessiyada mijozning birinchi gapi — ovozda. */
+    app.post(`${prefix}/sessions/:id/opening-audio`, async (req, reply) =>
+      guard(req, reply, 'training:use', async (ctx) => {
+        const { id } = idParams.parse(req.params);
+        const spoken = await voice.speakOpeningLine(ctx, { sessionId: id });
+        if (!spoken) return reply.code(204).send();
+        return {
+          text: spoken.text,
+          tone: spoken.tone,
+          audio: spoken.audio.toString('base64'),
+          audioMime: spoken.audioMime,
+          ...(allowDebug ? { debug: { ttsMs: spoken.ttsMs, costUsd: spoken.costUsd } } : {}),
+        };
+      }),
+    );
+  }
+
   /** O'z statistikasi. */
   app.get(`${prefix}/me/stats`, async (req, reply) =>
     guard(req, reply, 'training:use', async (ctx) => buildStats(ctx, ctx.userId)),
@@ -453,21 +545,6 @@ export async function registerTrainingRoutes(
     };
   }
 }
-
-/**
- * Step 3 Phase B uchun chok: ovozli navbat route'i SHU plaginga qo'shiladi.
- * Phase B tayyor bo'lganda `registerTrainingRoutes` ga `voice` deps'i
- * qo'shiladi va shu funksiya chaqiriladi — plagin ikkiga bo'linmaydi.
- *
- * TODO (Step 3 Phase B): `POST {prefix}/sessions/:id/voice-turn`
- *   - body: raw `audio/wav` (max ~2 MB / 30 s), 415 noto'g'ri mime, 413 katta;
- *   - `takeVoiceTurn(ctx, { sessionId, audio, mime })`;
- *   - javob: sellerText, customerText, audio (base64), timings, needsRepeat.
- */
-export type RegisterVoiceRoute = (
-  app: FastifyInstance,
-  deps: TrainingRoutesDeps & { prefix: string },
-) => Promise<void> | void;
 
 /** Yordamchi: mezonlar ro'yxatidan eng zaiflarini olish (UI uchun). */
 export function weakestCriteria(criteria: readonly CriterionResult[], limit = 3): CriterionResult[] {

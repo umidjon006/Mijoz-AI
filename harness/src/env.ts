@@ -172,6 +172,20 @@ export function envInt(
   return n;
 }
 
+/**
+ * Kasrli son (narx tariflari uchun). Bo'sh/yo'q -> `undefined`, ya'ni
+ * "tarif berilmagan". Noto'g'ri qiymat jim e'tiborsiz qoldirilMAYDI.
+ */
+export function envNum(name: string, env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = envStr(name, env);
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${name}="${raw}" noto'g'ri: manfiy bo'lmagan son kutiladi`);
+  }
+  return n;
+}
+
 /** Bayroq: bo'sh/yo'q -> `fallback`; `1/true/yes/on` -> true; `0/false/no/off` -> false. */
 export function envBool(name: string, fallback: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = envStr(name, env)?.toLowerCase();

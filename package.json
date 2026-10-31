@@ -38,6 +38,8 @@
     "db:local:status": "npm run db:local:status -w sotuv-trener-harness",
     "verify:env": "npm run verify:env -w sotuv-trener-harness",
     "diag:llm": "npm run diag:llm -w sotuv-trener-harness --",
-    "rescore": "npm run rescore -w sotuv-trener-harness --"
+    "rescore": "npm run rescore -w sotuv-trener-harness --",
+    "verify:training:voice": "npm run verify:training:voice -w sotuv-trener-harness",
+    "diag:voice": "npm run diag:voice -w sotuv-trener-harness --"
   }
 }

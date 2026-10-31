@@ -14,9 +14,10 @@ import { offerTopic } from './offer-facts.js';
 import type { PersonaCard, PersonaLanguage } from './persona.js';
 import type { BusinessProfile } from './profile-schema.js';
 import type { Readiness, TrainingState } from './state.js';
+import { toneListForPrompt } from './voice/tone.js';
 
 /** Prompt versiyasi — holatga yoziladi, keyinchalik A/B taqqoslash uchun. */
-export const PROMPT_VERSION = 'training-v2';
+export const PROMPT_VERSION = 'training-v3';
 
 /** Prompt'ga qo'yiladigan transkript oynasi (oxirgi N navbat). */
 export const TRANSCRIPT_WINDOW = 12;
@@ -189,7 +190,7 @@ export function buildTurnSystemPrompt({
     '{"reply": string, "intent": "continue"|"agrees"|"agrees_next_step"|"refuses"|"ends_call",',
     ' "deltas": {"patience": int, "trust": int, "interest": int},',
     ' "objectionRaisedKey": string|null, "objectionsResolvedKeys": string[],',
-    ' "needRevealed": boolean, "nextStep": string|null}',
+    ` "needRevealed": boolean, "nextStep": string|null, "tone": ${toneListForPrompt()}}`,
     '',
     'Field meanings:',
     '- intent "agrees": you accept the offer. Only allowed when the section above says you MAY agree.',
@@ -198,6 +199,8 @@ export function buildTurnSystemPrompt({
     '- objectionRaisedKey: the key of the concern you raised in THIS reply, else null. Use the keys listed above, never invent one.',
     '- objectionsResolvedKeys: keys the seller has now answered to your satisfaction, else [].',
     '- needRevealed: true only if you just admitted your hidden need.',
+    '- tone: how this reply SOUNDS when spoken. It is a suggestion only — the system clamps it',
+    '  to your inner state, so a warm tone with low trust will simply be ignored.',
     '',
     DELTA_RULES,
   );

@@ -423,6 +423,126 @@ Kalitsiz, faqat oqimni ko'rish uchun (javoblar soxta):
 DEMO_LLM=1 npm run dev
 ```
 
+## Ovozli mashq (Step 3B)
+
+Sotuvchi **gapiradi**, AI mijoz **ovozda javob beradi**. Har navbat baribir
+**matn** sifatida `training_turn` ga yoziladi (sotuvchi — STT matni, mijoz —
+javob matni). **Audio hech qayerda saqlanmaydi**: u bir marta javob bilan
+qaytadi va unutiladi.
+
+Bitta provayder yetarli — OpenAI (STT + mavjud LLM + TTS), lekin portlar
+(`SttPort` / `TtsPort`) provayderdan mustaqil: boshqasiga o'tish uchun faqat
+`harness/src/voice/` ga yangi adapter qo'shiladi.
+
+### 1. Qaysi model? — `npm run diag:voice`
+
+Model nomlari **kodda yo'q** (ular tez o'zgaradi va har kalitda har xil model
+ochiq). Shuning uchun avval diagnostika ishga tushiriladi:
+
+```bash
+npm run diag:voice            # modellarni ko'rsatadi, narxni taxminlaydi, so'raydi
+npm run diag:voice -- --yes   # so'ramasdan (pullik) chaqiruvlarni bajaradi
+```
+
+Nima qiladi:
+
+1. `GET /v1/models` dan `transcribe`, `tts`, `audio`, `realtime`, `live`
+   so'zlari bor modellarni ajratib ko'rsatadi;
+2. **chaqirishdan oldin** nechta chaqiruv va qancha belgi bo'lishini aytadi,
+   so'ngra tasdiq so'raydi (`--yes` bo'lmasa);
+3. TTS: uchta o'zbekcha gapni (biri **narxlar** bilan, biri xotirjam, biri
+   ohang ko'rsatmasi bilan **asabiy**) 2–3 ovozda sintez qiladi, kechikish va
+   **birinchi bayt** vaqtini o'lchaydi, fayllarni
+   `harness/benchmark/out/openai-tts/` ga **tinglash uchun** yozadi;
+4. STT: `harness/benchmark/samples/` da yozuvlar bo'lsa (`npm run bench:record`
+   bilan yoziladi), ularni `uz` tilida tanib, matn, kechikish va (etalon
+   bo'lsa) **WER** ni chiqaradi;
+5. oxirida `harness/.env` uchun **tavsiya** beradi.
+
+Ohang ko'rsatmasini qo'llamaydigan model uchrasa, skript buni aniq aytadi:
+ovozli navbat baribir ishlaydi, faqat jahl/xotirjamlik eshitilmaydi.
+
+### 2. `harness/.env`
+
+Diagnostika chiqargan qiymatlarni yozasiz:
+
+```bash
+OPENAI_API_KEY=...                 # bitta kalit yetarli
+OPENAI_STT_MODEL=...               # diag:voice tavsiya qiladi
+OPENAI_TTS_MODEL=...               # diag:voice tavsiya qiladi
+OPENAI_TTS_VOICE=...               # diag:voice tavsiya qiladi
+OPENAI_TTS_FORMAT=mp3              # bo'sh = mp3
+VOICE_MAX_MINUTES_PER_SESSION=10   # sinov xarajatini cheklaydi
+
+# Narx tariflari — OpenAI narx sahifasidan O'ZINGIZ to'ldirasiz.
+# Bo'sh bo'lsa sarf (sekund/belgi) yoziladi, lekin cost_usd 0 qoladi.
+OPENAI_STT_PRICE_PER_MIN=
+OPENAI_TTS_PRICE_PER_1M_CHARS=
+```
+
+`OPENAI_STT_MODEL` yoki `OPENAI_TTS_MODEL` bo'sh bo'lsa **ovoz route'lari
+umuman ro'yxatga olinmaydi** va matnli rejim hech narsa sezmaydi. Server
+startda qaysi holatda ekanini bir qatorda aytadi (kalit **qiymati** hech
+qachon chiqmaydi).
+
+### 3. Ishlatish
+
+```bash
+npm run dev
+```
+
+Jonli mashq sahifasidagi **"Ovozli mashq"** bo'limida:
+
+- katta tugmani **bosib turib** gapirasiz (yoki **BO'SHLIQ** tugmasini);
+- yonidagi chiziq mikrofon darajasini, o'ngdagi raqam yozuv davomiyligini
+  ko'rsatadi (30 s dan oshsa o'zi to'xtaydi va yuboradi);
+- qo'yib yuborganda "Eshityapti…" chiqadi, **tanilgan matn darhol**
+  transkriptga tushadi, keyin mijoz javobi chiqadi va audiosi avtomatik
+  ijro etiladi;
+- `inbound` sessiyada mijozning birinchi gapini ham eshitish mumkin.
+
+**Quloqchin taqing** — aks holda mijoz ovozi mikrofonga qaytib, keyingi
+navbatga aralashadi.
+
+Matn bilan yozish **yo'qolmaydi**: mikrofonga ruxsat berilmasa yoki nutq
+tanilmasa, pastdagi matn maydonida davom etaverasiz.
+
+### Qanday himoyalangan
+
+| Holat | Nima bo'ladi |
+|---|---|
+| Nutq tanilmadi | Mijoz "Kechirasiz, eshitolmadim, takrorlaysizmi?" deydi. **LLM chaqirilmaydi, holat o'zgarmaydi, navbat sanalmaydi.** Bir sessiyada ko'pi bilan 2 marta, keyin 422 va "matn bilan yozing" |
+| Juda qisqa yozuv (< 0.3 s) | STT ham chaqirilmaydi — tasodifiy bosilish uchun pul to'lanmaydi |
+| Format mos emas / WAV emas | 415 |
+| 2 MB yoki 30 s dan katta | 413 (Fastify tanani handler'ga yetkazmaydi) |
+| Shu sessiyada navbat ketyapti | 409 (DB advisory qulfi) |
+| Boshqa tenant sessiyasi | 404 (403 emas) |
+| Sessiya audio byudjeti tugadi | Mijoz xushmuomala tugatadi, sessiya yopiladi |
+
+### Ohang (emotsiya)
+
+Model har navbatda ohang **taklif qiladi** (`calm`, `friendly`, `interested`,
+`hesitant`, `irritated`, `angry`, `sarcastic`, `bored`), lekin **kod qaror
+qiladi**: `clampTone` uni holatga moslaydi.
+
+- `angry` / `irritated` / `sarcastic` — faqat **sabr yoki ishonch past** bo'lsa;
+- `friendly` / `interested` — faqat **ishonch yetarli** bo'lsa va sabr
+  tugayotgan bo'lmasa;
+- `bored` — faqat **qiziqish past** bo'lsa;
+- `calm` / `hesitant` — har doim mumkin.
+
+Ya'ni model ohang orqali holat mashinasini chetlab o'tolmaydi: ishonchi past
+mijoz hech qachon iliq ovozda gapirmaydi. Tanlangan ohang TTS ga **gapirish
+ko'rsatmasi** sifatida beriladi; qo'llamaydigan model uni e'tiborsiz
+qoldiradi.
+
+### Raqamlar
+
+Mijoz javobi TTS ga berilishidan oldin `normalizeForSpeech` dan o'tadi:
+`700 000 so'm` -> "yetti yuz ming so'm", `10%` -> "o'n foiz", telefon raqami
+esa raqam-raqam o'qiladi. **DB ga modelning asl matni yoziladi** — transkript
+va baholash o'zgarmaydi.
+
 ## Motor (Step 2) qisqacha
 
 Sotuvchi matn yozadi — AI mijoz haqiqiy, qiyin mijoz kabi javob beradi.
@@ -479,6 +599,14 @@ tenant/foydalanuvchi izolyatsiyasi -> 404, validatsiya, statistika).
 urug'li aralashtirishning takrorlanishi va ko'r yorliqlar, resume mantig'i,
 o'lchovlar (tayyor sessiyalar ustida), narx taxminlagichi, odam baholarini
 birlashtirish va reyting/diskvalifikatsiya.
+
+`verify:training:voice` (Step 3B, haqiqiy STT/TTS chaqirilmaydi — soxta
+portlar): raqam -> o'zbek so'zi (0..999 999 999, narx, foiz, telefon),
+markdown/emoji tozalash, ohangni holatga moslash (`clampTone`), audio
+tekshiruvi (mime / hajm / davomiylik), narx hisobi, to'liq ovozli navbat
+(matn saqlanadi, AUDIO saqlanmaydi), "takrorlaysizmi" yo'li va chegarasi,
+byudjet qo'riqchisi, parallel navbat qulfi, `inbound` ochilish gapi,
+route statuslari (200 / 415 / 413 / 409 / 422 / 404).
 
 `verify:frontend`: TypeScript tekshiruvi + production build (Vite).
 
@@ -578,8 +706,10 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
 
 ## Keyingi qadamlar
 
-- **Step 3 Phase B (ovoz):** push-to-talk, STT/TTS ulash. Avval Step 3A
-  benchmarkini o'tkazish kerak (`harness/benchmark/README.md`).
-- Frontend'dagi `VoiceControls` komponenti slot sifatida tayyor turibdi.
+- **Ovoz sifati:** `npm run diag:voice` bilan modellarni o'lchab, eng mosini
+  tanlash; o'zbekcha WER yuqori chiqsa boshqa STT provayderini sinash
+  (portlar provayderdan mustaqil — `SttPort` / `TtsPort`).
+- Narx tariflarini `harness/.env` ga to'ldirish (`OPENAI_STT_PRICE_PER_MIN`,
+  `OPENAI_TTS_PRICE_PER_1M_CHARS`), aks holda `cost_usd` da audio qismi 0 qoladi.
 
 Batafsil: `module/integration/INTEGRATION.md`.

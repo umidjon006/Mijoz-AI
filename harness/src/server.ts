@@ -13,7 +13,7 @@
  * (`demo-llm.ts`) — UI ni kalitsiz ham sinash mumkin.
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import { envBool, envInt, envStr } from './env.js';
+import { envBool, envInt, envNum, envStr } from './env.js';
 
 import Fastify from 'fastify';
 
@@ -35,6 +35,12 @@ import {
 } from './llm-factory.js';
 import { priceCall } from './llm-anthropic.js';
 import { appDatabaseUrl, createPool, createWithTenant } from './withTenant.js';
+import {
+  createVoiceService,
+  describeVoiceCostRates,
+  type VoiceService,
+} from '../../module/backend/src/training/voice/voice-turn.js';
+import { createOpenAiStt, createOpenAiTts, missingVoiceConfig, openAiVoiceConfigFromEnv } from './voice/openai.js';
 
 // Bo'sh qiymat = default (avval bo'sh HARNESS_PORT port 0 ga aylanardi).
 const PORT = envInt('HARNESS_PORT', 5180, { min: 1, max: 65535 });
@@ -96,6 +102,45 @@ async function main(): Promise<void> {
     console.log(`Osilib qolgan baholashlar: ${recovered} ta "failed" qilindi (server qayta ishga tushdi).`);
   }
 
+  // --- Ovozli rejim: sozlama to'liq bo'lsa yoqiladi -----------------------
+  // Model nomlari env'dan keladi (`npm run diag:voice` tavsiya qiladi).
+  // To'liq bo'lmasa ovoz route'lari UMUMAN ro'yxatga olinmaydi va UI buni
+  // `_harness` dan bilib, matnli rejimda qolaveradi.
+  const voiceConfig = openAiVoiceConfigFromEnv();
+  let voice: VoiceService | undefined;
+  if (voiceConfig) {
+    const rates = {
+      sttPerMinuteUsd: envNum('OPENAI_STT_PRICE_PER_MIN'),
+      ttsPerMillionCharsUsd: envNum('OPENAI_TTS_PRICE_PER_1M_CHARS'),
+    };
+    voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: createOpenAiStt(voiceConfig),
+      tts: createOpenAiTts(voiceConfig),
+      models: {
+        stt: voiceConfig.sttModel,
+        tts: voiceConfig.ttsModel,
+        voice: voiceConfig.ttsVoice,
+      },
+      getBusinessProfile,
+      cost: rates,
+      maxMinutesPerSession: envInt('VOICE_MAX_MINUTES_PER_SESSION', 10, { min: 1, max: 600 }),
+      logger: app.log,
+    });
+    console.log(
+      `Ovoz: stt=${voiceConfig.sttModel}` +
+        ` · tts=${voiceConfig.ttsModel}${voiceConfig.ttsVoice ? ` (${voiceConfig.ttsVoice})` : ''}` +
+        ` · host=${new URL(voiceConfig.baseUrl).host} · kalit ${voiceConfig.keyEnv}=o'rnatilgan`,
+    );
+    console.log(describeVoiceCostRates(rates));
+  } else {
+    console.log(
+      `Ovoz: O'CHIRILGAN — yetishmayotgan env: ${missingVoiceConfig().join(', ')}` +
+        ' (aniqlash: npm run diag:voice)',
+    );
+  }
+
   // Default YOQILGAN: bo'sh HARNESS_AUTH avval auth'ni o'chirib, UI 401 olardi.
   // O'chirish faqat aniq HARNESS_AUTH=0 bilan.
   const fakeAuth = envBool('HARNESS_AUTH', true);
@@ -121,6 +166,7 @@ async function main(): Promise<void> {
         return;
       }
     },
+    ...(voice ? { voice } : {}),
     config: { allowDebug: true, autoScoreOnEnd: true, rateLimitPerMinute: 240 },
     logger: app.log,
   });
@@ -135,6 +181,10 @@ async function main(): Promise<void> {
     model: turnLlm.model,
     scoringModel: scoringResolved.model,
     isDemo: turnLlm.isDemo,
+    // UI shundan bilib ovoz boshqaruvini ko'rsatadi (yoki ko'rsatmaydi).
+    voice: voice
+      ? { enabled: true, sttModel: voiceConfig?.sttModel, ttsModel: voiceConfig?.ttsModel }
+      : { enabled: false, missing: missingVoiceConfig() },
     debug: true,
   }));
 

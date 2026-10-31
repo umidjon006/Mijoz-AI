@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { Archetype } from './archetypes.js';
 import type { PersonaCard } from './persona.js';
 import { PROMPT_VERSION } from './prompts.js';
+import { VOICE_TONES } from './voice/tone.js';
 
 const score = z.number().int().min(0).max(100);
 
@@ -73,6 +74,12 @@ export const turnResultSchema = z.object({
   needRevealed: z.boolean(),
   /** Kelishilgan keyingi qadam matni (bo'lsa). */
   nextStep: z.string().min(1).nullable(),
+  /**
+   * Ovoz uchun TAKLIF qilingan ohang. IXTIYORIY: matnli rejimda umuman
+   * kerak emas, shuning uchun eski javoblar ham sxemaga tushaveradi.
+   * Qiymatni KOD chegaralaydi (`voice/tone.ts` -> `clampTone`).
+   */
+  tone: z.enum(VOICE_TONES).optional(),
 });
 
 export type TurnResult = z.infer<typeof turnResultSchema>;
@@ -108,6 +115,10 @@ export function coerceTurnResult(raw: unknown): unknown {
   if (!Array.isArray(obj.objectionsResolvedKeys)) obj.objectionsResolvedKeys = [];
   if (typeof obj.needRevealed !== 'boolean') obj.needRevealed = false;
   if (typeof obj.reply === 'string') obj.reply = obj.reply.trim();
+
+  // Ohang ixtiyoriy va baribir kod tomonidan chegaralanadi: noto'g'ri qiymat
+  // uchun butun navbatni qayta so'rash ortiqcha — shunchaki olib tashlaymiz.
+  if (!(VOICE_TONES as readonly unknown[]).includes(obj.tone)) delete obj.tone;
 
   return obj;
 }

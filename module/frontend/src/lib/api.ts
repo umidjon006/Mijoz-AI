@@ -13,6 +13,13 @@ export interface ApiRequestInit {
   method?: 'GET' | 'POST';
   body?: unknown;
   signal?: AbortSignal;
+  /**
+   * XOM tana (ovozli navbat: `audio/wav`). `body` bilan birga berilmaydi.
+   * Host so'rov yuboruvchisi buni JSON qilib o'ramasdan, `contentType` bilan
+   * shundayligicha yuborishi kerak.
+   */
+  rawBody?: Blob | ArrayBuffer;
+  contentType?: string;
 }
 
 /** Host ilovaning so'rov yuboruvchisi. Xato bo'lsa throw qilishi kutiladi. */
@@ -97,6 +104,34 @@ export interface TurnResponse {
     intent?: string;
     latencyMs?: number;
   };
+}
+
+/** Ovozli navbat javobi. `audio` — base64; hech qayerda saqlanmaydi. */
+export interface VoiceTurnResponse {
+  sellerText: string;
+  customerText: string;
+  tone: string;
+  audio: string;
+  audioMime: string;
+  /** `true` — nutq tanilmadi: holat o'zgarmadi, navbat sanalmadi. */
+  needsRepeat: boolean;
+  ended: boolean;
+  outcome: string | null;
+  endReason: string | null;
+  turnCount: number;
+  debug?: {
+    timings?: { sttMs: number; llmMs: number; ttsMs: number; totalMs: number };
+    costUsd?: number;
+  };
+}
+
+/** `inbound` sessiyada mijozning birinchi gapi (ovozda). */
+export interface OpeningAudioResponse {
+  text: string;
+  tone: string;
+  audio: string;
+  audioMime: string;
+  debug?: { ttsMs?: number; costUsd?: number };
 }
 
 export interface StatePoint {
@@ -248,6 +283,10 @@ export interface TrainingApi {
   getSession(sessionId: string): Promise<SessionDetail>;
   listSessions(): Promise<SessionListItem[]>;
   takeTurn(sessionId: string, text: string): Promise<TurnResponse>;
+  /** Ovozli navbat: 16 kHz mono 16-bit PCM WAV. */
+  takeVoiceTurn(sessionId: string, wav: Blob): Promise<VoiceTurnResponse>;
+  /** `inbound` bo'lmasa yoki ovoz o'chiq bo'lsa `null`. */
+  openingAudio(sessionId: string): Promise<OpeningAudioResponse | null>;
   endSession(sessionId: string, reason?: string): Promise<void>;
   requestScore(sessionId: string): Promise<ScoreRequestResponse>;
   getResult(sessionId: string): Promise<ResultResponse>;
@@ -280,6 +319,20 @@ export function createTrainingApi(request: ApiRequest, prefix = '/api/v1/trainin
         method: 'POST',
         body: { text },
       });
+    },
+    takeVoiceTurn(sessionId, wav) {
+      return request<VoiceTurnResponse>(`${prefix}/sessions/${sessionId}/voice-turn`, {
+        method: 'POST',
+        rawBody: wav,
+        contentType: 'audio/wav',
+      });
+    },
+    async openingAudio(sessionId) {
+      const res = await request<OpeningAudioResponse | undefined>(
+        `${prefix}/sessions/${sessionId}/opening-audio`,
+        { method: 'POST' },
+      );
+      return res ?? null;
     },
     async endSession(sessionId, reason) {
       await request(`${prefix}/sessions/${sessionId}/end`, {

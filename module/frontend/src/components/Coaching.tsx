@@ -1,5 +1,5 @@
 /** Maslahat kartasi va muhim lahzalar tasmasi. */
-import { mashq } from '../lugat/mashq.js';
+import { keyMomentLabel, mashq } from '../lugat/mashq.js';
 import type { ResultPayload } from '../lib/api.js';
 
 export interface CoachingProps {
@@ -171,7 +171,7 @@ export function KeyMoments({
             onClick={() => onQuoteClick?.(moment.turnSeq)}
           >
             <span className="mq-muted mq-small">
-              T{moment.turnSeq} · {moment.kind}
+              T{moment.turnSeq} · {keyMomentLabel(moment.kind)}
             </span>
             <br />
             {moment.explanation}

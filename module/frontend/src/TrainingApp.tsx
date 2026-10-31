@@ -33,6 +33,12 @@ export interface TrainingAppProps {
   canViewAll?: boolean;
   /** Debug panellari (harness uchun `true`). */
   debug?: boolean;
+  /**
+   * Server ovozli navbatni qo'llaydimi. Host buni o'z sozlamasidan biladi
+   * (harness `_harness` endpointidan). `false` bo'lsa jonli sahifada ovoz
+   * boshqaruvi o'rniga tushuntirish ko'rsatiladi.
+   */
+  voiceEnabled?: boolean;
   /** Boshlang'ich ko'rinish (host router'idan kelishi mumkin). */
   initialView?: TrainingView;
 }
@@ -42,6 +48,7 @@ export function TrainingApp({
   callDirection = 'mixed',
   canViewAll = false,
   debug = false,
+  voiceEnabled = false,
   initialView = { name: 'home' },
 }: TrainingAppProps): JSX.Element {
   const [view, setView] = useState<TrainingView>(initialView);
@@ -93,6 +100,7 @@ export function TrainingApp({
             api={api}
             sessionId={view.sessionId}
             debug={debug}
+            voiceEnabled={voiceEnabled}
             onFinished={(sessionId) => setView({ name: 'result', sessionId })}
             onExit={() => setView({ name: 'home' })}
           />

@@ -26,9 +26,11 @@ export type {
   RevealedPersona,
   StatsResponse,
   TranscriptTurn,
+  VoiceTurnResponse,
+  OpeningAudioResponse,
 } from './lib/api.js';
 
-export { mashq, outcomeLabel } from './lugat/mashq.js';
+export { mashq, outcomeLabel, keyMomentLabel } from './lugat/mashq.js';
 export type { MashqStrings } from './lugat/mashq.js';
 
 export { Transcript } from './components/Transcript.js';
@@ -37,4 +39,7 @@ export { CoachingCard, KeyMoments } from './components/Coaching.js';
 export { HiddenCards } from './components/HiddenCards.js';
 export { StateChart } from './components/StateChart.js';
 export { VoiceControls } from './components/VoiceControls.js';
+export type { VoiceControlsProps, VoiceTurnEvents } from './components/VoiceControls.js';
+export { useWavRecorder, encodeWav, WAV_SAMPLE_RATE } from './lib/useWavRecorder.js';
+export type { WavRecorder, UseWavRecorderOptions } from './lib/useWavRecorder.js';
 export { ScoreRing, OutcomeBadge, Notice, EmptyState, Metric } from './components/ui.js';

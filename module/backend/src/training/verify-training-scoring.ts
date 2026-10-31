@@ -1508,7 +1508,15 @@ async function verifyDbAndRoutes(): Promise<void> {
       assertEqual(oldRow?.error, STALE_PENDING_ERROR, 'xato matni');
       assertEqual(freshRow?.status, 'pending', 'yangi pending tegilmaydi');
 
-      // Qayta baholash yangi versiya qo'shadi, eskilari qoladi.
+      // Yangi `pending` hali tirik ekan, qayta baholash BOSHLANMAYDI —
+      // sessiya qulfi o'sha ketayotgan run'ni qaytaradi (bitta run qoidasi).
+      const blocked = await scoring.scoreSession(ctxA, sessionId);
+      assertEqual(blocked.status, 'pending', 'ketayotgan run qaytariladi');
+      assertEqual(blocked.alreadyRunning, true, 'yangi run boshlanmadi');
+      assertEqual(blocked.version, freshRow?.version, 'aynan yangi pending');
+
+      // Yangisi ham yopilgach — qayta baholash yangi versiya qo'shadi, eskilari qoladi.
+      await scoring.failStalePending(bizA, { olderThanMs: 0 });
       const before = versions.length;
       const rescored = await scoring.scoreSession(ctxA, sessionId);
       assertEqual(rescored.status, 'done', 'qayta baholandi');

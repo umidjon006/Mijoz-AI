@@ -50,7 +50,32 @@ export const mashq = {
   customerThinking: 'Mijoz javob yozyapti…',
   voiceSlotTitle: 'Ovozli mashq',
   voiceSlotPending:
-    'Ovozli rejim keyingi qadamda ulanadi (Step 3B). Hozircha matn bilan mashq qilinadi.',
+    "Ovozli rejim serverda yoqilmagan. `npm run diag:voice` bilan modellarni aniqlab, " +
+    'harness/.env ga yozing. Hozircha matn bilan mashq qiling.',
+  voiceHoldToTalk: "Gapirish uchun bosib turing (yoki BO'SHLIQ)",
+  voiceRecording: "Yozilyapti… qo'yib yuboring",
+  voiceHeadphones: 'Quloqchin taqing — aks holda mijoz ovozi mikrofonga qaytadi.',
+  voiceListening: 'Eshityapti…',
+  voiceThinking: 'Mijoz javob tayyorlayapti…',
+  voiceSpeaking: 'Mijoz gapiryapti…',
+  voiceRepeatNotice: "Mijoz eshitmadi — yana bir marta, aniqroq gapiring.",
+  voiceMicDenied:
+    'Mikrofonga ruxsat berilmadi. Brauzer sozlamalaridan ruxsat bering yoki matn bilan yozing.',
+  voiceUnsupported: "Brauzer mikrofonni qo'llamaydi — matn bilan yozing.",
+  voiceFailed: "Ovoz ishlamadi — matn bilan yozib ko'ring.",
+  voiceTone: 'Ohang',
+  voiceTimings: 'Vaqtlar',
+  voicePlayOpening: "Mijozning birinchi gapini eshitish",
+
+  /** Muhim lahza turlari — foydalanuvchiga `trust_rise` emas, shu ko'rinadi. */
+  keyMomentKinds: {
+    objection_raised: "E'tiroz aytildi",
+    objection_resolved: "E'tiroz yechildi",
+    trust_rise: 'Ishonch oshdi',
+    trust_drop: 'Ishonch tushdi',
+    patience_drop: 'Sabr tushdi',
+    final_turn: 'Oxirgi navbat',
+  } as Record<string, string>,
   debugTitle: 'Debug',
   blockers: 'Nega hali rozi bo\'lmaydi',
   readyToAgree: 'Rozi bo\'lishga tayyor',
@@ -146,6 +171,14 @@ export const mashq = {
 } as const;
 
 export type MashqStrings = typeof mashq;
+
+/**
+ * Muhim lahza turini o'zbekcha nomga o'giradi. Noma'lum kalit kelsa —
+ * kalitning o'zi (yangi tur qo'shilsa UI buzilmaydi).
+ */
+export function keyMomentLabel(kind: string): string {
+  return mashq.keyMomentKinds[kind] ?? kind;
+}
 
 /** Natija kodini o'zbekcha matnga o'giradi. */
 export function outcomeLabel(outcome: string | null): string {

@@ -12,6 +12,8 @@ export interface SessionPageProps {
   sessionId: string;
   /** Debug panelini ko'rsatish (harness; prod'da `false`). */
   debug?: boolean;
+  /** Server ovozli navbatni yoqqanmi (`_harness` yoki host sozlamasi). */
+  voiceEnabled?: boolean;
   onFinished: (sessionId: string) => void;
   onExit: () => void;
 }
@@ -20,6 +22,7 @@ export function SessionPage({
   api,
   sessionId,
   debug = false,
+  voiceEnabled = false,
   onFinished,
   onExit,
 }: SessionPageProps): JSX.Element {
@@ -176,7 +179,28 @@ export function SessionPage({
         ) : null}
       </div>
 
-      <VoiceControls sessionId={sessionId} disabled={Boolean(ended)} />
+      <VoiceControls
+        sessionId={sessionId}
+        api={api}
+        disabled={Boolean(ended)}
+        enabled={voiceEnabled}
+        debug={debug}
+        hasOpeningLine={session?.persona.direction === 'inbound'}
+        events={{
+          // Tanilgan matn darhol ko'rinadi — mijoz javobi kutilmaydi.
+          onSellerText: (value) =>
+            setTurns((previous) => [...previous, { speaker: 'seller', text: value }]),
+          onCustomerTurn: (result) => {
+            setTurns((previous) => [
+              ...previous,
+              { speaker: 'customer', text: result.customerText },
+            ]);
+            // "Takrorlaysizmi" navbat sanalmaydi — serverdagi 0 ni yozmaymiz.
+            if (!result.needsRepeat) setTurnCount(result.turnCount);
+            if (result.ended) setEnded({ outcome: result.outcome });
+          },
+        }}
+      />
 
       {debug && lastDebug?.state ? (
         <details className="mq-panel" style={{ marginTop: 12 }} open>

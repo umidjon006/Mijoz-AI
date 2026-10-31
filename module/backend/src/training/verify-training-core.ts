@@ -168,7 +168,7 @@ function verifyState(): void {
         { objectionsRaised: [], objectionsResolved: [], needRevealed: false, guardViolations: 0 },
         `${key}: flaglar`,
       );
-      assertEqual(st.promptVersion, 'training-v2', `${key}: promptVersion`);
+      assertEqual(st.promptVersion, 'training-v3', `${key}: promptVersion`);
     }
   });
 
@@ -1068,7 +1068,7 @@ async function verifyEngineWithDb(): Promise<void> {
       assertEqual(session.turnCount, 2, 'sessiya turnCount');
       assertEqual(session.transcript.length, 5, 'transkript uzunligi');
       assert(Number(session.costUsd) > 0, `cost_usd to'ldirilishi kerak, keldi ${session.costUsd}`);
-      assertEqual(session.state.promptVersion, 'training-v2', 'promptVersion');
+      assertEqual(session.state.promptVersion, 'training-v3', 'promptVersion');
     });
 
     // --- 3. Guard ---------------------------------------------------------
@@ -1320,7 +1320,7 @@ async function verifyEngineWithDb(): Promise<void> {
       const turn = await engine.takeTurn(ctxA, { sessionId: started.sessionId, sellerText: 'salom' });
       assertEqual(turn.customerReply, CUSTOMER_LANGUAGE_FALLBACK, "begona javob ko'rsatilmaydi");
       assertEqual(llm.callCount, 3, "uchinchi urinish yo'q");
-      assert(warnings.some((w) => w.includes('lotin')), 'ogohlantirish logda');
+      assert(warnings.some((w) => w.includes('begona tilda')), 'ogohlantirish logda');
     });
 
     // --- 6f. Timeout DB orqali -------------------------------------------

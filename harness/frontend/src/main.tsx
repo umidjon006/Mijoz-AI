@@ -19,12 +19,16 @@ const DEV_HEADERS: Record<string, string> = {
 };
 
 async function request<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
+  // Ovozli navbat XOM `audio/wav` yuboradi — JSON ga o'ralmaydi.
+  const raw = init.rawBody;
   const response = await fetch(path, {
     method: init.method ?? 'GET',
     headers: {
       ...DEV_HEADERS,
+      ...(raw !== undefined ? { 'content-type': init.contentType ?? 'application/octet-stream' } : {}),
       ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
     },
+    ...(raw !== undefined ? { body: raw } : {}),
     ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
     ...(init.signal ? { signal: init.signal } : {}),
   });
@@ -58,6 +62,7 @@ interface HarnessInfo {
   llm: string;
   model?: string;
   isDemo?: boolean;
+  voice?: { enabled: boolean; sttModel?: string; ttsModel?: string; missing?: string[] };
 }
 
 function Shell(): JSX.Element {
@@ -119,6 +124,10 @@ function Shell(): JSX.Element {
             {' '}
             · profil: {info.profileKey} ({info.industry}) · LLM: {info.llm}
             {info.model ? ` (${info.model})` : ''}
+            {' · ovoz: '}
+            {info.voice?.enabled
+              ? `${info.voice.sttModel ?? '?'} / ${info.voice.ttsModel ?? '?'}`
+              : `o'chiq${info.voice?.missing?.length ? ` (${info.voice.missing.join(', ')})` : ''}`}
           </>
         ) : (
           ' · backend ulanmadi: `npm run serve` ishlayaptimi?'
@@ -127,6 +136,7 @@ function Shell(): JSX.Element {
       <TrainingApp
         api={api}
         callDirection={info?.callDirection ?? 'mixed'}
+        voiceEnabled={info?.voice?.enabled === true}
         canViewAll
         debug
       />

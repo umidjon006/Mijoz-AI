@@ -10,7 +10,13 @@ export type TrainingErrorCode =
   | 'llm_provider_error' // provayder HTTP xato qaytardi (4xx/5xx)
   | 'session_not_found' // sessiya yo'q (yoki boshqa tenant'ga tegishli)
   | 'session_forbidden' // sessiya boshqa foydalanuvchiga tegishli
-  | 'session_not_active'; // sessiya allaqachon tugagan
+  | 'session_not_active' // sessiya allaqachon tugagan
+  // --- ovozli navbat ---
+  | 'voice_unsupported_media' // mime yoki WAV formati kutilganidan boshqa
+  | 'voice_audio_too_large' // yozuv hajm/davomiylik chegarasidan oshdi
+  | 'voice_turn_in_progress' // shu sessiyada ovozli navbat allaqachon ketmoqda
+  | 'voice_not_recognized' // nutq tanilmadi va "qaytaring" chegarasi tugadi
+  | 'voice_budget_exhausted'; // sessiyaning ovoz byudjeti tugadi
 
 export class TrainingError extends Error {
   readonly code: TrainingErrorCode;

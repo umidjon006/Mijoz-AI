@@ -63,6 +63,7 @@ import {
   type TrainingState,
   type TurnResult,
 } from './state.js';
+import { clampTone, type VoiceTone } from './voice/tone.js';
 
 export interface StartSessionInput {
   archetypeKey: string;
@@ -101,6 +102,10 @@ export interface TakeTurnResult {
     guardRetried: boolean;
     guardViolated: boolean;
     intent: TurnResult['intent'];
+    /** Ovoz uchun ohang — model taklifi HOLATGA moslangandan keyin. */
+    tone: VoiceTone;
+    /** Model taklifi holatga to'g'ri kelmagani uchun o'zgartirildimi. */
+    toneClamped: boolean;
   };
 }
 
@@ -375,6 +380,10 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         const latencyMs = Date.now() - startedMs;
         const sellerTurnCount = row.turnCount + 1;
 
+        // Ohang: model TAKLIF qiladi, kod holatga moslaydi (matnli rejimda
+        // ham yoziladi — keyin ovozga o'tilganda tarix mos bo'lsin).
+        const toneDecision = clampTone(result.tone, applied, archetype);
+
         const end = evaluateEnd({
           state: applied,
           result,
@@ -395,8 +404,10 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
             meta: {
               latencyMs,
               intent: result.intent,
+              tone: toneDecision.tone,
               ...(usage ? { usage } : {}),
               ...(guardViolated ? { guardViolated: true } : {}),
+              ...(toneDecision.clamped ? { toneClamped: true } : {}),
             },
           },
           createdAt: finishedAt,
@@ -428,6 +439,8 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
             guardRetried,
             guardViolated,
             intent: result.intent,
+            tone: toneDecision.tone,
+            toneClamped: toneDecision.clamped,
           },
         };
       });

@@ -501,3 +501,20 @@
     background: #13251c;
   }
 }
+
+/* Ovozli mashq: bosib turilganda tugma ko'zga tashlanib tursin. */
+.mq-btn.mq-recording {
+  background: #b3261e;
+  border-color: #b3261e;
+  color: #fff;
+  animation: mq-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes mq-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.78; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mq-btn.mq-recording { animation: none; }
+}

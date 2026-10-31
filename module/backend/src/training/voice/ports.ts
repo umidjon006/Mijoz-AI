@@ -56,12 +56,22 @@ export interface SttResult {
   raw?: unknown;
 }
 
+/**
+ * Ohangni TTS'ga YETKAZISH usuli. `tone` — modulning qarori (kod chegaralagan),
+ * `instructions` — o'sha ohangning gapirish ko'rsatmasi matni. Ikkisi ham
+ * IXTIYORIY: ko'rsatmani qo'llamaydigan provayder ularni e'tiborsiz qoldiradi.
+ */
+export interface TtsToneHint {
+  tone?: string;
+  instructions?: string;
+}
+
 export interface SttPort {
   /** Qisqa yozuvni (<= 30 s) matnga aylantiradi. */
   transcribeShort(req: SttRequest): Promise<SttResult>;
 }
 
-export interface TtsRequest {
+export interface TtsRequest extends TtsToneHint {
   text: string;
   lang: VoiceLang;
   /** Provayderdagi ovoz nomi (masalan Azure'da `uz-UZ-...Neural`). */
@@ -80,6 +90,28 @@ export interface TtsResult {
 export interface TtsPort {
   synthesize(req: TtsRequest): Promise<TtsResult>;
 }
+
+/**
+ * Nutq tanilmaganda mijoz aytadigan QAT'IY matn. LLM chaqirilmaydi, holat
+ * o'zgarmaydi — shuning uchun matn kodda turadi (model o'ylab topmaydi).
+ */
+export const VOICE_REPEAT_LINE = 'Kechirasiz, eshitolmadim, takrorlaysizmi?';
+
+/** Bir sessiyada eng ko'p shuncha marta "takrorlaysizmi" deyiladi. */
+export const VOICE_MAX_REPEATS = 2;
+
+/** Byudjet tugaganda mijoz xushmuomala tugatadi (ham LLM'siz). */
+export const VOICE_BUDGET_LINE =
+  "Kechirasiz, vaqtim tugadi — keyinroq gaplashsak bo'ladimi? Rahmat.";
+
+/** Sessiyadagi ovoz byudjeti (daqiqa), `VOICE_MAX_MINUTES_PER_SESSION` bermasa. */
+export const VOICE_DEFAULT_MAX_MINUTES = 10;
+
+/**
+ * STT matni shundan qisqa bo'lsa "eshitolmadim" yo'liga tushadi: bir-ikki
+ * harf odatda shovqin yoki tasodifiy bosilish.
+ */
+export const VOICE_MIN_TEXT_CHARS = 2;
 
 /** Ovoz zanjiri uchun kechikish byudjeti (Step 3 talabi). */
 export const LATENCY_BUDGET = {
