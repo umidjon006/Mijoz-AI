@@ -192,6 +192,7 @@ Qo'shimcha sozlamalar (hammasi ixtiyoriy, bo'sh = default):
 | `TRAINER_JSON_MODE` | `object` | `schema` — `response_format: json_schema` (strict, sxema moduldagi zod'dan); `object` — `json_object`; `prompt` — `response_format` yuborilmaydi. Faqat `openai-compatible`. |
 | `TRAINER_REASONING_EFFORT` | yuborilmaydi | mijoz navbati va persona uchun `reasoning_effort` (`none` \| `minimal` \| `low` \| `medium` \| `high`). Faqat `openai-compatible`. |
 | `TRAINER_SCORING_REASONING_EFFORT` | yuborilmaydi | xuddi shu, baholash uchun. |
+| `TRAINER_MAX_TOKENS_PARAM` | `auto` | token chegarasi nomi: `auto` — `api.openai.com` uchun `max_completion_tokens`, boshqalar (Gemini, Groq, GLM) uchun `max_tokens`; yoki aniq `max_tokens` \| `max_completion_tokens`. |
 | `TRAINER_TIMEOUT_MS` | `60000` | bitta so'rov chegarasi (mijoz/persona). |
 | `TRAINER_SCORING_TIMEOUT_MS` | `120000` | bitta so'rov chegarasi (baholash). |
 | `TRAINER_LLM_LOG` | `1` | `0` — har chaqiruv log qatorini o'chiradi. |
@@ -203,10 +204,28 @@ tuzatuvchi prompt bilan qayta so'raladi. UI va logda haqiqiy toifa ko'rinadi
 (`llm_timeout` 504, `llm_provider_error` 502, masalan
 `persona-card yaratilmadi: [timeout] ...: 60000 ms ichida javob kelmadi`).
 
+**"Parametr qo'llanmaydi" himoyasi:** provayder 400 bilan `max_tokens`,
+`max_completion_tokens`, `temperature`, `reasoning_effort` yoki
+`response_format` ni rad etsa, so'rov **bir marta** o'sha parametrsiz (yoki
+provayder taklif qilgan nom bilan, masalan `max_tokens` -> `max_completion_tokens`)
+qayta yuboriladi va jarayon oxirigacha shu model uchun eslab qolinadi:
+
+```
+[llm] param-fallback model=gpt-6-luna max_tokens -> max_completion_tokens · provayder 400: Unsupported parameter: ...
+```
+
+**Reasoning tokenlari:** reasoning modellarida yashirin reasoning ham token
+chegarasiga kiradi, shuning uchun so'rovdagi chegara = javob byudjeti (mijoz
+1024, baholash 4096) + zaxira: `none` 0, `minimal` 1024, `low` 2048,
+`medium` 4096, `high` 8192, berilmagan (provayder default'i) 4096. Chegara
+faqat yuqori chegara — ishlatilmagan token pul turmaydi. Narx reasoning
+tokenlari BILAN hisoblanadi (`tokens=kirish/chiqish` dagi chiqish), `reasoning=`
+— shundan qanchasi yashirin.
+
 Har bir LLM chaqiruvi stderr'ga bitta qator yozadi:
 
 ```
-[llm] stage=training.persona model=gemini-3.8-flash latency=4210ms tokens=812/430 outcome=ok
+[llm] stage=training.persona model=gemini-3.8-flash latency=4210ms tokens=812/430 reasoning=310 outcome=ok
 [llm] stage=training.turn model=gemini-3.8-flash latency=60002ms tokens=- outcome=timeout · 60000 ms ichida javob kelmadi
 ```
 

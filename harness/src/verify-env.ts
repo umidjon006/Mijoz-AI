@@ -13,7 +13,9 @@
  *   5. kirish nuqtalari `.env` ni haqiqatan import qiladimi (statik tekshiruv);
  *   6. bo'sh qiymat = default (port, auth, JSON rejimi, reasoning, timeout);
  *   7. so'rov tanasi: TRAINER_JSON_MODE haqiqatan formatni almashtiradi;
- *   8. adapter xato toifalari, timeout qayta urinishi, log qatori (soxta fetch).
+ *   8. adapter xato toifalari, timeout qayta urinishi, log qatori (soxta fetch);
+ *   9. token chegarasi parametri (auto), "parametr qo'llanmaydi" fallback'i,
+ *      reasoning zaxirasi va reasoning tokenlari hisobi (soxta fetch).
  */
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -40,7 +42,17 @@ import { LlmCallError } from '../../module/backend/src/training/errors.js';
 import { personaCardSchema } from '../../module/backend/src/training/persona.js';
 import { turnResultSchema } from '../../module/backend/src/training/state.js';
 import { llmScoringSchema } from '../../module/backend/src/training/scoring/scoring.js';
-import { buildChatBody, createOpenAiCompatibleLlm } from './llm-openai-compatible.js';
+import {
+  applyParamFix,
+  billableOutputTokens,
+  detectUnsupportedParam,
+  ProviderHttpError,
+  buildChatBody,
+  createOpenAiCompatibleLlm,
+  reasoningHeadroom,
+  resetParamFixesForTests,
+  resolveMaxTokensParam,
+} from './llm-openai-compatible.js';
 import { zodToJsonSchema } from './zod-json-schema.js';
 import { z } from 'zod';
 import {
@@ -591,13 +603,18 @@ async function main(): Promise<void> {
     return seen;
   }
 
-  function makeLlm(lines: string[], timeoutMs = 50) {
+  function makeLlm(
+    lines: string[],
+    timeoutMs = 50,
+    extra: Partial<Parameters<typeof createOpenAiCompatibleLlm>[0]> = {},
+  ) {
     return createOpenAiCompatibleLlm({
       baseUrl: 'https://example.invalid/v1',
       apiKey: FAKE_KEY,
       model: 'gemini-3.8-flash',
       timeoutMs,
       log: (line) => lines.push(line),
+      ...extra,
     });
   }
 
@@ -655,7 +672,7 @@ async function main(): Promise<void> {
       ]);
       const err = await caught(() => makeLlm([]).completeJson(req));
       assert(err instanceof LlmCallError && err.kind === 'invalid_json', 'invalid_json');
-      assert((err as Error).message.includes('max_tokens'), 'kesilgani aytiladi');
+      assert((err as Error).message.includes('token chegarasida kesildi'), 'kesilgani aytiladi');
     });
 
     await checkAsync(report, 'sxemaga tushmasa -> ZodError, adapter qayta so\'ramaydi', async () => {
@@ -677,8 +694,223 @@ async function main(): Promise<void> {
         assert(line.includes(part), `qatorda "${part}"`);
       }
     });
+    // -----------------------------------------------------------------------
+    section("[8] token chegarasi parametri, parametr fallback'i, reasoning");
+
+    check(report, 'auto: api.openai.com -> max_completion_tokens, boshqalar -> max_tokens', () => {
+      assertEqual(resolveMaxTokensParam('auto', 'https://api.openai.com/v1'), 'max_completion_tokens', 'openai');
+      assertEqual(resolveMaxTokensParam(undefined, 'https://api.openai.com/v1'), 'max_completion_tokens', 'default');
+      assertEqual(
+        resolveMaxTokensParam('auto', 'https://generativelanguage.googleapis.com/v1beta/openai'),
+        'max_tokens',
+        'gemini',
+      );
+      assertEqual(resolveMaxTokensParam('auto', 'https://api.groq.com/openai/v1'), 'max_tokens', 'groq');
+      assertEqual(resolveMaxTokensParam('auto', 'https://api.z.ai/api/paas/v4'), 'max_tokens', 'glm');
+      assertEqual(resolveMaxTokensParam('max_tokens', 'https://api.openai.com/v1'), 'max_tokens', 'aniq qiymat ustun');
+    });
+
+    check(report, "TRAINER_MAX_TOKENS_PARAM: bo'sh -> auto, noto'g'ri -> xato", () => {
+      assertEqual(resolveProviderConfig({ ...geminiBase, TRAINER_MAX_TOKENS_PARAM: '' }).maxTokensParam, 'auto', "bo'sh");
+      assertEqual(
+        resolveProviderConfig({ ...geminiBase, TRAINER_MAX_TOKENS_PARAM: 'max_completion_tokens' }).maxTokensParam,
+        'max_completion_tokens',
+        'aniq',
+      );
+      let caught: unknown;
+      try {
+        resolveProviderConfig({ ...geminiBase, TRAINER_MAX_TOKENS_PARAM: 'tokens' });
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof ProviderConfigError, 'ProviderConfigError');
+    });
+
+    await checkAsync(report, 'adapter: openai hostida tanada max_completion_tokens, gemini da max_tokens', async () => {
+      resetParamFixesForTests();
+      let seen = stubFetch([{ status: 200, body: okBody('{"a":1}') }]);
+      await makeLlm([], 1000, { baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-luna' }).completeJson(req);
+      assert('max_completion_tokens' in (seen[0] ?? {}), 'openai: max_completion_tokens');
+      assert(!('max_tokens' in (seen[0] ?? {})), "openai: max_tokens yo'q");
+
+      seen = stubFetch([{ status: 200, body: okBody('{"a":1}') }]);
+      await makeLlm([], 1000, {
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      }).completeJson(req);
+      assert('max_tokens' in (seen[0] ?? {}), 'gemini: max_tokens');
+      assert(!('max_completion_tokens' in (seen[0] ?? {})), "gemini: max_completion_tokens yo'q");
+    });
+
+    const openAiMaxTokens400 = {
+      status: 400,
+      body: JSON.stringify({
+        error: {
+          message:
+            "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+          type: 'invalid_request_error',
+          param: 'max_tokens',
+          code: 'unsupported_parameter',
+        },
+      }),
+    };
+
+    await checkAsync(report, "fallback: 400 max_tokens -> max_completion_tokens bilan 1 marta qayta, eslab qolinadi", async () => {
+      resetParamFixesForTests();
+      const lines: string[] = [];
+      const llm = makeLlm(lines, 1000, {
+        baseUrl: 'https://proxy.example/v1',
+        model: 'gpt-6-luna',
+        maxTokensParam: 'max_tokens',
+        maxTokens: 100,
+        reasoningEffort: 'low',
+      });
+      const seen = stubFetch([openAiMaxTokens400, { status: 200, body: okBody('{"a":1}') }]);
+      assertEqual((await llm.completeJson(req)).a, 1, 'qiymat');
+      assertEqual(seen.length, 2, '2 ta so\'rov');
+      assertEqual(seen[1]?.max_completion_tokens, seen[0]?.max_tokens, 'qiymat yangi nomga ko\'chdi');
+      assert(!('max_tokens' in (seen[1] ?? {})), "ikkinchisida max_tokens yo'q");
+      const fallbackLines = lines.filter((l) => l.includes('param-fallback'));
+      assertEqual(fallbackLines.length, 1, 'bitta fallback log qatori');
+      assert(fallbackLines[0]?.includes('max_tokens -> max_completion_tokens') ?? false, 'qatorda nima qilingani');
+      assert(!lines.join('\n').includes(FAKE_KEY), "logda kalit yo'q");
+
+      // Keyingi chaqiruv: eslab qolingan — darhol to'g'ri nom, 400 siz.
+      const seen2 = stubFetch([{ status: 200, body: okBody('{"a":2}') }]);
+      assertEqual((await llm.completeJson(req)).a, 2, 'ikkinchi chaqiruv');
+      assertEqual(seen2.length, 1, 'bitta so\'rov (eslab qolingan)');
+      assert('max_completion_tokens' in (seen2[0] ?? {}), 'darhol max_completion_tokens');
+
+      // Boshqa model — eslab qolinmagan.
+      const seen3 = stubFetch([{ status: 200, body: okBody('{"a":3}') }]);
+      await makeLlm([], 1000, {
+        baseUrl: 'https://proxy.example/v1',
+        model: 'boshqa-model',
+        maxTokensParam: 'max_tokens',
+      }).completeJson(req);
+      assert('max_tokens' in (seen3[0] ?? {}), 'boshqa model uchun o\'zgarmagan');
+    });
+
+    for (const [name, message, param] of [
+      ['reasoning_effort (OpenAI)', 'Unrecognized request argument supplied: reasoning_effort', undefined],
+      ['reasoning_effort (Gemini)', 'Thinking level MINIMAL is not supported for this model. Please retry with other thinking level.', undefined],
+      ['response_format', "Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model.", 'response_format'],
+    ] as const) {
+      await checkAsync(report, `fallback: ${name} -> parametrsiz qayta yuboriladi`, async () => {
+        resetParamFixesForTests();
+        const key = name.startsWith('reasoning') ? 'reasoning_effort' : name;
+        const seen = stubFetch([
+          { status: 400, body: JSON.stringify({ error: { message, ...(param ? { param } : {}) } }) },
+          { status: 200, body: okBody('{"a":1}') },
+        ]);
+        const llm = makeLlm([], 1000, { reasoningEffort: 'minimal', jsonMode: 'object' });
+        assertEqual((await llm.completeJson(req)).a, 1, 'qiymat');
+        assertEqual(seen.length, 2, '2 ta so\'rov');
+        assert(key in (seen[0] ?? {}), `birinchisida ${key} bor`);
+        assert(!(key in (seen[1] ?? {})), `ikkinchisida ${key} yo'q`);
+      });
+    }
+
+    check(report, "fallback: temperature (adapter yubormaydi — aniqlash funksiyasi)", () => {
+      const err = new ProviderHttpError(
+        400,
+        "Unsupported value: 'temperature' does not support 0.2 with this model.",
+        'temperature',
+      );
+      const body = { model: 'm', temperature: 0.2, max_tokens: 10 };
+      const fix = detectUnsupportedParam(err, body);
+      assertEqual(fix?.param, 'temperature', 'temperature topildi');
+      assertEqual(fix?.replacement ?? null, null, 'almashtirish yo\'q');
+      assert(!('temperature' in applyParamFix(body, fix!)), 'olib tashlandi');
+      assertEqual(detectUnsupportedParam(err, { model: 'm' }), null, "tanada bo'lmasa — tuzatish yo'q");
+    });
+
+    await checkAsync(report, "fallback: boshqa 400 (parametr emas) -> qayta yuborilmaydi", async () => {
+      resetParamFixesForTests();
+      const seen = stubFetch([
+        { status: 400, body: JSON.stringify({ error: { message: 'Request contains an invalid argument.' } }) },
+      ]);
+      const err = await caught(() => makeLlm([]).completeJson(req));
+      assert(err instanceof LlmCallError && err.status === 400, 'HTTP 400 chiqdi');
+      assertEqual(seen.length, 1, 'bitta so\'rov');
+    });
+
+    await checkAsync(report, 'fallback: faqat BIR marta (ikkinchi 400 xato bo\'lib chiqadi)', async () => {
+      resetParamFixesForTests();
+      const seen = stubFetch([
+        openAiMaxTokens400,
+        {
+          status: 400,
+          body: JSON.stringify({ error: { message: 'Unrecognized request argument supplied: reasoning_effort' } }),
+        },
+      ]);
+      const err = await caught(() =>
+        makeLlm([], 1000, { maxTokensParam: 'max_tokens', reasoningEffort: 'low' }).completeJson(req),
+      );
+      assert(err instanceof LlmCallError && err.status === 400, 'HTTP 400');
+      assertEqual(seen.length, 2, '2 ta so\'rov, uchinchisi yo\'q');
+    });
+
+    await checkAsync(report, 'reasoning zaxirasi: chegara = javob byudjeti + headroom', async () => {
+      resetParamFixesForTests();
+      assertEqual(reasoningHeadroom('none'), 0, 'none');
+      assert(reasoningHeadroom('low') > 0 && reasoningHeadroom('high') > reasoningHeadroom('low'), 'oshib boradi');
+      assert(reasoningHeadroom(undefined) >= reasoningHeadroom('medium'), 'default — saxiy');
+      let seen = stubFetch([{ status: 200, body: okBody('{"a":1}') }]);
+      await makeLlm([], 1000, { maxTokens: 1024, reasoningEffort: 'none' }).completeJson(req);
+      assertEqual(seen[0]?.max_tokens, 1024, 'none: zaxirasiz');
+      seen = stubFetch([{ status: 200, body: okBody('{"a":1}') }]);
+      await makeLlm([], 1000, { maxTokens: 1024, reasoningEffort: 'low' }).completeJson(req);
+      assertEqual(seen[0]?.max_tokens, 1024 + reasoningHeadroom('low'), 'low: zaxira qo\'shildi');
+    });
+
+    check(report, 'narx uchun chiqish tokenlari reasoning BILAN (ikkala uslub)', () => {
+      // OpenAI: completion reasoning'ni o'z ichiga oladi.
+      assertEqual(
+        billableOutputTokens({
+          prompt_tokens: 10,
+          completion_tokens: 300,
+          total_tokens: 310,
+          completion_tokens_details: { reasoning_tokens: 250 },
+        }),
+        300,
+        'openai',
+      );
+      // Gemini uslubi: reasoning faqat total'da.
+      assertEqual(
+        billableOutputTokens({ prompt_tokens: 10, completion_tokens: 50, total_tokens: 310 }),
+        300,
+        'gemini',
+      );
+      assertEqual(billableOutputTokens({ prompt_tokens: 10, completion_tokens: 50 }), 50, "total yo'q");
+    });
+
+    await checkAsync(report, 'reasoning tokenlari usage va log qatorida alohida', async () => {
+      resetParamFixesForTests();
+      stubFetch([
+        {
+          status: 200,
+          body: JSON.stringify({
+            choices: [{ message: { content: '{"a":1}' }, finish_reason: 'stop' }],
+            usage: {
+              prompt_tokens: 10,
+              completion_tokens: 300,
+              total_tokens: 310,
+              completion_tokens_details: { reasoning_tokens: 250 },
+            },
+          }),
+        },
+      ]);
+      const lines: string[] = [];
+      const llm = makeLlm(lines, 1000);
+      const out = await llm.completeJsonWithUsage?.(req);
+      assertEqual(out?.usage.outputTokens, 300, 'outputTokens reasoning bilan');
+      assertEqual(out?.usage.reasoningTokens, 250, 'reasoningTokens alohida');
+      assert(lines[0]?.includes('tokens=10/300') ?? false, 'tokens');
+      assert(lines[0]?.includes('reasoning=250') ?? false, 'reasoning=250');
+    });
   } finally {
     globalThis.fetch = realFetch;
+    resetParamFixesForTests();
   }
 
   console.log(

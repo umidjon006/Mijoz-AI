@@ -12,6 +12,8 @@
  *   TRAINER_SCORING_REASONING_EFFORT  baholash uchun
  *                       none | minimal | low | medium | high; bo'sh — yuborilmaydi
  *                       (provayder default'i). Faqat `openai-compatible`.
+ *   TRAINER_MAX_TOKENS_PARAM    auto | max_tokens | max_completion_tokens   (default auto:
+ *                       api.openai.com -> max_completion_tokens, boshqalar -> max_tokens)
  *   TRAINER_TIMEOUT_MS          bitta so'rov chegarasi, mijoz/persona (default 60000)
  *   TRAINER_SCORING_TIMEOUT_MS  bitta so'rov chegarasi, baholash     (default 120000)
  *   DEMO_LLM=1          soxta (demo) LLM — faqat ANIQ so'ralganda
@@ -28,7 +30,12 @@ import type { TrainerLlm } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
 import { createDemoLlm } from './demo-llm.js';
 import { createAnthropicTrainerLlm, DEFAULT_TRAINER_MODEL } from './llm-anthropic.js';
-import { createOpenAiCompatibleLlm, type JsonMode } from './llm-openai-compatible.js';
+import {
+  createOpenAiCompatibleLlm,
+  resolveMaxTokensParam,
+  type JsonMode,
+  type MaxTokensParamSetting,
+} from './llm-openai-compatible.js';
 
 export type TrainerProvider = 'anthropic' | 'openai-compatible';
 
@@ -58,6 +65,7 @@ export interface ProviderConfig {
   scoringReasoningEffort: ReasoningEffort | null;
   timeoutMs: number;
   scoringTimeoutMs: number;
+  maxTokensParam: MaxTokensParamSetting;
 }
 
 export class MissingLlmKeyError extends Error {
@@ -86,6 +94,15 @@ function parseJsonMode(env: NodeJS.ProcessEnv): JsonMode {
   if (raw === 'prompt') return 'prompt';
   throw new ProviderConfigError(
     `TRAINER_JSON_MODE "${raw}" noto'g'ri — faqat schema | object | prompt`,
+  );
+}
+
+function parseMaxTokensParam(env: NodeJS.ProcessEnv): MaxTokensParamSetting {
+  const raw = envStr('TRAINER_MAX_TOKENS_PARAM', env);
+  if (raw === undefined) return 'auto';
+  if (raw === 'auto' || raw === 'max_tokens' || raw === 'max_completion_tokens') return raw;
+  throw new ProviderConfigError(
+    `TRAINER_MAX_TOKENS_PARAM "${raw}" noto'g'ri — auto | max_tokens | max_completion_tokens`,
   );
 }
 
@@ -157,6 +174,7 @@ export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): Pro
     scoringReasoningEffort: parseEffort('TRAINER_SCORING_REASONING_EFFORT', env),
     timeoutMs: parseTimeout('TRAINER_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, env),
     scoringTimeoutMs: parseTimeout('TRAINER_SCORING_TIMEOUT_MS', DEFAULT_SCORING_TIMEOUT_MS, env),
+    maxTokensParam: parseMaxTokensParam(env),
   };
 }
 
@@ -213,6 +231,7 @@ export function createTrainerLlm({
       baseUrl: config.baseUrl as string,
       model,
       jsonMode: config.jsonMode,
+      maxTokensParam: config.maxTokensParam,
       timeoutMs,
       ...(maxTokens ? { maxTokens } : {}),
       ...(effort ? { reasoningEffort: effort } : {}),
@@ -288,6 +307,7 @@ export function startupLine(
   if (!config.demoRequested) {
     if (config.provider === 'openai-compatible') {
       parts.push(`json=${config.jsonMode}`);
+      parts.push(`limit=${resolveMaxTokensParam(config.maxTokensParam, config.baseUrl ?? '')}`);
       parts.push(
         `reasoning=${config.reasoningEffort ?? 'default'}/${config.scoringReasoningEffort ?? 'default'}`,
       );

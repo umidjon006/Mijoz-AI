@@ -19,6 +19,19 @@
  * Avval adapter HAR QANDAY xatoni (timeout ham) "tuzatib" qayta so'rardi,
  * modul esa yana qayta so'rardi — timeout'lar 4 barobar cho'zilib, oxirida
  * "validatsiyadan o'tmadi" deb noto'g'ri ko'rsatilardi.
+ *
+ * Token chegarasi parametri (`TRAINER_MAX_TOKENS_PARAM`): `auto` —
+ * api.openai.com uchun `max_completion_tokens` (yangi modellar `max_tokens` ni
+ * 400 bilan rad etadi), qolganlari (Gemini, Groq, GLM) uchun `max_tokens`.
+ *
+ * Himoya: provayder 400 bilan "parametr qo'llanmaydi" desa (max_tokens,
+ * max_completion_tokens, temperature, reasoning_effort, response_format),
+ * so'rov BIR marta o'sha parametrsiz (yoki provayder taklif qilgan nom bilan)
+ * qayta yuboriladi va bu jarayon oxirigacha shu model uchun eslab qolinadi.
+ *
+ * Reasoning modellarida yashirin reasoning tokenlari ham chegaraga kiradi —
+ * shuning uchun javob byudjetiga `reasoningHeadroom` qo'shiladi; reasoning
+ * tokenlari log va diag'da alohida ko'rsatiladi (narx ham ularni hisobga oladi).
  */
 import { LlmCallError } from '../../module/backend/src/training/errors.js';
 import type {
@@ -32,6 +45,49 @@ import { defaultLlmLogSink, formatLlmCallLog, type LlmLogSink } from './llm-log.
 import { zodToJsonSchema, type NullableStyle } from './zod-json-schema.js';
 
 export type JsonMode = 'schema' | 'object' | 'prompt';
+export type MaxTokensParam = 'max_tokens' | 'max_completion_tokens';
+export type MaxTokensParamSetting = 'auto' | MaxTokensParam;
+
+/**
+ * `auto`: api.openai.com -> `max_completion_tokens`, boshqalar -> `max_tokens`
+ * (Gemini/Groq/GLM avvalgidek ishlaydi).
+ */
+export function resolveMaxTokensParam(
+  setting: MaxTokensParamSetting | undefined,
+  baseUrl: string,
+): MaxTokensParam {
+  if (setting === 'max_tokens' || setting === 'max_completion_tokens') return setting;
+  let host = '';
+  try {
+    host = new URL(baseUrl).host.toLowerCase();
+  } catch {
+    // noto'g'ri URL — default.
+  }
+  return host === 'api.openai.com' ? 'max_completion_tokens' : 'max_tokens';
+}
+
+/**
+ * Yashirin reasoning tokenlari uchun zaxira (javob byudjetiga QO'SHILADI).
+ * Chegara faqat yuqori chegara — ishlatilmagan token pul turmaydi, lekin
+ * yetmasa javob bo'sh/kesilgan keladi. `undefined` — provayder default'i
+ * (masalan OpenAI'da `medium`), shuning uchun saxiy zaxira.
+ */
+export function reasoningHeadroom(effort: string | undefined): number {
+  switch (effort) {
+    case 'none':
+      return 0;
+    case 'minimal':
+      return 1024;
+    case 'low':
+      return 2048;
+    case 'medium':
+      return 4096;
+    case 'high':
+      return 8192;
+    default:
+      return 4096;
+  }
+}
 
 export interface OpenAiCompatibleOptions {
   baseUrl: string;
@@ -49,6 +105,8 @@ export interface OpenAiCompatibleOptions {
   nullableStyle?: NullableStyle;
   /** Har chaqiruvga bitta log qatori; `null` — jim. Default: stderr. */
   log?: LlmLogSink | null;
+  /** Default `auto`. */
+  maxTokensParam?: MaxTokensParamSetting;
 }
 
 interface ChatCompletionResponse {
@@ -56,6 +114,7 @@ interface ChatCompletionResponse {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    total_tokens?: number;
     completion_tokens_details?: { reasoning_tokens?: number };
   };
   error?: { message?: string };
@@ -102,11 +161,13 @@ export function buildChatBody(
     jsonMode: JsonMode;
     reasoningEffort?: string;
     nullableStyle?: NullableStyle;
+    /** Default `max_tokens`. */
+    maxTokensParam?: MaxTokensParam;
   },
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: opts.model,
-    max_tokens: opts.maxTokens,
+    [opts.maxTokensParam ?? 'max_tokens']: opts.maxTokens,
     messages: [
       {
         role: 'system',
@@ -134,6 +195,31 @@ export function buildChatBody(
 
   if (opts.reasoningEffort) body.reasoning_effort = opts.reasoningEffort;
   return body;
+}
+
+/** HTTP xato + provayder JSON'idagi `error.param` / `error.code` (bo'lsa). */
+export class ProviderHttpError extends LlmCallError {
+  readonly param?: string;
+  readonly code?: string;
+  constructor(status: number, short: string, param?: string, code?: string) {
+    super('http', `HTTP ${status}: ${short}`, { status, providerMessage: short });
+    if (param) this.param = param;
+    if (code) this.code = code;
+  }
+}
+
+function errorFields(text: string): { param?: string; code?: string } {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const first = Array.isArray(parsed) ? parsed[0] : parsed;
+    const error = (first as { error?: { param?: unknown; code?: unknown } } | null)?.error;
+    return {
+      ...(typeof error?.param === 'string' ? { param: error.param } : {}),
+      ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+    };
+  } catch {
+    return {};
+  }
 }
 
 export interface RawChatResult {
@@ -185,11 +271,8 @@ export async function postChatCompletion(opts: {
     }
 
     if (!res.ok) {
-      const short = providerMessage(text, apiKey);
-      throw new LlmCallError('http', `HTTP ${res.status}: ${short}`, {
-        status: res.status,
-        providerMessage: short,
-      });
+      const { param, code } = errorFields(text);
+      throw new ProviderHttpError(res.status, providerMessage(text, apiKey), param, code);
     }
 
     let json: ChatCompletionResponse;
@@ -213,7 +296,7 @@ export async function postChatCompletion(opts: {
       finishReason: choice?.finish_reason ?? null,
       usage: {
         inputTokens: json.usage?.prompt_tokens ?? 0,
-        outputTokens: json.usage?.completion_tokens ?? 0,
+        outputTokens: billableOutputTokens(json.usage),
         model: typeof body.model === 'string' ? body.model : undefined,
         ...(reasoningTokens ? { reasoningTokens } : {}),
       },
@@ -225,14 +308,156 @@ export async function postChatCompletion(opts: {
   }
 }
 
+/**
+ * Narx uchun chiqish tokenlari — reasoning tokenlari BILAN.
+ * OpenAI: `completion_tokens` reasoning'ni allaqachon o'z ichiga oladi.
+ * Ba'zi OpenAI-mos endpointlar (Gemini) reasoning'ni `completion_tokens` ga
+ * qo'shmay, faqat `total_tokens` ga qo'shadi. Shuning uchun:
+ * max(completion, total - prompt) — ikkala uslubda ham reasoning hisoblanadi.
+ */
+export function billableOutputTokens(usage: ChatCompletionResponse['usage']): number {
+  const completion = usage?.completion_tokens ?? 0;
+  const prompt = usage?.prompt_tokens ?? 0;
+  const total = usage?.total_tokens;
+  return typeof total === 'number' ? Math.max(completion, total - prompt) : completion;
+}
+
+// ---------------------------------------------------------------------------
+// "Parametr qo'llanmaydi" (400) himoyasi
+// ---------------------------------------------------------------------------
+
+/** Shu parametrlar uchungina avtomatik tuzatish qilinadi. */
+export const FALLBACK_PARAMS = [
+  'max_tokens',
+  'max_completion_tokens',
+  'temperature',
+  'reasoning_effort',
+  'response_format',
+] as const;
+export type FallbackParam = (typeof FALLBACK_PARAMS)[number];
+
+/** Parametrni nima qilish kerak: o'chirish (`null`) yoki boshqa nomga ko'chirish. */
+export interface ParamFix {
+  param: FallbackParam;
+  replacement: FallbackParam | null;
+}
+
+const UNSUPPORTED_RE =
+  /unsupported|not supported|unrecognized|unknown (?:parameter|field|name|argument)|not (?:allowed|permitted)|does not support|invalid (?:parameter|argument)/i;
+
+function isFallbackParam(value: string | undefined): value is FallbackParam {
+  return value !== undefined && (FALLBACK_PARAMS as readonly string[]).includes(value);
+}
+
+/**
+ * 400 xatoda qaysi parametr qo'llanmaganini aniqlaydi (faqat tanadagi
+ * parametrlar orasidan). Topilmasa `null` — xato odatdagidek chiqadi.
+ */
+export function detectUnsupportedParam(
+  err: unknown,
+  body: Record<string, unknown>,
+): ParamFix | null {
+  if (!(err instanceof LlmCallError) || err.kind !== 'http' || err.status !== 400) return null;
+  const message = err.providerMessage ?? err.message;
+  if (!UNSUPPORTED_RE.test(message)) return null;
+
+  let param: FallbackParam | undefined;
+  const declared = err instanceof ProviderHttpError ? err.param : undefined;
+  if (isFallbackParam(declared) && declared in body) {
+    param = declared;
+  } else {
+    // Xabarda tilga olingan, tanada BOR birinchi parametr. Gemini kabi
+    // provayderlar nomni aytmaydi ("Thinking level ... not supported") —
+    // reasoning_effort uchun alohida belgi.
+    const lower = message.toLowerCase();
+    param = FALLBACK_PARAMS.filter((p) => p in body)
+      .map((p) => ({ p, at: lower.indexOf(p) }))
+      .filter(({ at }) => at >= 0)
+      .sort((a, b) => a.at - b.at)[0]?.p;
+    if (!param && 'reasoning_effort' in body && /thinking|reasoning/i.test(message)) {
+      param = 'reasoning_effort';
+    }
+  }
+  if (!param) return null;
+
+  // "Use 'max_completion_tokens' instead" — taklif qilingan nom.
+  const suggested = /use\s+['"`]?([a-z_]+)['"`]?\s+instead/i.exec(message)?.[1];
+  const replacement = isFallbackParam(suggested) && suggested !== param ? suggested : null;
+  return { param, replacement };
+}
+
+/** Tuzatishni tanaga qo'llaydi (yangi obyekt). */
+export function applyParamFix(body: Record<string, unknown>, fix: ParamFix): Record<string, unknown> {
+  if (!(fix.param in body)) return body;
+  const next = { ...body };
+  const value = next[fix.param];
+  delete next[fix.param];
+  if (fix.replacement && !(fix.replacement in next)) next[fix.replacement] = value;
+  return next;
+}
+
+/** Jarayon davomida eslab qolingan tuzatishlar: `url|model` -> tuzatishlar. */
+const rememberedFixes = new Map<string, ParamFix[]>();
+
+/** Faqat testlar uchun. */
+export function resetParamFixesForTests(): void {
+  rememberedFixes.clear();
+}
+
+/** Model uchun eslab qolingan tuzatishlar (diag/test uchun). */
+export function rememberedParamFixes(url: string, model: string): readonly ParamFix[] {
+  return rememberedFixes.get(`${url}|${model}`) ?? [];
+}
+
+function describeFix(fix: ParamFix): string {
+  return fix.replacement ? `${fix.param} -> ${fix.replacement}` : `${fix.param} olib tashlandi`;
+}
+
+/**
+ * `postChatCompletion` + himoya: eslab qolingan tuzatishlarni qo'llaydi;
+ * yangi "parametr qo'llanmaydi" 400 bo'lsa — BIR marta tuzatib qayta yuboradi,
+ * tuzatishni eslab qoladi va bitta log qatori yozadi.
+ */
+export async function postWithParamFallback(opts: {
+  url: string;
+  apiKey: string;
+  body: Record<string, unknown>;
+  timeoutMs: number;
+  model: string;
+  log?: LlmLogSink | null;
+}): Promise<RawChatResult> {
+  const key = `${opts.url}|${opts.model}`;
+  let body = opts.body;
+  for (const fix of rememberedFixes.get(key) ?? []) body = applyParamFix(body, fix);
+
+  try {
+    return await postChatCompletion({ ...opts, body });
+  } catch (err) {
+    const fix = detectUnsupportedParam(err, body);
+    if (!fix) throw err;
+    rememberedFixes.set(key, [...(rememberedFixes.get(key) ?? []), fix]);
+    opts.log?.(
+      `[llm] param-fallback model=${opts.model} ${describeFix(fix)} · ` +
+        `provayder 400: ${(err as LlmCallError).providerMessage ?? ''}`.slice(0, 300),
+    );
+    return await postChatCompletion({ ...opts, body: applyParamFix(body, fix) });
+  }
+}
+
 /** Model matnidan JSON; bo'lmasa `invalid_json` (kesilgan bo'lsa shuni aytadi). */
-export function parseContentJson(content: string, finishReason: string | null): unknown {
+export function parseContentJson(
+  content: string,
+  finishReason: string | null,
+  reasoningTokens?: number,
+): unknown {
   try {
     return extractJson(content);
   } catch (err) {
     const why =
       finishReason === 'length'
-        ? 'javob max_tokens chegarasida kesildi (reasoning tokenlari ham shu chegaraga kiradi)'
+        ? `javob token chegarasida kesildi (reasoning tokenlari ham shu chegaraga kiradi${
+            reasoningTokens ? `: ${reasoningTokens} ta reasoning` : ''
+          })`
         : content.trim().length === 0
           ? "model bo'sh javob qaytardi"
           : 'model javobidan JSON ajratib olinmadi';
@@ -261,6 +486,9 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
   } = options;
   const jsonMode = normalizeJsonMode(options.jsonMode);
   const log = options.log === undefined ? defaultLlmLogSink() : options.log;
+  const maxTokensParam = resolveMaxTokensParam(options.maxTokensParam, baseUrl);
+  // Javob byudjeti + yashirin reasoning uchun zaxira.
+  const completionLimit = maxTokens + reasoningHeadroom(reasoningEffort);
 
   const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
@@ -268,7 +496,8 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
     const startedAt = Date.now();
     const body = buildChatBody(req, {
       model,
-      maxTokens,
+      maxTokens: completionLimit,
+      maxTokensParam,
       jsonMode,
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(nullableStyle ? { nullableStyle } : {}),
@@ -280,9 +509,11 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
       const attemptStarted = Date.now();
       let usage: (TokenUsage & { reasoningTokens?: number }) | undefined;
       try {
-        const raw = await postChatCompletion({ url, apiKey, body, timeoutMs });
+        const raw = await postWithParamFallback({ url, apiKey, body, timeoutMs, model, log });
         usage = raw.usage;
-        const value = req.schema.parse(parseContentJson(raw.content, raw.finishReason));
+        const value = req.schema.parse(
+          parseContentJson(raw.content, raw.finishReason, raw.usage.reasoningTokens),
+        );
         log?.(
           formatLlmCallLog({
             stage: req.stage,
@@ -294,7 +525,15 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
           }),
         );
         onCall?.({ stage: req.stage, attempts: attempt, ok: true, latencyMs: Date.now() - startedAt, usage });
-        return { value, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, model } };
+        return {
+          value,
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            model,
+            ...(usage.reasoningTokens ? { reasoningTokens: usage.reasoningTokens } : {}),
+          },
+        };
       } catch (err) {
         lastError = err;
         const outcome = outcomeOf(err);

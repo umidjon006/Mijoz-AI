@@ -1,7 +1,10 @@
 /**
  * FAQAT HARNESS. Har bir LLM chaqiruvi uchun BITTA log qatori:
  *
- *   [llm] stage=training.persona model=gemini-3.8-flash latency=4210ms tokens=812/430 outcome=ok
+ *   [llm] stage=training.persona model=gemini-3.8-flash latency=4210ms tokens=812/430 reasoning=310 outcome=ok
+ *
+ * `tokens=kirish/chiqish` — chiqish reasoning BILAN (narx shundan); `reasoning=`
+ * — shundan qanchasi yashirin reasoning (provayder aytgan bo'lsa).
  *
  * stderr ga yoziladi (play'ning dialog chiqishi stdout'da qoladi).
  * O'chirish: `TRAINER_LLM_LOG=0`. Kalit/prompt matni HECH QACHON chiqmaydi.
@@ -13,7 +16,7 @@ export interface LlmCallLog {
   stage: string;
   model: string;
   latencyMs: number;
-  usage?: TokenUsage & { reasoningTokens?: number };
+  usage?: TokenUsage;
   /** ok | timeout | http_429 | invalid_json | schema | unknown */
   outcome: string;
   /** Nechanchi urinish (timeout qayta urinishi bo'lsa 2). */
@@ -29,10 +32,8 @@ export function formatLlmCallLog(entry: LlmCallLog): string {
     `stage=${entry.stage}`,
     `model=${entry.model}`,
     `latency=${entry.latencyMs}ms`,
-    entry.usage
-      ? `tokens=${entry.usage.inputTokens}/${entry.usage.outputTokens}` +
-        (entry.usage.reasoningTokens ? ` (reasoning ${entry.usage.reasoningTokens})` : '')
-      : 'tokens=-',
+    entry.usage ? `tokens=${entry.usage.inputTokens}/${entry.usage.outputTokens}` : 'tokens=-',
+    ...(entry.usage?.reasoningTokens ? [`reasoning=${entry.usage.reasoningTokens}`] : []),
     `outcome=${entry.outcome}`,
   ];
   if (entry.attempt && entry.attempt > 1) parts.push(`attempt=${entry.attempt}`);

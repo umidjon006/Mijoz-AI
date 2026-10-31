@@ -14,7 +14,13 @@
  *   effort=minimal  json_object + reasoning_effort: minimal
  *   effort=low      json_object + reasoning_effort: low
  *
- * Har biri uchun: HTTP status, kechikish, tokenlar (reasoning bo'lsa alohida),
+ * Token chegarasi parametri `TRAINER_MAX_TOKENS_PARAM` bo'yicha (auto:
+ * api.openai.com -> max_completion_tokens). Shu parametr 400 bilan rad etilsa,
+ * diag uni BIR marta almashtirib qayta yuboradi va izohda aytadi. Boshqa
+ * parametrlar (response_format, reasoning_effort) ATAYLAB almashtirilmaydi —
+ * jadval aynan ularning qabul qilinishini ko'rsatishi kerak.
+ *
+ * Har biri uchun: HTTP status, kechikish, tokenlar, reasoning tokenlari (alohida),
  * javob o'qildimi, rad etilgan bo'lsa provayderning qisqa xabari.
  * Kalit HECH QACHON chiqmaydi (faqat env NOMI); provayder xabarlari ham tozalanadi.
  */
@@ -31,9 +37,14 @@ import {
 } from './llm-factory.js';
 import {
   buildChatBody,
+  applyParamFix,
+  detectUnsupportedParam,
   parseContentJson,
   postChatCompletion,
+  reasoningHeadroom,
+  resolveMaxTokensParam,
   type JsonMode,
+  type MaxTokensParam,
 } from './llm-openai-compatible.js';
 import type { NullableStyle } from './zod-json-schema.js';
 
@@ -73,19 +84,28 @@ interface Row {
   status: string;
   latency: string;
   tokens: string;
+  reasoning: string;
   parsed: string;
   note: string;
 }
 
 async function runVariant(
   variant: Variant,
-  ctx: { url: string; apiKey: string; model: string; timeoutMs: number },
+  ctx: {
+    url: string;
+    apiKey: string;
+    model: string;
+    timeoutMs: number;
+    maxTokensParam: MaxTokensParam;
+  },
 ): Promise<Row> {
-  const body =
+  // Javob byudjeti + yashirin reasoning zaxirasi (adapterdagi bilan bir xil qoida).
+  const headroom = reasoningHeadroom(variant.reasoningEffort);
+  let body: Record<string, unknown> =
     variant.kind === 'text'
       ? {
           model: ctx.model,
-          max_tokens: 256,
+          [ctx.maxTokensParam]: 256 + headroom,
           messages: [
             { role: 'system', content: 'Reply in plain text.' },
             { role: 'user', content: "Say 'salom' and nothing else." },
@@ -96,7 +116,8 @@ async function runVariant(
           { system: SYSTEM_JSON, user: USER_JSON, outputSchema: diagSchema, stage: 'diag' },
           {
             model: ctx.model,
-            maxTokens: 512,
+            maxTokens: 512 + headroom,
+            maxTokensParam: ctx.maxTokensParam,
             jsonMode: variant.jsonMode,
             ...(variant.reasoningEffort ? { reasoningEffort: variant.reasoningEffort } : {}),
             ...(variant.nullableStyle ? { nullableStyle: variant.nullableStyle } : {}),
@@ -104,25 +125,35 @@ async function runVariant(
         );
 
   const startedAt = Date.now();
+  let limitNote = '';
+  const post = () =>
+    postChatCompletion({ url: ctx.url, apiKey: ctx.apiKey, body, timeoutMs: ctx.timeoutMs });
   try {
-    const raw = await postChatCompletion({
-      url: ctx.url,
-      apiKey: ctx.apiKey,
-      body,
-      timeoutMs: ctx.timeoutMs,
-    });
-    const tokens =
-      `${raw.usage.inputTokens}/${raw.usage.outputTokens}` +
-      (raw.usage.reasoningTokens ? ` (r ${raw.usage.reasoningTokens})` : '');
+    let raw;
+    try {
+      raw = await post();
+    } catch (err) {
+      const fix = detectUnsupportedParam(err, body);
+      if (!fix || (fix.param !== 'max_tokens' && fix.param !== 'max_completion_tokens')) throw err;
+      body = applyParamFix(body, fix);
+      limitNote = `400: ${fix.param} rad etildi -> ${fix.replacement ?? "olib tashlandi"}`;
+      raw = await post();
+    }
+    const tokens = `${raw.usage.inputTokens}/${raw.usage.outputTokens}`;
+    const reasoning = raw.usage.reasoningTokens ? String(raw.usage.reasoningTokens) : '-';
 
     let parsed = 'ha';
-    let note = raw.finishReason ? `finish=${raw.finishReason}` : '';
+    let note = [limitNote, raw.finishReason ? `finish=${raw.finishReason}` : '']
+      .filter(Boolean)
+      .join(' · ');
     if (variant.kind === 'text') {
       if (raw.content.trim().length === 0) parsed = "yo'q (bo'sh)";
       else note = `${note} "${raw.content.trim().slice(0, 30)}"`.trim();
     } else {
       try {
-        const result = diagSchema.safeParse(parseContentJson(raw.content, raw.finishReason));
+        const result = diagSchema.safeParse(
+          parseContentJson(raw.content, raw.finishReason, raw.usage.reasoningTokens),
+        );
         if (!result.success) {
           parsed = "JSON ha, sxema yo'q";
           note = `${note} ${result.error.issues[0]?.path.join('.')}: ${result.error.issues[0]?.message}`.trim();
@@ -137,6 +168,7 @@ async function runVariant(
       status: String(raw.status),
       latency: `${raw.latencyMs}`,
       tokens,
+      reasoning,
       parsed,
       note,
     };
@@ -148,8 +180,11 @@ async function runVariant(
         status: err.status !== undefined ? String(err.status) : err.kind,
         latency,
         tokens: '-',
+        reasoning: '-',
         parsed: '-',
-        note: (err.providerMessage ?? err.message).slice(0, 120),
+        note: [limitNote, (err.providerMessage ?? err.message).slice(0, 120)]
+          .filter(Boolean)
+          .join(' · '),
       };
     }
     throw err;
@@ -162,6 +197,7 @@ function printTable(rows: Row[]): void {
     status: 'HTTP',
     latency: 'ms',
     tokens: 'tokens in/out',
+    reasoning: 'reasoning',
     parsed: "o'qildi",
     note: 'izoh',
   };
@@ -203,9 +239,13 @@ async function main(): Promise<void> {
     apiKey: (process.env[config.keyEnv] as string).trim(),
     model,
     timeoutMs,
+    maxTokensParam: resolveMaxTokensParam(config.maxTokensParam, config.baseUrl),
   };
 
-  console.log(`\nModel: ${model} · har chaqiruv chegarasi ${timeoutMs} ms · ${VARIANTS.length} ta chaqiruv\n`);
+  console.log(
+    `\nModel: ${model} · limit parametri ${ctx.maxTokensParam} · har chaqiruv chegarasi ` +
+      `${timeoutMs} ms · ${VARIANTS.length} ta chaqiruv\n`,
+  );
 
   const rows: Row[] = [];
   for (const variant of VARIANTS) {
@@ -219,7 +259,8 @@ async function main(): Promise<void> {
   printTable(rows);
   console.log(
     "\nO'qish: HTTP 200 + o'qildi=ha — shu shakl ishlaydi. 400 — endpoint parametrni rad etdi " +
-      '(izohda provayder xabari). `r N` — reasoning tokenlari (max_tokens ga kiradi).',
+      '(izohda provayder xabari). tokens chiqish = reasoning BILAN (narx shundan); ' +
+      'reasoning — shundan yashirin reasoning tokenlari (token chegarasiga ham kiradi).',
   );
 }
 

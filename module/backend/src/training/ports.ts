@@ -27,6 +27,11 @@ export interface TokenUsage {
   outputTokens: number;
   /** Provayder modeli (narxlash uchun), masalan 'claude-haiku-5-5'. */
   model?: string;
+  /**
+   * IXTIYORIY, faqat ma'lumot uchun: yashirin reasoning tokenlari.
+   * `outputTokens` ularni ALLAQACHON o'z ichiga oladi (narx shundan hisoblanadi).
+   */
+  reasoningTokens?: number;
 }
 
 export interface TrainerLlmRequest<T> {
