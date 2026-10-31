@@ -52,6 +52,7 @@ function metricsTable(summaries: readonly CandidateSummary[]): string {
   <td class="n">$${num(s.costPer100Sessions, 2)}</td>
   <td class="n ${s.tooLongRate && s.tooLongRate > 0.1 ? 'bad' : ''}">${pct(s.tooLongRate)}</td>
   <td class="n ${s.wrongLanguageRate && s.wrongLanguageRate > 0.05 ? 'bad' : ''}">${pct(s.wrongLanguageRate)}</td>
+  <td class="n ${s.unsaidPriceRate && s.unsaidPriceRate > 0 ? 'bad' : ''}">${pct(s.unsaidPriceRate)}</td>
 </tr>`,
     )
     .join('\n');
@@ -75,7 +76,7 @@ function metricsTable(summaries: readonly CandidateSummary[]): string {
       <th>Nomzod</th><th>Sessiya</th><th>JSON 1-urinish</th><th>JSON yiqildi</th>
       <th>Guard buzilishi</th><th>G'alaba</th><th>Injection g'alaba</th><th>O'rt. navbat</th>
       <th>Kechikish p50 (ms)</th><th>Token/sessiya</th><th>100 sessiya narxi</th>
-      <th>30 so'zdan uzun</th><th>Til xato</th>
+      <th>30 so'zdan uzun</th><th>Til xato</th><th>Aytilmagan narx</th>
     </tr>
   </thead>
   <tbody>${rows}</tbody>

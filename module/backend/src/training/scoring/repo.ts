@@ -4,7 +4,7 @@
  *
  * MUHIM: hech qachon `delete` qilinmaydi — natijalar versiyalanadi.
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, sql } from 'drizzle-orm';
 
 import { trainingResult, trainingSession, trainingTurn } from '../../db/schema/training.js';
 import type { TrainingTx } from '../ports.js';
@@ -126,6 +126,24 @@ export async function finishResult(tx: TrainingTx, input: FinishResultInput): Pr
       error: input.error,
     })
     .where(eq(trainingResult.id, input.resultId));
+}
+
+/**
+ * `olderThan` dan oldin yaratilgan va hali `pending` turgan natijalarni
+ * `failed` qiladi (o'chirmaydi — versiya saqlanadi, qayta baholash yangi
+ * versiya qo'shadi). Tranzaksiya RLS ostida bo'lsa — faqat o'sha tenant'niki.
+ * Qaytaradi: nechta qator o'zgardi.
+ */
+export async function failStalePendingResults(
+  tx: TrainingTx,
+  input: { olderThan: Date; error: string },
+): Promise<number> {
+  const rows = await tx
+    .update(trainingResult)
+    .set({ status: 'failed', error: input.error })
+    .where(and(eq(trainingResult.status, 'pending'), lt(trainingResult.createdAt, input.olderThan)))
+    .returning({ id: trainingResult.id });
+  return rows.length;
 }
 
 /** Oxirgi versiya; `status` berilsa faqat shu holatdagilar orasidan. */

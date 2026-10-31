@@ -2,6 +2,7 @@
  * FAQAT HARNESS. Bake-off o'lchovlari: matn tekshiruvlari, agregatsiya va
  * narx hisobi. Hammasi SOF funksiyalar — testda ham shu ishlatiladi.
  */
+import { unsaidPriceFigures } from '../../../module/backend/src/training/offer-facts.js';
 import type { Candidate, PricePerMTok } from './config.js';
 import type { SellerScript, SessionRun } from './types.js';
 
@@ -45,6 +46,18 @@ export function isWrongLanguage(text: string, expected: 'uz' | 'ru' | 'mixed'): 
   if (expected === 'uz') return cyrillicRatio > 0.3;
   if (expected === 'ru') return cyrillicRatio < 0.3;
   return false; // mixed
+}
+
+/**
+ * Mijoz javobida sotuvchi aytmagan narx bormi? Haqiqiy mijoz narxni oldindan
+ * bilmaydi — faqat sotuvchi aytganini yoki o'z yashirin faktidagini (eshitgan gap).
+ */
+export function mentionsUnsaidPrice(
+  customerText: string,
+  sellerTextsSoFar: readonly string[],
+  ownFacts: readonly string[] = [],
+): boolean {
+  return unsaidPriceFigures(customerText, { sellerTexts: sellerTextsSoFar, ownFacts }).length > 0;
 }
 
 export function percentile(values: readonly number[], p: number): number {
@@ -110,6 +123,8 @@ export interface CandidateSummary {
 
   tooLongRate: number | null;
   wrongLanguageRate: number | null;
+  /** Mijoz sotuvchi aytmagan narxni aytgan javoblar ulushi — 0 bo'lishi kerak. */
+  unsaidPriceRate: number | null;
 }
 
 export function summarizeCandidate(
@@ -135,6 +150,7 @@ export function summarizeCandidate(
   const replies = own.reduce((sum, r) => sum + r.customerReplies, 0);
   const tooLong = own.reduce((sum, r) => sum + r.tooLongReplies, 0);
   const wrongLanguage = own.reduce((sum, r) => sum + r.wrongLanguageReplies, 0);
+  const unsaidPrice = own.reduce((sum, r) => sum + r.unsaidPriceReplies, 0);
 
   const tokens = own.reduce(
     (acc, r) => ({ input: acc.input + r.tokens.input, output: acc.output + r.tokens.output }),
@@ -198,6 +214,7 @@ export function summarizeCandidate(
 
     tooLongRate: rate(tooLong, replies),
     wrongLanguageRate: rate(wrongLanguage, replies),
+    unsaidPriceRate: rate(unsaidPrice, replies),
   };
 }
 

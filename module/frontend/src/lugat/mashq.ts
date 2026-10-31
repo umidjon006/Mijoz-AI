@@ -61,6 +61,8 @@ export const mashq = {
   scoringHint: 'Suhbat tahlil qilinyapti, bu bir necha soniya oladi.',
   scoringFailed: 'Baholash muvaffaqiyatsiz tugadi.',
   scoreAgain: 'Qayta baholash',
+  scoringStuck:
+    "Baholash 3 daqiqadan beri tugamadi — server to'xtagan bo'lishi mumkin. Qayta baholab ko'ring.",
   skillScore: 'Mahorat balli',
   noScore: 'Baholanmadi',
   outcome: 'Natija',

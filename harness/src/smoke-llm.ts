@@ -17,6 +17,7 @@ import { createTrainingEngine } from '../../module/backend/src/training/engine.j
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
 import { DEMO_CONTEXT, ensureDemoRows, parseArgs } from './demo-env.js';
 import { BusinessDataError, resolveBusinessData } from './business-data.js';
+import { unsaidPriceFigures } from '../../module/backend/src/training/offer-facts.js';
 import { priceCall } from './llm-anthropic.js';
 import {
   createTrainerLlm,
@@ -68,6 +69,9 @@ async function main(): Promise<void> {
 
   let totalCost = 0;
   const latencies: number[] = [];
+  /** Mijoz sotuvchi aytmagan narxni aytgan javoblar (oldindan bilmasligi kerak). */
+  const unsaidPrice: string[] = [];
+  let customerReplies = 0;
 
   try {
     for (const key of ARCHETYPE_KEYS) {
@@ -88,6 +92,19 @@ async function main(): Promise<void> {
         console.log(`Yashirin ehtiyoj: ${started.persona.hiddenNeed}`);
       }
       if (started.openingLine) console.log(`\nMIJOZ: ${started.openingLine}`);
+      const sellerSoFar: string[] = [];
+      const checkPrice = (reply: string): void => {
+        customerReplies += 1;
+        const figures = unsaidPriceFigures(reply, {
+          sellerTexts: sellerSoFar,
+          ownFacts: started.persona.hiddenFacts,
+        });
+        if (figures.length > 0) {
+          unsaidPrice.push(`${key}: "${reply}" (${figures.join(', ')})`);
+          console.log(`  [!] mijoz sotuvchi aytmagan narxni aytdi: ${figures.join(', ')}`);
+        }
+      };
+      if (started.openingLine) checkPrice(started.openingLine);
 
       for (const sellerText of SELLER_SCRIPT) {
         const result = await engine.takeTurn(DEMO_CONTEXT, {
@@ -99,6 +116,8 @@ async function main(): Promise<void> {
 
         console.log(`\nSOTUVCHI: ${sellerText}`);
         console.log(`MIJOZ:    ${result.customerReply}`);
+        sellerSoFar.push(sellerText);
+        checkPrice(result.customerReply);
         if (args.debug) {
           const s = result.state;
           console.log(
@@ -134,6 +153,10 @@ async function main(): Promise<void> {
     console.log(
       `Navbatlar: ${latencies.length}, o'rtacha kechikish ${Math.round(avg)}ms, p95 ${p95}ms, ` +
         `jami narx $${totalCost.toFixed(4)}`,
+    );
+    console.log(
+      `Aytilmagan narx: ${unsaidPrice.length}/${customerReplies} javob` +
+        (unsaidPrice.length > 0 ? ` — MUAMMO:\n  ${unsaidPrice.join('\n  ')}` : ' (yaxshi)'),
     );
   } finally {
     await pool.end();

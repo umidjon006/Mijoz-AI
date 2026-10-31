@@ -186,6 +186,11 @@ export function rankCandidates(
           `javoblarning ${(100 * (summary.wrongLanguageRate ?? 0)).toFixed(0)}% i kutilgan tilda emas`,
         );
       }
+      if ((summary.unsaidPriceRate ?? 0) > 0) {
+        reasons.push(
+          `javoblarning ${(100 * (summary.unsaidPriceRate ?? 0)).toFixed(1)}% ida mijoz sotuvchi aytmagan narxni aytdi (oldindan bilmasligi kerak)`,
+        );
+      }
       if ((summary.tooLongRate ?? 0) > 0.15) {
         reasons.push(
           `javoblarning ${(100 * (summary.tooLongRate ?? 0)).toFixed(0)}% i 30 so'zdan uzun (ovoz uchun yomon)`,

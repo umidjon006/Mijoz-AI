@@ -4,11 +4,14 @@
  *
  * Baholash fon rejimida ketadi, shuning uchun sahifa `pending` holatda
  * har 2 sekundda tekshiradi (chegara bilan — cheksiz poll qilmaydi).
+ * Natija `failed` yoki 3 daqiqadan beri `pending` bo'lsa "Qayta baholash"
+ * tugmasi chiqadi (yangi versiya; eskilari saqlanadi).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
 import type { ResultResponse, TrainingApi } from '../lib/api.js';
+import { canOfferRescore } from '../lib/rescore.js';
 import {
   EmptyState,
   formatDuration,
@@ -30,7 +33,8 @@ import { StateChart } from '../components/StateChart.js';
 import { Transcript } from '../components/Transcript.js';
 
 const POLL_INTERVAL_MS = 2000;
-const POLL_MAX_ATTEMPTS = 45; // ~90 sekund
+// ~3.5 daqiqa: "Qayta baholash" tugmasi (3 daqiqa) chiqquncha kuzatamiz.
+const POLL_MAX_ATTEMPTS = 105;
 
 export interface NatijaPageProps {
   api: TrainingApi;
@@ -50,11 +54,23 @@ export function NatijaPage({
   const [timedOut, setTimedOut] = useState(false);
   const [highlight, setHighlight] = useState<number | null>(null);
   const [rescoring, setRescoring] = useState(false);
+  /** Qayta baholashdan keyin poll'ni QAYTA boshlash uchun. */
+  const [pollKey, setPollKey] = useState(0);
   const attempts = useRef(0);
+  /** Qaysi versiya qachondan beri `pending` ko'rinyapti (brauzer soati). */
+  const pendingSeen = useRef<{ version: number; since: number } | null>(null);
 
   const load = useCallback(async (): Promise<'pending' | 'done' | 'missing'> => {
     try {
       const response = await api.getResult(sessionId);
+      const { status, version } = response.result;
+      if (status === 'pending') {
+        if (pendingSeen.current?.version !== version) {
+          pendingSeen.current = { version, since: Date.now() };
+        }
+      } else {
+        pendingSeen.current = null;
+      }
       setData(response);
       setError(null);
       return response.result.status === 'pending' ? 'pending' : 'done';
@@ -90,15 +106,16 @@ export function NatijaPage({
     return () => {
       stopped = true;
     };
-  }, [load]);
+  }, [load, pollKey]);
 
   async function rescore(): Promise<void> {
     setRescoring(true);
     setTimedOut(false);
     try {
       await api.requestScore(sessionId);
-      attempts.current = 0;
-      window.setTimeout(() => void load(), POLL_INTERVAL_MS);
+      // Yangi versiya `pending` — poll'ni boshidan boshlaymiz.
+      pendingSeen.current = null;
+      setPollKey((key) => key + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -143,6 +160,17 @@ export function NatijaPage({
 
   const { result, revealed, transcript } = data;
   const metrics = result.metrics;
+  const offerRescore = canOfferRescore(result, Date.now(), pendingSeen.current?.since ?? null);
+  const rescoreButton = (
+    <button
+      type="button"
+      className="mq-btn mq-small"
+      disabled={rescoring}
+      onClick={() => void rescore()}
+    >
+      {mashq.scoreAgain}
+    </button>
+  );
 
   return (
     <div>
@@ -152,21 +180,15 @@ export function NatijaPage({
       </div>
 
       {result.status === 'pending' ? (
-        <Notice kind="info">
-          {mashq.scoring} {mashq.scoringHint}
+        <Notice kind={offerRescore ? 'warn' : 'info'}>
+          {offerRescore ? mashq.scoringStuck : `${mashq.scoring} ${mashq.scoringHint}`}{' '}
+          {offerRescore ? rescoreButton : null}
         </Notice>
       ) : null}
       {result.status === 'failed' ? (
         <Notice kind="error">
-          {mashq.scoringFailed}{' '}
-          <button
-            type="button"
-            className="mq-btn mq-small"
-            disabled={rescoring}
-            onClick={() => void rescore()}
-          >
-            {mashq.scoreAgain}
-          </button>
+          {mashq.scoringFailed}
+          {result.error ? ` (${result.error})` : ''} {rescoreButton}
         </Notice>
       ) : null}
       {result.quality === 'low' ? <Notice kind="warn">{mashq.qualityLowNotice}</Notice> : null}

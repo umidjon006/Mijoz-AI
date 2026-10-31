@@ -86,6 +86,16 @@ async function main(): Promise<void> {
 
   // Default YOQILGAN: bo'sh HARNESS_AUTH avval auth'ni o'chirib, UI 401 olardi.
   // O'chirish faqat aniq HARNESS_AUTH=0 bilan.
+  // Oldingi jarayon baholash paytida to'xtagan bo'lsa (Ctrl+C) natija abadiy
+  // `pending` qolardi: baholash timeout'idan eski `pending` larni `failed`
+  // qilamiz — UI ularni "Qayta baholash" bilan qayta boshlay oladi.
+  const recovered = await scoring.failStalePending(DEMO_BUSINESS_ID, {
+    olderThanMs: config.scoringTimeoutMs,
+  });
+  if (recovered > 0) {
+    console.log(`Osilib qolgan baholashlar: ${recovered} ta "failed" qilindi (server qayta ishga tushdi).`);
+  }
+
   const fakeAuth = envBool('HARNESS_AUTH', true);
 
   await registerTrainingRoutes(app, {

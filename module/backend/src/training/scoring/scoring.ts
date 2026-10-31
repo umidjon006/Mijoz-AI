@@ -68,6 +68,9 @@ export type GetPlaybook = (businessId: string) => Promise<PlaybookSubset | null>
 /** Tenant'ning sotuv skripti (host ulaydi). `null` -> "Skriptga moslik" bo'limi yo'q. */
 export type GetSalesScript = (businessId: string) => Promise<SalesScript | null>;
 
+/** Osilib qolgan `pending` natijaga yoziladigan xato (UI "Qayta baholash" taklif qiladi). */
+export const STALE_PENDING_ERROR = 'server qayta ishga tushdi';
+
 /** Shundan kam sotuvchi navbati bo'lsa LLM chaqirilmaydi. */
 export const MIN_SELLER_TURNS_FOR_SCORING = 3;
 
@@ -485,6 +488,13 @@ export interface ScoringService {
   scoreSession(ctx: TrainingContext, sessionId: string): Promise<ScoreSessionResult>;
   /** Oxirgi tugallangan natija (yo'q bo'lsa `null`). */
   getLatestResult(ctx: TrainingContext, sessionId: string): Promise<repo.TrainingResultRow | null>;
+  /**
+   * Jarayon to'xtab qolgani sababli osilib qolgan `pending` natijalarni
+   * `failed` qiladi ("server qayta ishga tushdi"). Server STARTIDA chaqiring:
+   * baholash shu jarayon ichida fon rejimida ketadi, jarayon o'lsa natija
+   * abadiy `pending` qolardi. `olderThanMs` — baholash timeout'i.
+   */
+  failStalePending(businessId: string, options: { olderThanMs: number }): Promise<number>;
   /** Har qanday holatdagi oxirgi versiya (pending ham) — UI poll qilishi uchun. */
   getLatestAnyResult(
     ctx: TrainingContext,
@@ -759,6 +769,17 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
         }
         return await repo.getLatestResult(tx, sessionId, 'done');
       });
+    },
+
+    async failStalePending(businessId, { olderThanMs }) {
+      const olderThan = new Date(now().getTime() - olderThanMs);
+      const count = await withTenant(businessId, async (tx) =>
+        repo.failStalePendingResults(tx, { olderThan, error: STALE_PENDING_ERROR }),
+      );
+      if (count > 0) {
+        deps.logger?.warn({ businessId, count }, `osilib qolgan baholashlar failed qilindi: ${count}`);
+      }
+      return count;
     },
 
     async getLatestAnyResult(ctx, sessionId) {

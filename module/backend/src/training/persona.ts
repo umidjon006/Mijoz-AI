@@ -16,6 +16,7 @@ import {
   trainingErrorFromLlm,
 } from './errors.js';
 import { findScriptViolations, scriptCorrectionNote } from './language.js';
+import { extractPriceFigures, offerPriceFigures } from './offer-facts.js';
 import type { TrainerLlm, TrainingLogger } from './ports.js';
 import { buildPersonaSystemPrompt, buildPersonaUserPrompt } from './prompts.js';
 import type { BusinessProfile } from './profile-schema.js';
@@ -84,6 +85,7 @@ export function makePersonaCardSchema({
   language,
 }: PersonaConstraints) {
   const offers = profile.primaryOffers.map((offer) => offer.trim());
+  const offerPrices = offerPriceFigures(offers);
 
   return personaCardSchema.superRefine((card, ctx) => {
     if (card.objections.length !== archetype.objections.count) {
@@ -136,6 +138,27 @@ export function makePersonaCardSchema({
         path: ['hiddenNeed'],
         message: 'bu arxetipda hiddenNeed null bo\'lishi kerak',
       });
+    }
+
+    // Mijoz taklif narxini oldindan BILMAYDI: faqat `hiddenFacts` da (eshitgan
+    // gap sifatida) bo'lishi mumkin. Qolgan matnlar mijoz promptiga tushadi.
+    const knowsPrice: Array<[Array<string | number>, string]> = [
+      [['openingLine'], card.openingLine],
+      [['situation'], card.situation],
+      [['goal'], card.goal],
+      [['role'], card.role],
+      [['speakingStyle'], card.speakingStyle],
+      ...card.objections.map((o, i): [Array<string | number>, string] => [['objections', i, 'text'], o.text]),
+    ];
+    for (const [path, text] of knowsPrice) {
+      const leaked = extractPriceFigures(text).filter((value) => offerPrices.has(value));
+      if (leaked.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message: `mijoz taklif narxini (${leaked.join(', ')}) oldindan bilmaydi — bu matndan olib tashlang (faqat hiddenFacts da eshitgan gap sifatida bo'lishi mumkin)`,
+        });
+      }
     }
 
     if (card.language !== language) {

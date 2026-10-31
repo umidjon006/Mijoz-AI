@@ -64,6 +64,7 @@ import {
   createScoringService,
   llmScoringSchema,
   processLlmScoring,
+  STALE_PENDING_ERROR,
   userFacingScoringText,
   type GetPlaybook,
 } from './scoring/scoring.js';
@@ -78,6 +79,7 @@ import {
   type SalesScript,
 } from './scoring/sales-script.js';
 import { findScriptViolations, nonLatinWords } from './language.js';
+import { canOfferRescore, RESCORE_PENDING_AFTER_MS } from '../../../frontend/src/lib/rescore.js';
 import type { CriterionResult } from './scoring/scoring-types.js';
 import {
   assert,
@@ -919,6 +921,38 @@ function verifyBusinessFacts(): void {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 9. UI: "Qayta baholash" qachon chiqadi
+// ---------------------------------------------------------------------------
+function verifyRescoreRule(): void {
+  section('[9] UI: "Qayta baholash" tugmasi qoidasi');
+  const t0 = Date.parse('2026-10-31T10:00:00Z');
+  const createdAt = new Date(t0).toISOString();
+
+  check(report, 'failed -> darhol; done -> hech qachon', () => {
+    assert(canOfferRescore({ status: 'failed', createdAt }, t0, null), 'failed');
+    assert(!canOfferRescore({ status: 'done', createdAt }, t0 + 10 * 60_000, null), 'done');
+  });
+
+  check(report, 'pending: 3 daqiqagacha yo\'q, 3 daqiqadan keyin bor', () => {
+    assertEqual(RESCORE_PENDING_AFTER_MS, 180_000, '3 daqiqa');
+    assert(!canOfferRescore({ status: 'pending', createdAt }, t0 + 179_000, t0), '2:59 da yo\'q');
+    assert(canOfferRescore({ status: 'pending', createdAt }, t0 + 180_000, t0), '3:00 da bor');
+  });
+
+  check(report, 'pending: server soati boshqacha bo\'lsa ham brauzer kuzatgan vaqt yetadi', () => {
+    const futureCreated = new Date(t0 + 60 * 60_000).toISOString(); // server soati 1 soat oldinda
+    assert(
+      canOfferRescore({ status: 'pending', createdAt: futureCreated }, t0 + 200_000, t0),
+      'brauzer 3+ daqiqa kuzatdi',
+    );
+    assert(
+      canOfferRescore({ status: 'pending', createdAt }, t0 + 200_000, null),
+      'eski pending (sahifa yangi ochilgan) — server yoshi bo\'yicha',
+    );
+  });
+}
+
 function appUrl(): string {
   const port = process.env.POSTGRES_PORT?.trim() || '55433';
   return (
@@ -1223,6 +1257,51 @@ async function verifyDbAndRoutes(): Promise<void> {
       assert(warnings.some((w) => w.includes('lotin')), 'ogohlantirish logda');
     });
 
+    // --- 6c-5. Server to'xtagan: osilib qolgan pending -> failed ----------
+    await checkAsync(report, "startda eski pending -> failed ('server qayta ishga tushdi'), yangisi tegilmaydi", async () => {
+      const sessionId = await playSession(ctxA, { turns: 3 });
+      const metrics = { sellerTurns: 3 } as never;
+      const [oldId, freshId] = await withTenant(bizA, async (tx) => {
+        const base = (await scoringRepo.maxResultVersion(tx, sessionId)) + 1;
+        const a = await scoringRepo.insertPendingResult(tx, {
+          businessId: bizA,
+          sessionId,
+          version: base,
+          metrics,
+          createdAt: new Date(Date.now() - 10 * 60_000),
+        });
+        const b = await scoringRepo.insertPendingResult(tx, {
+          businessId: bizA,
+          sessionId,
+          version: base + 1,
+          metrics,
+          createdAt: new Date(),
+        });
+        return [a, b];
+      });
+
+      const scoring = createScoringService({ withTenant, llm: new FakeTrainerLlm([scoringPayload()]) });
+      // Boshqa tenant nomidan chaqirilsa — bizA ga tegmaydi (RLS).
+      assertEqual(await scoring.failStalePending(bizB, { olderThanMs: 120_000 }), 0, 'boshqa tenant');
+      const count = await scoring.failStalePending(bizA, { olderThanMs: 120_000 });
+      assert(count >= 1, 'kamida bitta failed qilindi');
+
+      const versions = await withTenant(bizA, async (tx) => scoringRepo.listResultVersions(tx, sessionId));
+      const oldRow = versions.find((v) => v.id === oldId);
+      const freshRow = versions.find((v) => v.id === freshId);
+      assertEqual(oldRow?.status, 'failed', 'eski -> failed');
+      assertEqual(oldRow?.error, STALE_PENDING_ERROR, 'xato matni');
+      assertEqual(freshRow?.status, 'pending', 'yangi pending tegilmaydi');
+
+      // Qayta baholash yangi versiya qo'shadi, eskilari qoladi.
+      const before = versions.length;
+      const rescored = await scoring.scoreSession(ctxA, sessionId);
+      assertEqual(rescored.status, 'done', 'qayta baholandi');
+      const after = await withTenant(bizA, async (tx) => scoringRepo.listResultVersions(tx, sessionId));
+      assertEqual(after.length, before + 1, 'yangi versiya');
+      assert(after.some((v) => v.id === oldId && v.status === 'failed'), 'eski failed versiya saqlanadi');
+    });
+
     // --- 6d. Past sifat (dalillar yiqiladi) -----------------------------
     await checkAsync(report, 'dalillar yiqilsa: bitta retry, keyin quality=low', async () => {
       const sessionId = await playSession(ctxA, { turns: 3 });
@@ -1474,6 +1553,7 @@ async function main(): Promise<void> {
   verifyMetricsAndMoments();
   verifyProcessing();
   verifyBusinessFacts();
+  verifyRescoreRule();
 
   try {
     await verifyDbAndRoutes();

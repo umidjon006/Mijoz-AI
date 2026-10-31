@@ -263,6 +263,13 @@ Skript `scoring/sales-script.ts` dagi `salesScriptSchema` shaklida
 `redLineViolations` (tekshirilgan iqtibos bilan) va `scriptAdherence`
 (skript bo'lmasa `null`) — migratsiya kerak emas.
 
+**Osilib qolgan natijalar:** jarayon baholash paytida o'lsa natija `pending`
+qoladi. Worker/server startida har tenant uchun
+`scoring.failStalePending(businessId, { olderThanMs: <baholash timeout'i> })`
+chaqiring — eski `pending` lar `failed` ("server qayta ishga tushdi") bo'ladi
+va UI "Qayta baholash" tugmasini ko'rsatadi. Navbat (job queue) ishlatsangiz,
+bu vazifani navbatning retry mexanizmi bajaradi.
+
 **Fon rejimi:** bu modulda `POST /sessions/:id/score` 202 qaytaradi va
 baholash shu jarayon ichida fon rejimida ketadi. Asosiy repoda buni
 o'zingizning `analysis_job` navbatingiz bilan almashtiring: route faqat job

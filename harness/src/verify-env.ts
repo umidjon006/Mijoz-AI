@@ -503,6 +503,15 @@ async function main(): Promise<void> {
     });
   }
 
+  await checkAsync(report, "server.ts: startda osilib qolgan pending'lar failed qilinadi (listen'dan oldin)", async () => {
+    const source = await readFile(join(harnessRoot, 'src', 'server.ts'), 'utf8');
+    const recover = source.indexOf('scoring.failStalePending(');
+    const listen = source.indexOf('app.listen(');
+    assert(recover > 0, 'failStalePending chaqirilmagan');
+    assert(listen > recover, "listen'dan oldin bo'lishi kerak");
+    assert(source.includes('olderThanMs: config.scoringTimeoutMs'), 'chegara = baholash timeout\'i');
+  });
+
   await checkAsync(report, 'package.json: hamma tsx skriptida --env-file-if-exists', async () => {
     const pkg = JSON.parse(await readFile(join(harnessRoot, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;

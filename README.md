@@ -511,6 +511,13 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
 - **Ball:** `skillScore = Σ(score/3 × weight) / Σ(baholangan vazn) × 100`.
   `null` baho nolga aylanmaydi. `skillScore` va `outcome` — ikki alohida son.
 - **Versiyalash:** qayta baholash eski natijani o'chirmaydi (`version + 1`).
+- **Osilib qolgan baholash.** Baholash server jarayoni ichida fon rejimida
+  ketadi; server to'xtasa (Ctrl+C) natija `pending` da qolardi. Endi server
+  startida baholash timeout'idan (`TRAINER_SCORING_TIMEOUT_MS`) eski
+  `pending` natijalar `failed` qilinadi (xato: "server qayta ishga tushdi").
+  Debriefda natija `failed` bo'lsa yoki 3 daqiqadan beri `pending` bo'lsa
+  **"Qayta baholash"** tugmasi chiqadi — u yangi versiya yaratadi, eskilari
+  saqlanadi.
 - **Sifat:** dalillarning 40% dan ko'pi yiqilsa bitta qayta urinish, keyin
   `quality: 'low'` va UI'da ogohlantirish; juda qisqa suhbat ->
   `quality: 'insufficient'`.
@@ -532,6 +539,14 @@ tushuntiradi, kod hisoblaydi va tekshiradi.**
   yozgan har matn kodda tekshiriladi: lotin bo'lmagan harf (kirill, mo'g'ul
   va h.k.) bo'lsa — bitta tuzatish urinishi, o'tmasa natija saqlanadi va
   logga ogohlantirish yoziladi. Iqtiboslar (transkriptdan aynan) tekshirilmaydi.
+- **Mijoz narxni oldindan bilmaydi.** Persona-card'dagi `focusOffer` —
+  profildagi to'liq satr (narx, muddat bilan) — faqat baholash uchun. Mijoz
+  promptiga faqat taklif **nomi** beriladi; mijoz narx/muddat/shartni faqat
+  sotuvchi aytganidan keyin yoki o'zining yashirin faktidan (eshitgan gap
+  sifatida) bilishi mumkin. Persona tekshiruvi ochilish gapi, vaziyat va
+  e'tirozlarda taklif narxini rad etadi. `smoke:llm` va bake-off'da yangi
+  o'lchov: **"Aytilmagan narx"** — mijoz sotuvchi aytmagan narxni aytgan
+  javoblar ulushi (0 bo'lishi kerak).
 - **Saqlash:** qizil chiziqlar va skriptga moslik `training_result.coaching`
   jsonb ichida (`redLineViolations`, `scriptAdherence`) — DB migratsiyasi
   kerak emas; eski natijalarda bu bo'limlar shunchaki ko'rinmaydi.

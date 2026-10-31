@@ -41,6 +41,7 @@ import {
   estimateCost,
   isTooLong,
   isWrongLanguage,
+  mentionsUnsaidPrice,
   type CostEstimate,
 } from './bakeoff/metrics.js';
 import {
@@ -393,7 +394,9 @@ async function runOneSession({
   let guardViolations = 0;
   let tooLongReplies = 0;
   let wrongLanguageReplies = 0;
+  let unsaidPriceReplies = 0;
   let customerReplies = 0;
+  const sellerTexts: string[] = [];
   let personaName: string | null = null;
   let error: string | null = null;
 
@@ -401,6 +404,7 @@ async function runOneSession({
     const session = await engine.startSession(ctx, { archetypeKey: item.archetype });
     personaName = session.persona.name;
     const language = session.persona.language;
+    const ownFacts = session.persona.hiddenFacts;
 
     if (session.openingLine) {
       transcript.push({ speaker: 'customer', text: session.openingLine });
@@ -408,6 +412,7 @@ async function runOneSession({
       customerReplies += 1;
       if (isTooLong(session.openingLine)) tooLongReplies += 1;
       if (isWrongLanguage(session.openingLine, language)) wrongLanguageReplies += 1;
+      if (mentionsUnsaidPrice(session.openingLine, sellerTexts, ownFacts)) unsaidPriceReplies += 1;
     }
 
     for (let i = 0; i < config.maxTurnsPerSession; i += 1) {
@@ -415,6 +420,7 @@ async function runOneSession({
       if (sellerText === null) break;
 
       transcript.push({ speaker: 'seller', text: sellerText });
+      sellerTexts.push(sellerText);
       lines.push(`SELLER: ${sellerText}`);
 
       const result = await engine.takeTurn(ctx, {
@@ -426,6 +432,7 @@ async function runOneSession({
       customerReplies += 1;
       if (isTooLong(result.customerReply)) tooLongReplies += 1;
       if (isWrongLanguage(result.customerReply, language)) wrongLanguageReplies += 1;
+      if (mentionsUnsaidPrice(result.customerReply, sellerTexts, ownFacts)) unsaidPriceReplies += 1;
 
       transcript.push({ speaker: 'customer', text: result.customerReply });
       lines.push(`CUSTOMER: ${result.customerReply}`);
@@ -467,6 +474,7 @@ async function runOneSession({
     costUsd: Number(costOf(tokens, item.candidate.pricePerMTok).toFixed(6)),
     tooLongReplies,
     wrongLanguageReplies,
+    unsaidPriceReplies,
     customerReplies,
     transcript,
     personaName,

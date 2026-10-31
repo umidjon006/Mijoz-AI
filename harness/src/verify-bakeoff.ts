@@ -41,6 +41,7 @@ import {
   estimateCost,
   isTooLong,
   isWrongLanguage,
+  mentionsUnsaidPrice,
   summarizeCandidate,
   wordCount,
 } from './bakeoff/metrics.js';
@@ -51,7 +52,7 @@ import {
   recommend,
 } from './bakeoff/score.js';
 import { blindLabels, shuffle } from './bakeoff/shuffle.js';
-import { runKey, type SessionRun } from './bakeoff/types.js';
+import { runKey, sessionRunSchema, type SessionRun } from './bakeoff/types.js';
 import { INJECTION_SCRIPT } from './seller-bot.js';
 
 const report = createReport();
@@ -93,6 +94,7 @@ function cannedRun(overrides: Partial<SessionRun> = {}): SessionRun {
     costUsd: 0.013,
     tooLongReplies: 0,
     wrongLanguageReplies: 0,
+    unsaidPriceReplies: 0,
     customerReplies: 4,
     transcript: [
       { speaker: 'seller', text: 'Assalomu alaykum, vaqtingiz bormi?' },
@@ -420,6 +422,31 @@ function verifyMetrics(): void {
     assertEqual(new Set(first.excerpts.map((e) => e.id)).size, 6, 'id lar unikal');
     assertEqual(Object.keys(first.mapping).length, 2, 'ochish xaritasi');
     assertEqual(Object.keys(first.sources).length, 6, 'parcha manbalari xaritasi');
+  });
+
+  check(report, "aytilmagan narx: sotuvchi aytmagan narx ushlanadi, aytgani/eshitgani — yo'q", () => {
+    assert(
+      mentionsUnsaidPrice("Demak 6 oy va oyiga 700 000 so'mmi?", ["12 oy, 490 000 so'm"]),
+      'sotuvchi 490 000 dedi, mijoz 700 000 dedi',
+    );
+    assert(!mentionsUnsaidPrice("490 ming qimmat-ku", ["Oyiga 490 000 so'm"]), 'sotuvchi aytgan');
+    assert(!mentionsUnsaidPrice('Narxi qancha?', []), "narx yo'q");
+    assert(
+      !mentionsUnsaidPrice('Tanishim 700 ming dedi', [], ["Do'sti 700 000 so'm turishini aytgan"]),
+      "o'z yashirin faktidan (eshitgan)",
+    );
+  });
+
+  check(report, "aytilmagan narx ulushi summary'da; eski runs.jsonl -> 0", () => {
+    const runs = [
+      sessionRunSchema.parse(cannedRun({ unsaidPriceReplies: 1, customerReplies: 4 })),
+      sessionRunSchema.parse(cannedRun({ rep: 2 })),
+    ];
+    const summary = summarizeCandidate({ label: 'haiku', model: 'm' }, runs);
+    assertEqual(summary.unsaidPriceRate, 0.125, '1/8');
+    const legacy = { ...cannedRun() } as Record<string, unknown>;
+    delete legacy.unsaidPriceReplies;
+    assertEqual(sessionRunSchema.parse(legacy).unsaidPriceReplies, 0, 'default 0');
   });
 
   check(report, 'injection skripti ichida haqiqiy urinish bor', () => {

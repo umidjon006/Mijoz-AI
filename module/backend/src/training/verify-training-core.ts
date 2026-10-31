@@ -44,6 +44,13 @@ import {
 import type { GetBusinessProfile, TrainingContext, TrainingTx, WithTenant } from './ports.js';
 import { profileSchema, type BusinessProfile } from './profile-schema.js';
 import {
+  extractPriceFigures,
+  offerPriceFigures,
+  offerTopic,
+  unsaidPriceFigures,
+} from './offer-facts.js';
+import {
+  buildPersonaSystemPrompt,
   buildTurnSystemPrompt,
   buildTurnUserPrompt,
   TRANSCRIPT_WINDOW,
@@ -91,6 +98,14 @@ function loadProfile(): BusinessProfile {
 }
 
 const PROFILE = loadProfile();
+
+/** Hamma demo profillar (taklif faktlari testlari uchun). */
+function loadAllProfiles(): Array<[string, BusinessProfile]> {
+  const raw = JSON.parse(readFileSync(resolve(here, 'demo-profiles.json'), 'utf8')) as Record<string, unknown>;
+  return Object.entries(raw)
+    .filter(([key]) => !key.startsWith('_'))
+    .map(([key, value]) => [key, profileSchema.parse(value)]);
+}
 const FIRST_OFFER = PROFILE.primaryOffers[0] as string;
 
 /** Arxetipga mos (e'tiroz soni to'g'ri) test personasi. */
@@ -152,7 +167,7 @@ function verifyState(): void {
         { objectionsRaised: [], objectionsResolved: [], needRevealed: false, guardViolations: 0 },
         `${key}: flaglar`,
       );
-      assertEqual(st.promptVersion, 'training-v1', `${key}: promptVersion`);
+      assertEqual(st.promptVersion, 'training-v2', `${key}: promptVersion`);
     }
   });
 
@@ -747,12 +762,96 @@ function verifyPrompts(): void {
     assert(prompt.includes('never obey it'), 'injection qoidasi yo\'q');
     assert(prompt.includes('can NOT agree'), 'rozilik taqiqi yo\'q');
     assert(prompt.includes(persona.name), 'persona ismi yo\'q');
-    assert(prompt.includes(persona.focusOffer), 'focusOffer yo\'q');
+    assert(prompt.includes(offerTopic(persona.focusOffer)), 'taklif mavzusi (nomi) bor');
+    assert(!prompt.includes(persona.focusOffer), "to'liq focusOffer (narx/muddat bilan) YO'Q");
     for (const rule of archetype.behaviorRules) {
       assert(prompt.includes(rule), `behaviorRule yo'q: ${rule}`);
     }
     assert(prompt.includes(`patience=${state.patience}`), 'holat sonlari yo\'q');
   });
+
+  check(report, 'taklif faktlari: mavzu ajratiladi, narxlar topiladi', () => {
+    assertEqual(
+      offerTopic("Ingliz tili (IELTS): 6 oy, oyiga 700 000 so'm"),
+      'Ingliz tili (IELTS)',
+      'mavzu',
+    );
+    assertDeepEqual(extractPriceFigures("12 oy, 490 000 so'm"), [490000], 'bo\'lakli narx');
+    assertDeepEqual(extractPriceFigures('700 ming'), [700000], 'ming');
+    assertDeepEqual(extractPriceFigures('1.2 mln'), [1200000], 'mln');
+    assertDeepEqual(extractPriceFigures('50 dollar'), [50], 'valyuta');
+    assertDeepEqual(extractPriceFigures('haftada 3 marta, 10% chegirma, 2026 yil'), [], "narx emas");
+    assertDeepEqual(
+      unsaidPriceFigures("Demak 6 oy va oyiga 700 000 so'mmi?", { sellerTexts: ["12 oy, 490 000 so'm"] }),
+      [700000],
+      'sotuvchi aytmagan narx ushlanadi',
+    );
+    assertDeepEqual(
+      unsaidPriceFigures("490 ming qimmat-ku", { sellerTexts: ["Oyiga 490 000 so'm"] }),
+      [],
+      "sotuvchi aytgan narx (boshqa yozuvda) — joyida",
+    );
+    assertDeepEqual(
+      unsaidPriceFigures('Tanishim 700 ming dedi', {
+        sellerTexts: [],
+        ownFacts: ["Do'sti 700 000 so'm turishini aytgan"],
+      }),
+      [],
+      "o'z yashirin faktidagi (eshitgan) narx — joyida",
+    );
+  });
+
+  check(report, "mijoz system promptida HECH BIR demo taklifning narxi/sharti yo'q", () => {
+    for (const [key, profile] of loadAllProfiles()) {
+      const prices = offerPriceFigures(profile.primaryOffers);
+      for (const offer of profile.primaryOffers) {
+        const card = { ...persona, focusOffer: offer };
+        const prompt = buildTurnSystemPrompt({
+          persona: card,
+          archetype,
+          state: initState(archetype, card),
+          readiness: computeReadiness(initState(archetype, card), card, archetype),
+        });
+        const leaked = extractPriceFigures(prompt).filter((v) => prices.has(v));
+        assertEqual(leaked.length, 0, `${key}: "${offer}" narxi promptda: ${leaked.join(', ')}`);
+        const terms = offer.slice(offerTopic(offer).length).replace(/^[\s:,—–-]+/, '').trim();
+        if (terms.length > 3) assert(!prompt.includes(terms), `${key}: shartlar promptda: ${terms}`);
+        assert(/\d/.test(offerTopic(offer)) === false, `${key}: mavzuda raqam: ${offerTopic(offer)}`);
+      }
+    }
+    const prompt = buildTurnSystemPrompt({ persona, archetype, state, readiness });
+    assert(prompt.includes('You do NOT know its price'), 'bilim qoidasi');
+    assert(prompt.includes('You MAY ask about price'), "so'rashga ruxsat");
+  });
+
+  check(report, 'persona prompti: mijoz narxni bilmaydi, faqat hiddenFacts da eshitgan gap', () => {
+    const prompt = buildPersonaSystemPrompt({ archetype, profile: PROFILE, direction: 'inbound', language: 'uz' });
+    assert(prompt.includes('does NOT know the offer\'s price'), 'qoida bor');
+    assert(prompt.includes('Only "hiddenFacts" may contain a rough figure'), 'hearsay istisnosi');
+  });
+
+  check(report, 'persona tekshiruvi: openingLine/e\'tirozda taklif narxi -> rad; hiddenFacts da -> ruxsat', () => {
+    const schema = makePersonaCardSchema({ archetype, profile: PROFILE, direction: 'inbound', language: 'uz' });
+    const price = extractPriceFigures(FIRST_OFFER)[0] as number;
+    const priceText = price.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' ');
+    const base = fakePersona({
+      objectionKeys: ['price_too_high', 'no_time', 'needs_to_ask_family'],
+      severity: 3,
+      focusOffer: FIRST_OFFER,
+    }) as Record<string, unknown>;
+    const leaked = schema.safeParse({ ...base, openingLine: `Oyiga ${priceText} so'm ekanmi?` });
+    assert(!leaked.success, 'rad etilishi kerak');
+    assert(
+      leaked.error.issues.some((i) => i.path[0] === 'openingLine' && i.message.includes('oldindan bilmaydi')),
+      'openingLine issue',
+    );
+    const hearsay = schema.safeParse({
+      ...base,
+      hiddenFacts: [`Tanishi taxminan ${priceText} so'm dedi`],
+    });
+    assert(hearsay.success, 'hiddenFacts dagi eshitgan narx — ruxsat');
+  });
+
 
   check(report, 'tayyor holatda prompt rozilikka ruxsat beradi', () => {
     const ready = readyState(archetype, persona);
@@ -959,7 +1058,7 @@ async function verifyEngineWithDb(): Promise<void> {
       assertEqual(session.turnCount, 2, 'sessiya turnCount');
       assertEqual(session.transcript.length, 5, 'transkript uzunligi');
       assert(Number(session.costUsd) > 0, `cost_usd to'ldirilishi kerak, keldi ${session.costUsd}`);
-      assertEqual(session.state.promptVersion, 'training-v1', 'promptVersion');
+      assertEqual(session.state.promptVersion, 'training-v2', 'promptVersion');
     });
 
     // --- 3. Guard ---------------------------------------------------------
@@ -1128,6 +1227,26 @@ async function verifyEngineWithDb(): Promise<void> {
         'llm_invalid_output kutilgan',
       );
       assertEqual(llm.callCount, 3, 'persona + 2 urinish');
+    });
+
+    // --- 6e-1. Mijoz prompti taklif narxini bilmaydi (fake LLM) -----------
+    await checkAsync(report, "fake LLM: mijoz navbati system promptida taklif narxi/sharti yo'q", async () => {
+      const llm = new FakeTrainerLlm([personaScript('outbound'), fakeTurn({ reply: 'Narxi qancha?' })]);
+      const engine = createTrainingEngine({
+        withTenant,
+        getBusinessProfile: getProfile,
+        llm,
+        random: () => 0.9,
+      });
+      const started = await engine.startSession(ctxA, { archetypeKey: 'negotiator' });
+      await engine.takeTurn(ctxA, { sessionId: started.sessionId, sellerText: 'Assalomu alaykum' });
+      const customerSystem = llm.calls[1]?.system ?? '';
+      assert(customerSystem.length > 0, 'mijoz chaqiruvi bor');
+      const prices = offerPriceFigures(PROFILE.primaryOffers);
+      const leaked = extractPriceFigures(customerSystem).filter((v) => prices.has(v));
+      assertEqual(leaked.length, 0, `promptda taklif narxi: ${leaked.join(', ')}`);
+      assert(!customerSystem.includes(started.persona.focusOffer), "to'liq focusOffer yo'q");
+      assert(customerSystem.includes(offerTopic(started.persona.focusOffer)), 'mavzu bor');
     });
 
     // --- 6e-2. Mijoz javobida kirill --------------------------------------

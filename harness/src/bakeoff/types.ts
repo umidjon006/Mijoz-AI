@@ -58,6 +58,11 @@ export const sessionRunSchema = z.object({
   tooLongReplies: z.number().int().min(0),
   /** Persona tilida bo'lmagan javoblar soni (evristik). */
   wrongLanguageReplies: z.number().int().min(0),
+  /**
+   * Sotuvchi (shu suhbatda) aytmagan va mijozning o'z yashirin faktlarida
+   * ham yo'q narxni tilga olgan javoblar soni. Eski `runs.jsonl` da yo'q -> 0.
+   */
+  unsaidPriceReplies: z.number().int().min(0).default(0),
   customerReplies: z.number().int().min(0),
 
   transcript: z.array(transcriptTurnSchema),
