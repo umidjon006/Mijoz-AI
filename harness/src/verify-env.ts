@@ -16,7 +16,9 @@
  *   8. adapter xato toifalari, timeout qayta urinishi, log qatori (soxta fetch);
  *   9. token chegarasi parametri (auto), "parametr qo'llanmaydi" fallback'i,
  *      reasoning zaxirasi va reasoning tokenlari hisobi (soxta fetch);
- *  10. harness/data: biznes profili va sotuv skripti fayllari, aniq xatolar.
+ *  10. harness/data: biznes profili va sotuv skripti fayllari, aniq xatolar;
+ *  11. OpenAI ovoz adapterlari (soxta fetch): so'rov shakli, xatolarda kalit
+ *      yo'q, timeout toifasi.
  */
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -24,6 +26,7 @@ import { join } from 'node:path';
 
 import {
   assert,
+  assertDeepEqual,
   assertEqual,
   check,
   checkAsync,
@@ -55,6 +58,13 @@ import {
   resolveMaxTokensParam,
 } from './llm-openai-compatible.js';
 import { zodToJsonSchema } from './zod-json-schema.js';
+import {
+  createOpenAiStt,
+  createOpenAiTts,
+  filterVoiceModels,
+  redactSecrets,
+  type OpenAiVoiceConfig,
+} from './voice/openai.js';
 import {
   BusinessDataError,
   businessProfilePath,
@@ -989,6 +999,122 @@ async function main(): Promise<void> {
     await writeFile(path, '## Salomlashish\n> faqat ibora\n');
     expectDataError(() => loadSalesScriptFile(path), 'bad-script.md', 'Salomlashish');
   });
+
+  // -------------------------------------------------------------------------
+  section('[11] OpenAI ovoz adapterlari (soxta fetch, haqiqiy chaqiruv yo\'q)');
+
+  const voiceConfig: OpenAiVoiceConfig = {
+    apiKey: FAKE_KEY,
+    baseUrl: 'https://api.openai.example/v1',
+    keyEnv: 'OPENAI_API_KEY',
+    sttModel: 'stt-model-x',
+    ttsModel: 'tts-model-x',
+    ttsVoice: undefined,
+    ttsFormat: 'mp3',
+    timeoutMs: 50,
+  };
+  const wav = Buffer.from('RIFF....WAVEfmt fake-audio-bytes');
+  const savedFetch = globalThis.fetch;
+  type Seen = { url: string; init: RequestInit | undefined };
+  const voiceFetch = (respond: (seen: Seen) => Promise<Response> | Response): Seen[] => {
+    const seen: Seen[] = [];
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      const entry = { url: String(url), init };
+      seen.push(entry);
+      return await respond(entry);
+    }) as typeof fetch;
+    return seen;
+  };
+  const hang = (seen: Seen): Promise<Response> =>
+    new Promise((_resolve, reject) => {
+      seen.init?.signal?.addEventListener('abort', () => {
+        const err = new Error('This operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+
+  try {
+    await checkAsync(report, "STT: til uz, model, lug'at ishoralari prompt'da; matn qaytadi", async () => {
+      const seen = voiceFetch(() => new Response(JSON.stringify({ text: '  Assalomu alaykum  ' })));
+      const out = await createOpenAiStt(voiceConfig).transcribeShort({
+        audio: wav,
+        mime: 'audio/wav',
+        lang: 'uz',
+        hints: ['sinov darsi', 'Frontend kursi'],
+      });
+      assertEqual(out.text, 'Assalomu alaykum', 'matn trim');
+      assert(seen[0]?.url.endsWith('/audio/transcriptions'), 'endpoint');
+      const form = seen[0]?.init?.body as FormData;
+      assertEqual(form.get('language'), 'uz', 'til');
+      assertEqual(form.get('model'), 'stt-model-x', 'model env\'dan');
+      assert(String(form.get('prompt')).includes('sinov darsi'), 'ishoralar');
+    });
+
+    await checkAsync(report, "TTS: ohang ko'rsatmasi yuboriladi, audio va mime qaytadi", async () => {
+      const seen = voiceFetch(() => new Response(new Uint8Array([1, 2, 3])));
+      const out = await createOpenAiTts(voiceConfig).synthesize({
+        text: 'Salom',
+        lang: 'uz',
+        tone: 'calm',
+        instructions: 'Speak calmly',
+      });
+      const body = JSON.parse(String(seen[0]?.init?.body)) as Record<string, unknown>;
+      assertEqual(body.instructions, 'Speak calmly', "ko'rsatma");
+      assertEqual(body.model, 'tts-model-x', 'model');
+      assertEqual(out.audio.length, 3, 'audio baytlari');
+      assertEqual(out.mime, 'audio/mpeg', 'mp3 mime');
+    });
+
+    await checkAsync(report, "HTTP 401: xato matnida kalit YO'Q (provayder kalitni qaytarsa ham)", async () => {
+      voiceFetch(
+        () =>
+          new Response(
+            JSON.stringify({ error: { message: `Incorrect API key provided: ${FAKE_KEY}. Also sk-proj-abcdEFGH1234.` } }),
+            { status: 401 },
+          ),
+      );
+      let caught: unknown;
+      try {
+        await createOpenAiStt(voiceConfig).transcribeShort({ audio: wav, mime: 'audio/wav', lang: 'uz' });
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof LlmCallError && caught.kind === 'http', 'http toifasi');
+      assertEqual((caught as LlmCallError).status, 401, 'status');
+      const message = (caught as Error).message;
+      assert(!message.includes(FAKE_KEY), "to'liq kalit yo'q");
+      assert(!message.includes('sk-proj-abcdEFGH1234'), "kalit bo'lagi yo'q");
+      assert(!message.includes('fake-audio-bytes'), "audio yo'q");
+      assert(message.includes('Incorrect API key'), 'provayder xabari saqlanadi');
+    });
+
+    await checkAsync(report, "timeout: aniq toifa va xabar ('aborted' emas)", async () => {
+      voiceFetch(hang);
+      let caught: unknown;
+      try {
+        await createOpenAiTts(voiceConfig).synthesize({ text: 'Salom', lang: 'uz' });
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof LlmCallError && caught.kind === 'timeout', 'timeout toifasi');
+      assert((caught as Error).message.includes('ms ichida javob kelmadi'), 'tushunarli xabar');
+    });
+
+    check(report, "redactSecrets va ovoz modellarini saralash", () => {
+      assertEqual(redactSecrets(`a ${FAKE_KEY} b`, FAKE_KEY), 'a *** b', 'kalit');
+      assertEqual(redactSecrets('x sk-live-12345678 y', ''), 'x sk-*** y', "sk- bo'lagi");
+      const picked = filterVoiceModels([
+        { id: 'gpt-6-luna' },
+        { id: 'some-transcribe-1' },
+        { id: 'some-tts-2' },
+        { id: 'text-embedding' },
+      ]).map((m) => m.id);
+      assertDeepEqual(picked, ['some-transcribe-1', 'some-tts-2'], 'faqat ovoz modellari');
+    });
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 
   console.log(
     `\nNatija: ${report.passed} o'tdi, ${report.failed} xato, ${report.skipped} tashlab ketildi.`,

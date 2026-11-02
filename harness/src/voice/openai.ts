@@ -17,6 +17,7 @@ import type {
   TtsRequest,
   TtsResult,
 } from '../../../module/backend/src/training/voice/ports.js';
+import { LlmCallError } from '../../../module/backend/src/training/errors.js';
 import { envStr } from '../env.js';
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -80,23 +81,60 @@ export function missingVoiceConfig(env: NodeJS.ProcessEnv = process.env): string
 /** `uz` / `ru` — ISO-639-1; `mixed` uchun o'zbekcha ishora beriladi. */
 const STT_LANGUAGE: Record<string, string> = { uz: 'uz', ru: 'ru', mixed: 'uz' };
 
+/**
+ * Kalitni (va `sk-...` ko'rinishidagi har qanday kalit bo'lagini) matndan
+ * olib tashlaydi — provayder xabari logga va xato matniga shu holda tushadi.
+ */
+export function redactSecrets(text: string, apiKey: string): string {
+  const withoutKey = apiKey.length > 0 ? text.split(apiKey).join('***') : text;
+  return withoutKey.replace(/sk-[A-Za-z0-9_*.-]{4,}/g, 'sk-***');
+}
+
+/**
+ * So'rovni chegaralangan vaqtda bajaradi. Xatolar toifalanadi (matnli
+ * rejimdagidek): timeout -> `timeout`, tarmoq -> `unknown`. Avval timeout
+ * "This operation was aborted" bo'lib chiqardi.
+ */
 async function withTimeout<T>(
+  what: string,
   timeoutMs: number,
+  apiKey: string,
   fn: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fn(controller.signal);
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new LlmCallError('timeout', `${what}: ${timeoutMs} ms ichida javob kelmadi`, { cause: err });
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const cause = err instanceof Error && err.cause instanceof Error ? ` (${err.cause.message})` : '';
+    throw new LlmCallError('unknown', `${what}: tarmoq xatosi: ${redactSecrets(message + cause, apiKey).slice(0, 200)}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** Xato matnida kalit bo'lmasligi SHART — faqat status va qisqa javob. */
-async function failure(what: string, res: Response): Promise<Error> {
+/**
+ * HTTP xato. Xato matnida kalit bo'lmasligi SHART: provayder xabari
+ * (`error.message`) olinadi, kalit va `sk-...` bo'laklari yashiriladi.
+ */
+async function failure(what: string, res: Response, apiKey: string): Promise<Error> {
   const body = await res.text().catch(() => '');
-  return new Error(`${what} ${res.status}: ${body.slice(0, 300)}`);
+  let message = body;
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+    if (typeof parsed.error?.message === 'string') message = parsed.error.message;
+  } catch {
+    // JSON emas — matnning o'zi.
+  }
+  const short = redactSecrets(message, apiKey).replace(/\s+/g, ' ').trim().slice(0, 200);
+  return new LlmCallError('http', `${what} HTTP ${res.status}: ${short}`, {
+    status: res.status,
+    providerMessage: short,
+  });
 }
 
 export function createOpenAiStt(config: OpenAiVoiceConfig): SttPort {
@@ -115,7 +153,7 @@ export function createOpenAiStt(config: OpenAiVoiceConfig): SttPort {
       }
 
       const startedAt = Date.now();
-      const res = await withTimeout(config.timeoutMs, (signal) =>
+      const res = await withTimeout('OpenAI STT', config.timeoutMs, config.apiKey, (signal) =>
         fetch(`${config.baseUrl}/audio/transcriptions`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${config.apiKey}` },
@@ -125,7 +163,7 @@ export function createOpenAiStt(config: OpenAiVoiceConfig): SttPort {
       );
       const latencyMs = Date.now() - startedAt;
 
-      if (!res.ok) throw await failure('OpenAI STT', res);
+      if (!res.ok) throw await failure('OpenAI STT', res, config.apiKey);
 
       const json = (await res.json()) as { text?: string };
       return { text: (json.text ?? '').trim(), latencyMs, raw: json };
@@ -156,7 +194,7 @@ export function createOpenAiTts(config: OpenAiVoiceConfig): TtsPort {
       if (req.instructions) body.instructions = req.instructions;
 
       const startedAt = Date.now();
-      const res = await withTimeout(config.timeoutMs, (signal) =>
+      const res = await withTimeout('OpenAI TTS', config.timeoutMs, config.apiKey, (signal) =>
         fetch(`${config.baseUrl}/audio/speech`, {
           method: 'POST',
           headers: {
@@ -168,7 +206,7 @@ export function createOpenAiTts(config: OpenAiVoiceConfig): TtsPort {
         }),
       );
 
-      if (!res.ok) throw await failure('OpenAI TTS', res);
+      if (!res.ok) throw await failure('OpenAI TTS', res, config.apiKey);
 
       // Birinchi baytni o'lchaymiz — oqimli ijro uchun muhim ko'rsatkich.
       const chunks: Uint8Array[] = [];
@@ -209,13 +247,13 @@ export async function listOpenAiModels(config: {
   baseUrl: string;
   timeoutMs?: number;
 }): Promise<OpenAiModel[]> {
-  const res = await withTimeout(config.timeoutMs ?? 30_000, (signal) =>
+  const res = await withTimeout('OpenAI /models', config.timeoutMs ?? 30_000, config.apiKey, (signal) =>
     fetch(`${config.baseUrl}/models`, {
       headers: { Authorization: `Bearer ${config.apiKey}` },
       signal,
     }),
   );
-  if (!res.ok) throw await failure('OpenAI /models', res);
+  if (!res.ok) throw await failure('OpenAI /models', res, config.apiKey);
   const json = (await res.json()) as { data?: OpenAiModel[] };
   return json.data ?? [];
 }
