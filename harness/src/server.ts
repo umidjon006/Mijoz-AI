@@ -205,6 +205,14 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if ((err as { code?: string } | null)?.code === 'ECONNREFUSED') {
+    console.error(
+      `\n[DB] Postgres'ga ulanib bo'lmadi (${(err as { address?: string }).address ?? '127.0.0.1'}:${
+        (err as { port?: number }).port ?? '?'
+      }). Ishga tushiring: npm run db:local:start (yoki npm run db:up), keyin qayta: npm run dev\n`,
+    );
+    process.exit(1);
+  }
   if (err instanceof BusinessDataError) {
     console.error(`\n[biznes ma'lumotlari xatosi] ${err.message}\n`);
     process.exit(1);
