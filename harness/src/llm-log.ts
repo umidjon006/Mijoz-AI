@@ -34,6 +34,7 @@ export function formatLlmCallLog(entry: LlmCallLog): string {
     `latency=${entry.latencyMs}ms`,
     entry.usage ? `tokens=${entry.usage.inputTokens}/${entry.usage.outputTokens}` : 'tokens=-',
     ...(entry.usage?.reasoningTokens ? [`reasoning=${entry.usage.reasoningTokens}`] : []),
+    ...(entry.usage?.cachedInputTokens ? [`cached=${entry.usage.cachedInputTokens}`] : []),
     `outcome=${entry.outcome}`,
   ];
   if (entry.attempt && entry.attempt > 1) parts.push(`attempt=${entry.attempt}`);

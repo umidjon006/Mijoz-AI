@@ -81,6 +81,8 @@ import {
 } from './business-data.js';
 import { z } from 'zod';
 import {
+  latencyWarnings,
+  TURN_STAGE_MAX_TOKENS,
   baseUrlHost,
   createTrainerLlm,
   MissingLlmKeyError,
@@ -506,6 +508,7 @@ async function main(): Promise<void> {
     'diag-llm',
     'rescore',
     'diag-stt',
+    'diag-latency',
   ];
 
   for (const name of entryPoints) {
@@ -1197,9 +1200,87 @@ async function main(): Promise<void> {
       ]).map((m) => m.id);
       assertDeepEqual(picked, ['some-transcribe-1', 'some-tts-2'], 'faqat ovoz modellari');
     });
+    await checkAsync(report, "TTS oqimi: bo'laklar kelishi bilan; 401 da kalit yo'q", async () => {
+      voiceFetch(() => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2]));
+            controller.enqueue(new Uint8Array([3]));
+            controller.close();
+          },
+        });
+        return new Response(body);
+      });
+      const stream = createOpenAiTts(voiceConfig).synthesizeStream!({ text: 'Salom', lang: 'uz' });
+      assertEqual(stream.mime, 'audio/mpeg', 'mime');
+      const got: number[] = [];
+      for await (const chunk of stream.chunks) got.push(...chunk);
+      assertDeepEqual(got, [1, 2, 3], 'baytlar');
+
+      voiceFetch(() => new Response(JSON.stringify({ error: { message: `bad key ${FAKE_KEY}` } }), { status: 401 }));
+      let caught: unknown;
+      try {
+        for await (const _chunk of createOpenAiTts(voiceConfig).synthesizeStream!({ text: 'x', lang: 'uz' }).chunks) {
+          // iste'mol
+        }
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof LlmCallError && caught.status === 401, '401');
+      assert(!(caught as Error).message.includes(FAKE_KEY), "kalit yo'q");
+    });
   } finally {
     globalThis.fetch = savedFetch;
   }
+
+  // -------------------------------------------------------------------------
+  section("[12] kechikish: mijoz navbati token chegarasi, kesh logi, reasoning ogohlantirishi");
+
+  await checkAsync(report, "mijoz navbati (training.turn) — kichik chegara, persona — katta", async () => {
+    resetParamFixesForTests();
+    const seen = stubFetch([
+      { status: 200, body: okBody('{"a":1}') },
+      { status: 200, body: okBody('{"a":1}') },
+    ]);
+    const llm = makeLlm([], 1000, {
+      maxTokens: 1024,
+      reasoningEffort: 'none',
+      stageMaxTokens: TURN_STAGE_MAX_TOKENS,
+    });
+    await llm.completeJson({ ...req, stage: 'training.turn' });
+    await llm.completeJson({ ...req, stage: 'training.persona' });
+    assertEqual(seen[0]?.max_tokens, 400, 'mijoz navbati: 400');
+    assertEqual(seen[1]?.max_tokens, 1024, 'persona: 1024');
+  });
+
+  await checkAsync(report, "log qatorida reasoning va keshdan olingan tokenlar (cached=)", async () => {
+    resetParamFixesForTests();
+    stubFetch([
+      {
+        status: 200,
+        body: JSON.stringify({
+          choices: [{ message: { content: '{"a":1}' }, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 1800,
+            completion_tokens: 60,
+            prompt_tokens_details: { cached_tokens: 1408 },
+            completion_tokens_details: { reasoning_tokens: 0 },
+          },
+        }),
+      },
+    ]);
+    const lines: string[] = [];
+    const out = await makeLlm(lines, 1000).completeJsonWithUsage?.(req);
+    assertEqual(out?.usage.cachedInputTokens, 1408, 'usage.cachedInputTokens');
+    assert(lines[0]?.includes('cached=1408') ?? false, `log: ${lines[0]}`);
+  });
+
+  check(report, "mijoz bosqichida reasoning yoqilgan bo'lsa ogohlantirish", () => {
+    assertEqual(latencyWarnings(resolveProviderConfig({ ...geminiBase, TRAINER_REASONING_EFFORT: 'none' })).length, 0, 'none — jim');
+    assertEqual(latencyWarnings(resolveProviderConfig({ ...geminiBase, TRAINER_REASONING_EFFORT: 'low' })).length, 1, 'low — ogohlantirish');
+    assertEqual(latencyWarnings(resolveProviderConfig(geminiBase)).length, 1, "bo'sh (provayder default'i) — ogohlantirish");
+    assertEqual(latencyWarnings(resolveProviderConfig({ ANTHROPIC_API_KEY: FAKE_KEY })).length, 0, 'anthropic — tegishli emas');
+  });
 
   console.log(
     `\nNatija: ${report.passed} o'tdi, ${report.failed} xato, ${report.skipped} tashlab ketildi.`,

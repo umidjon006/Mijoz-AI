@@ -54,6 +54,8 @@ import {
   buildPersonaSystemPrompt,
   buildTurnSystemPrompt,
   buildTurnUserPrompt,
+  PROMPT_VERSION,
+  TURN_STATIC_PREFIX,
   TRANSCRIPT_WINDOW,
   type TranscriptTurn,
 } from './prompts.js';
@@ -168,7 +170,7 @@ function verifyState(): void {
         { objectionsRaised: [], objectionsResolved: [], needRevealed: false, guardViolations: 0 },
         `${key}: flaglar`,
       );
-      assertEqual(st.promptVersion, 'training-v3', `${key}: promptVersion`);
+      assertEqual(st.promptVersion, PROMPT_VERSION, `${key}: promptVersion`);
     }
   });
 
@@ -863,6 +865,26 @@ function verifyPrompts(): void {
   });
 
 
+  check(report, "kesh: prompt o'zgarmas prefiks bilan boshlanadi, o'zgaruvchan qism OXIRIDA", () => {
+    const prompt = buildTurnSystemPrompt({ persona, archetype, state, readiness });
+    assert(prompt.startsWith(TURN_STATIC_PREFIX), "statik prefiks boshida");
+    // ~1024 token (OpenAI prefiks keshi chegarasi) ~ 3300+ belgi.
+    assert(TURN_STATIC_PREFIX.length >= 3300, `prefiks juda qisqa: ${TURN_STATIC_PREFIX.length}`);
+    const who = prompt.indexOf('## Who you are');
+    for (const dynamic of ['## Your concerns', 'patience=', '## Can you agree right now?']) {
+      assert(prompt.indexOf(dynamic) > who, `${dynamic} personadan KEYIN`);
+    }
+    // Boshqa holat/arxetip — prefiks bir xil, persona qismi bir xil.
+    const other = buildTurnSystemPrompt({
+      persona,
+      archetype,
+      state: { ...state, patience: 12, trust: 80 },
+      readiness: computeReadiness({ ...state, patience: 12, trust: 80 }, persona, archetype),
+    });
+    const stable = prompt.slice(0, prompt.indexOf('## Your concerns'));
+    assert(other.startsWith(stable), "holat o'zgarsa ham persona qismigacha bir xil");
+  });
+
   check(report, 'tayyor holatda prompt rozilikka ruxsat beradi', () => {
     const ready = readyState(archetype, persona);
     const prompt = buildTurnSystemPrompt({
@@ -1068,7 +1090,7 @@ async function verifyEngineWithDb(): Promise<void> {
       assertEqual(session.turnCount, 2, 'sessiya turnCount');
       assertEqual(session.transcript.length, 5, 'transkript uzunligi');
       assert(Number(session.costUsd) > 0, `cost_usd to'ldirilishi kerak, keldi ${session.costUsd}`);
-      assertEqual(session.state.promptVersion, 'training-v3', 'promptVersion');
+      assertEqual(session.state.promptVersion, PROMPT_VERSION, 'promptVersion');
     });
 
     // --- 3. Guard ---------------------------------------------------------

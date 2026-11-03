@@ -41,6 +41,7 @@
     "rescore": "npm run rescore -w sotuv-trener-harness --",
     "verify:training:voice": "npm run verify:training:voice -w sotuv-trener-harness",
     "diag:voice": "npm run diag:voice -w sotuv-trener-harness --",
-    "diag:stt": "npm run diag:stt -w sotuv-trener-harness --"
+    "diag:stt": "npm run diag:stt -w sotuv-trener-harness --",
+    "diag:latency": "npm run diag:latency -w sotuv-trener-harness --"
   }
 }

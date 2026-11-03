@@ -502,6 +502,38 @@ deterministik transliteratsiya bilan lotinga o'giriladi; aniq boshqa tilda
 bilan o'zbekcha chiqadi: "Nutqni tanish (STT) bosqichida xato: …". Server
 javobi: `{error, stage, message}` (`stage`: audio | stt | llm | tts | session | server).
 
+### Yozish usuli va kechikish
+
+**Yozish:** ovoz panelida almashtirgich — **"Bosib-bosib o'chirish"** (default:
+bir bosish yozadi, ikkinchisi yuboradi) yoki **"Bosib turish"**. BO'SHLIQ
+ikkalasida ham ishlaydi. Yozilayotganda qizil **"Yozilyapti…"** belgisi,
+taymer va **"Bekor qilish"** tugmasi chiqadi. 0.4 s dan qisqa yozuv serverga
+yuborilmaydi — yumshoq xabar chiqadi va darhol qayta yozish mumkin.
+
+**Kechikish (bir navbat):**
+
+- **TTS oqimi.** Javob LLM tugashi bilan qaytadi (matn + bir martalik
+  `audioStreamUrl`), TTS shu zahoti boshlanadi; brauzer birinchi audio bo'lagi
+  kelishi bilan ijroni boshlaydi. Audio faqat xotirada (diskka yozilmaydi),
+  bir marta o'qiladi va 60 s dan keyin tashlanadi. Oqimsiz TTS bo'lsa —
+  javob 2 gapga bo'linib parallel sintez qilinadi.
+- **Mijoz prompti keshga mos.** Barcha sessiyalar uchun bir xil qism (qoidalar,
+  JSON formati, ~1 200 token) BOSHIDA, persona o'rtada, o'zgaruvchan holat
+  OXIRIDA — OpenAI prefiks keshi ishlaydi. `[llm]` log qatorida `cached=N`.
+- **Mijoz navbati:** javob chegarasi 400 token; reasoning `none` bo'lmasa server
+  startda ogohlantiradi (`TRAINER_REASONING_EFFORT=none` tavsiya).
+- Sessiya va STT so'z ishoralari parallel o'qiladi.
+
+O'lchash (pullik, avval narx va tasdiq):
+
+```bash
+npm run diag:latency          # 5 ta navbat: STT, LLM, TTS 1-bayt/to'liq — p50/p90
+npm run diag:latency -- --yes
+```
+
+Debug rejimida UI har navbat uchun STT / LLM / TTS / server va brauzerda
+o'lchangan "ovoz boshlandi" vaqtini ko'rsatadi.
+
 ### STT modellarini solishtirish — `npm run diag:stt`
 
 ```bash

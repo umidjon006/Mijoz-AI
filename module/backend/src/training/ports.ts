@@ -32,6 +32,8 @@ export interface TokenUsage {
    * `outputTokens` ularni ALLAQACHON o'z ichiga oladi (narx shundan hisoblanadi).
    */
   reasoningTokens?: number;
+  /** IXTIYORIY: kirish tokenlaridan qanchasi provayder keshidan olindi (prefiks kesh). */
+  cachedInputTokens?: number;
 }
 
 export interface TrainerLlmRequest<T> {

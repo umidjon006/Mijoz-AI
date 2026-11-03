@@ -255,7 +255,59 @@ const FORMAT_MIME: Record<string, string> = {
 };
 
 export function createOpenAiTts(config: OpenAiVoiceConfig): TtsPort {
+  const speechBody = (req: TtsRequest): Record<string, unknown> => ({
+    model: config.ttsModel,
+    input: req.text,
+    voice: req.voice ?? config.ttsVoice ?? 'alloy',
+    response_format: config.ttsFormat,
+    // Ohang ko'rsatmasi: qo'llamaydigan model uni e'tiborsiz qoldiradi.
+    ...(req.instructions ? { instructions: req.instructions } : {}),
+  });
+
   return {
+    /**
+     * Oqimli sintez: OpenAI `/audio/speech` javobni bo'laklab (chunked)
+     * yuboradi — bo'laklar kelishi bilan uzatiladi. So'rov iterator
+     * iste'mol qilina boshlaganda yuboriladi.
+     */
+    synthesizeStream(req: TtsRequest) {
+      const mime = FORMAT_MIME[config.ttsFormat] ?? 'audio/mpeg';
+      async function* chunks(): AsyncGenerator<Uint8Array> {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+        try {
+          let res: Response;
+          try {
+            res = await fetch(`${config.baseUrl}/audio/speech`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify(speechBody(req)),
+              signal: controller.signal,
+            });
+          } catch (err) {
+            if (controller.signal.aborted) {
+              throw new LlmCallError('timeout', `OpenAI TTS: ${config.timeoutMs} ms ichida javob kelmadi`, { cause: err });
+            }
+            throw new LlmCallError('unknown', `OpenAI TTS: tarmoq xatosi: ${redactSecrets(String(err), config.apiKey).slice(0, 200)}`);
+          }
+          if (!res.ok) throw await failure('OpenAI TTS', res, config.apiKey);
+          const reader = res.body?.getReader();
+          if (!reader) {
+            yield new Uint8Array(await res.arrayBuffer());
+            return;
+          }
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) return;
+            if (value && value.byteLength > 0) yield value;
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      return { mime, chunks: chunks() };
+    },
+
     async synthesize(req: TtsRequest): Promise<TtsResult> {
       const body: Record<string, unknown> = {
         model: config.ttsModel,

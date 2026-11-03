@@ -14,6 +14,8 @@
  * `POST /sessions/:id/voice-turn` SHU plaginga qo'shiladi — yangi plagin
  * yaratilmaydi (pastdagi `registerVoiceRoute` chokiga qarang).
  */
+import { Readable } from 'node:stream';
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -494,9 +496,12 @@ export async function registerTrainingRoutes(
             sellerText: result.sellerText,
             customerText: result.customerText,
             tone: result.tone,
-            // Audio FAQAT shu javobda qaytadi va saqlanmaydi.
+            // Audio FAQAT shu javobda (yoki bir martalik oqim URL'ida) va saqlanmaydi.
             audio: result.audio.toString('base64'),
             audioMime: result.audioMime,
+            ...(result.audioStream
+              ? { audioStreamUrl: `${prefix}/voice-audio/${result.audioStream.id}` }
+              : {}),
             needsRepeat: result.needsRepeat,
             ended: result.ended,
             outcome: result.outcome ?? null,
@@ -506,6 +511,25 @@ export async function registerTrainingRoutes(
           };
         }),
     );
+
+    /**
+     * Mijoz audiosi OQIMI (bir marta, 60 s). `<audio src>` maxsus sarlavha
+     * (Authorization) yubora olmaydi, shuning uchun auth o'rniga id'ning
+     * o'zi ruxsatnoma: tasodifiy UUID, bir martalik, qisqa muddatli
+     * (presigned URL kabi). Boshqa sessiya ma'lumoti bu yerdan olinmaydi.
+     */
+    app.get(`${prefix}/voice-audio/:streamId`, async (req, reply) => {
+      const parsed = z.object({ streamId: z.string().uuid() }).safeParse(req.params);
+      const stream = parsed.success ? voice.openAudioStream(parsed.data.streamId) : null;
+      if (!stream) return reply.code(404).send({ error: 'audio_not_found', stage: 'tts' });
+      const iterator = stream.chunks;
+      async function* asBuffers(): AsyncGenerator<Buffer> {
+        for await (const chunk of iterator) yield Buffer.from(chunk);
+      }
+      reply.header('content-type', stream.mime);
+      reply.header('cache-control', 'no-store');
+      return reply.send(Readable.from(asBuffers()));
+    });
 
     /** `inbound` sessiyada mijozning birinchi gapi — ovozda. */
     app.post(`${prefix}/sessions/:id/opening-audio`, async (req, reply) =>

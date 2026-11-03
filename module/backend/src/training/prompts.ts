@@ -17,7 +17,7 @@ import type { Readiness, TrainingState } from './state.js';
 import { toneListForPrompt } from './voice/tone.js';
 
 /** Prompt versiyasi — holatga yoziladi, keyinchalik A/B taqqoslash uchun. */
-export const PROMPT_VERSION = 'training-v3';
+export const PROMPT_VERSION = 'training-v4';
 
 /** Prompt'ga qo'yiladigan transkript oynasi (oxirgi N navbat). */
 export const TRANSCRIPT_WINDOW = 12;
@@ -102,6 +102,51 @@ export interface TurnSystemPromptInput {
 }
 
 /** Mijoz navbatining system prompti. */
+/**
+ * Barcha sessiyalar va navbatlar uchun BIR XIL qism — prompt BOSHIDA turadi.
+ * OpenAI (va boshqalar) prefiks keshidan foydalanadi: o'zgarmas boshlanish
+ * qancha uzun bo'lsa, har navbatda shuncha kam token qayta hisoblanadi.
+ * Mazmun avvalgi versiya bilan bir xil — faqat TARTIB o'zgardi.
+ */
+export const TURN_STATIC_PREFIX = [
+  'You are role-playing a CUSTOMER in a sales training simulation. The other side is a salesperson (the trainee).',
+  'You are not an assistant and you are not helpful. You are a real, busy, hard-to-please person.',
+  'Your persona, your concerns and your current inner state are given at the END of this message.',
+  '',
+  '## Reply rules',
+  VOICE_RULES,
+  '',
+  UNTRUSTED_SELLER_RULE,
+  '',
+  '## What you know about the offer',
+  OFFER_KNOWLEDGE_RULES,
+  '',
+  '## What to return',
+  'Return JSON only, with exactly these fields:',
+  '{"reply": string, "intent": "continue"|"agrees"|"agrees_next_step"|"refuses"|"ends_call",',
+  ' "deltas": {"patience": int, "trust": int, "interest": int},',
+  ' "objectionRaisedKey": string|null, "objectionsResolvedKeys": string[],',
+  ` "needRevealed": boolean, "nextStep": string|null, "tone": ${toneListForPrompt()}}`,
+  '',
+  'Field meanings:',
+  '- intent "agrees": you accept the offer. Only allowed when the section "Can you agree right now?" says you MAY agree.',
+  '- intent "agrees_next_step": you do not accept yet, but you commit to one concrete next step; put it in "nextStep".',
+  '- intent "refuses" / "ends_call": only when your patience or trust is genuinely low.',
+  '- objectionRaisedKey: the key of the concern you raised in THIS reply, else null. Use the keys listed in "Your concerns", never invent one.',
+  '- objectionsResolvedKeys: keys the seller has now answered to your satisfaction, else [].',
+  '- needRevealed: true only if you just admitted your hidden need.',
+  '- tone: how this reply SOUNDS when spoken. It is a suggestion only — the system clamps it',
+  '  to your inner state, so a warm tone with low trust will simply be ignored.',
+  '',
+  DELTA_RULES,
+].join('\n');
+
+/**
+ * Mijoz navbatining system prompti. Tartib (kesh uchun):
+ *   1. `TURN_STATIC_PREFIX` — hamma uchun bir xil;
+ *   2. persona — sessiya davomida o'zgarmaydi;
+ *   3. o'zgaruvchan qism — e'tirozlar holati, ichki holat, rozilik, tuzatish.
+ */
 export function buildTurnSystemPrompt({
   persona,
   archetype,
@@ -111,9 +156,12 @@ export function buildTurnSystemPrompt({
 }: TurnSystemPromptInput): string {
   const lowPatience = state.patience <= archetype.lose.patienceBelow + 10;
 
+  // --- 2. Sessiya davomida o'zgarmaydi ------------------------------------
   const sections: string[] = [
-    'You are role-playing a CUSTOMER in a sales training simulation. The other side is a salesperson (the trainee).',
-    'You are not an assistant and you are not helpful. You are a real, busy, hard-to-please person.',
+    TURN_STATIC_PREFIX,
+    '',
+    '## Language',
+    LANGUAGE_RULE[persona.language],
     '',
     '## Who you are',
     `Name: ${persona.name}`,
@@ -133,8 +181,8 @@ export function buildTurnSystemPrompt({
     '## Facts you keep to yourself unless it comes up naturally',
     formatList(persona.hiddenFacts),
     '',
-    '## What you know about the offer',
-    OFFER_KNOWLEDGE_RULES,
+    '## How you behave',
+    formatList(archetype.behaviorRules),
   ];
 
   if (persona.hiddenNeed) {
@@ -143,16 +191,20 @@ export function buildTurnSystemPrompt({
       '## Your real underlying need (HIDDEN)',
       persona.hiddenNeed,
       'You never state this on your own. You only admit it if the seller asks a genuine open question about your situation, goal or current problem.',
+    );
+  }
+
+  // --- 3. Har navbatda o'zgaradi (OXIRIDA) ---------------------------------
+  if (persona.hiddenNeed) {
+    sections.push(
+      '',
       state.flags.needRevealed
-        ? 'You have already admitted it in this call.'
-        : 'You have NOT admitted it yet.',
+        ? 'You have already admitted your hidden need in this call.'
+        : 'You have NOT admitted your hidden need yet.',
     );
   }
 
   sections.push(
-    '',
-    '## How you behave',
-    formatList(archetype.behaviorRules),
     '',
     '## Your concerns (objections)',
     'Raise them ONE AT A TIME, never several at once, and only in your own words.',
@@ -178,31 +230,6 @@ export function buildTurnSystemPrompt({
           formatList(readiness.blockers),
           'If the seller tries to close now, do not agree. Raise your next concern instead, or ask what you still need to know.',
         ].join('\n'),
-    '',
-    '## Reply rules',
-    LANGUAGE_RULE[persona.language],
-    VOICE_RULES,
-    '',
-    UNTRUSTED_SELLER_RULE,
-    '',
-    '## What to return',
-    'Return JSON only, with exactly these fields:',
-    '{"reply": string, "intent": "continue"|"agrees"|"agrees_next_step"|"refuses"|"ends_call",',
-    ' "deltas": {"patience": int, "trust": int, "interest": int},',
-    ' "objectionRaisedKey": string|null, "objectionsResolvedKeys": string[],',
-    ` "needRevealed": boolean, "nextStep": string|null, "tone": ${toneListForPrompt()}}`,
-    '',
-    'Field meanings:',
-    '- intent "agrees": you accept the offer. Only allowed when the section above says you MAY agree.',
-    '- intent "agrees_next_step": you do not accept yet, but you commit to one concrete next step; put it in "nextStep".',
-    '- intent "refuses" / "ends_call": only when your patience or trust is genuinely low.',
-    '- objectionRaisedKey: the key of the concern you raised in THIS reply, else null. Use the keys listed above, never invent one.',
-    '- objectionsResolvedKeys: keys the seller has now answered to your satisfaction, else [].',
-    '- needRevealed: true only if you just admitted your hidden need.',
-    '- tone: how this reply SOUNDS when spoken. It is a suggestion only — the system clamps it',
-    '  to your inner state, so a warm tone with low trust will simply be ignored.',
-    '',
-    DELTA_RULES,
   );
 
   if (correction) {

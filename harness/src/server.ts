@@ -26,6 +26,7 @@ import { BusinessDataError, describeBusinessData, resolveBusinessData } from './
 import {
   createTrainerLlm,
   describeLlm,
+  latencyWarnings,
   MissingLlmKeyError,
   printDemoBanner,
   printMissingKeyBanner,
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
   // Kalit yo'q bo'lsa JIM demo'ga o'tilmaydi: yo DEMO_LLM=1, yo to'xtash.
   const config = resolveProviderConfig();
   console.log(startupLine(config));
+  for (const warning of latencyWarnings(config)) console.warn(warning);
   let turnLlm;
   let scoringResolved;
   try {

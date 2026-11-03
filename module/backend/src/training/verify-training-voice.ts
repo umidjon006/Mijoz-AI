@@ -15,6 +15,17 @@ import { createTrainingEngine } from './engine.js';
 import { isTrainingError, TrainingError } from './errors.js';
 import { classifyHeardUzText } from './language.js';
 import { describeApiError } from '../../../frontend/src/lib/api-error.js';
+import {
+  canRecord,
+  ensureAudioRunning,
+  INITIAL_RECORD_STATE,
+  MIN_RECORDING_SECONDS,
+  recordingStep,
+  type RecordEvent,
+  type RecordMode,
+  type RecordState,
+} from '../../../frontend/src/lib/voice-recording.js';
+import { AudioStreamRegistry, splitForParallelTts } from './voice/audio-stream.js';
 import type { GetBusinessProfile, TrainingContext, WithTenant } from './ports.js';
 import { parseBusinessProfile } from './profile-schema.js';
 import { errorStage, registerTrainingRoutes } from './routes.js';
@@ -23,6 +34,7 @@ import { createScoringService } from './scoring/scoring.js';
 import { initState, type TrainingState } from './state.js';
 import {
   assert,
+  assertDeepEqual,
   assertEqual,
   check,
   checkAsync,
@@ -1035,6 +1047,66 @@ async function dbBlock(): Promise<void> {
     await app.close();
   });
 
+  await checkAsync(report, "oqimli TTS: javob TTS'ni KUTMAYDI, audio oqim URL orqali keladi", async () => {
+    const llm = new FakeTrainerLlm([personaScript('outbound'), fakeTurn({ reply: 'Narxi qancha bo\'ladi?' })]);
+    const { engine, sessionId } = await startSession(llm, 'outbound');
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const streamed: string[] = [];
+    const tts: TtsPort = {
+      async synthesize() {
+        throw new Error('oqim bor — butun sintez chaqirilmasligi kerak');
+      },
+      synthesizeStream(req) {
+        streamed.push(req.text);
+        async function* chunks(): AsyncGenerator<Uint8Array> {
+          await gate; // TTS "sekin" — javob uni kutmasligi kerak
+          yield new Uint8Array([1, 2, 3]);
+        }
+        return { mime: 'audio/mpeg', chunks: chunks() };
+      },
+    };
+    const voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: new FakeStt(['Assalomu alaykum, narx haqida gaplashsak']),
+      tts,
+      models: { stt: 'fake-stt', tts: 'fake-tts' },
+      getBusinessProfile,
+    });
+    const result = await voice.takeVoiceTurn(ctx, { sessionId, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+    assert(result.audioStream !== undefined, 'oqim id bor');
+    assertEqual(result.audio.length, 0, "javobda audio yo'q");
+    assertEqual(result.timings.ttsStreamed, true, 'ttsStreamed');
+    assertEqual(streamed.length, 1, 'TTS darhol boshlandi');
+    release();
+    const opened = voice.openAudioStream(result.audioStream!.id);
+    assert(opened !== null, 'oqim ochildi');
+    const out: number[] = [];
+    for await (const chunk of opened.chunks) out.push(...chunk);
+    assertDeepEqual(out, [1, 2, 3], 'audio baytlari');
+  });
+
+  await checkAsync(report, "oqimsiz TTS: 2 gap PARALLEL sintez qilinadi va tartib bilan qo'shiladi", async () => {
+    const llm = new FakeTrainerLlm([personaScript('outbound'), fakeTurn({ reply: 'Narxi qancha? Menga tanishim aytgandi.' })]);
+    const { engine, sessionId } = await startSession(llm, 'outbound');
+    const tts = new FakeTts();
+    const voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: new FakeStt(['Assalomu alaykum, narx haqida gaplashsak']),
+      tts,
+      models: { stt: 'fake-stt', tts: 'fake-tts' },
+      getBusinessProfile,
+    });
+    const before = tts.calls.length;
+    await voice.takeVoiceTurn(ctx, { sessionId, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+    const texts = tts.calls.slice(before).map((c) => c.text);
+    assertDeepEqual(texts, ['Narxi qancha?', 'Menga tanishim aytgandi.'], 'ikki parallel so\'rov, tartibda');
+  });
+
   await checkAsync(report, 'route: voice berilmasa /voice-turn YO\'Q (404)', async () => {
     const llm = new FakeTrainerLlm([personaScript('outbound')]);
     const engine = makeEngine(llm);
@@ -1128,6 +1200,210 @@ check(report, "UI xabari: xom JSON emas, bosqich o'zbekcha", () => {
   // 3) eski server: stage yo'q, xom JSON -> umumiy xabar.
   const legacy = describeApiError(new Error('500 {"error":"internal_error"}'));
   assert(!legacy.includes('{'), "xom JSON ko'rsatilmaydi");
+});
+
+// ---------------------------------------------------------------------------
+// 8. Yozish tugmasi (holat mashinasi), AudioContext, audio oqimi
+// ---------------------------------------------------------------------------
+section('8. Yozish tugmasi, AudioContext va audio oqimi (sof)');
+
+/** Hodisalar ketma-ketligini o'tkazib, buyruqlarni yig'adi. */
+function play(mode: RecordMode, events: RecordEvent[], start: RecordState = INITIAL_RECORD_STATE) {
+  let state = start;
+  const commands: string[] = [];
+  for (const event of events) {
+    const step = recordingStep(state, event, mode);
+    state = step.state;
+    if (step.command) commands.push(step.command);
+  }
+  return { state, commands };
+}
+
+check(report, "toggle: bosish -> yozish, yana bosish -> yuborish", () => {
+  const r = play('toggle', [
+    { type: 'click' },
+    { type: 'started' },
+    { type: 'click' },
+    { type: 'stopped', seconds: 2.4 },
+  ]);
+  assertDeepEqual(r.commands, ['start', 'stop', 'send'], 'buyruqlar');
+  assertEqual(r.state.phase, 'sending', 'yuborilmoqda');
+  assertEqual(play('toggle', [{ type: 'sent' }], r.state).state.phase, 'idle', 'tugagach idle');
+});
+
+check(report, "REGRESSIYA: 'juda qisqa' -> yumshoq xabar, serverga yuborilmaydi, yozish DARHOL yana mumkin", () => {
+  const short = play('toggle', [
+    { type: 'click' },
+    { type: 'started' },
+    { type: 'click' },
+    { type: 'stopped', seconds: 0 },
+  ]);
+  assert(!short.commands.includes('send'), "server chaqirilmaydi");
+  assertEqual(short.state.phase, 'idle', 'idle');
+  assertEqual(short.state.notice, 'too_short', 'yumshoq xabar');
+  assert(canRecord(short.state, false), 'tugma ishlaydi');
+  const again = play('toggle', [{ type: 'click' }], short.state);
+  assertDeepEqual(again.commands, ['start'], 'darhol yana yozish boshlandi');
+  assertEqual(again.state.notice, null, 'xabar tozalandi');
+  // Chegara: 0.4 s dan qisqasi tashlanadi.
+  const edge = play('toggle', [
+    { type: 'click' },
+    { type: 'started' },
+    { type: 'click' },
+    { type: 'stopped', seconds: MIN_RECORDING_SECONDS - 0.01 },
+  ]);
+  assert(!edge.commands.includes('send'), `${MIN_RECORDING_SECONDS} s dan qisqa — yuborilmaydi`);
+});
+
+check(report, "hold: mikrofon ochilguncha qo'yib yuborilsa — ochilishi bilan to'xtaydi (osilib qolmaydi)", () => {
+  const r = play('hold', [{ type: 'press' }, { type: 'release' }, { type: 'started' }]);
+  assertDeepEqual(r.commands, ['start', 'stop'], "start, keyin darhol stop");
+  assertEqual(r.state.phase, 'stopping', 'to\'xtatilmoqda');
+});
+
+check(report, "bekor qilish: yozuv tashlanadi, keyingi 'stopped' yuborilmaydi", () => {
+  const r = play('toggle', [{ type: 'click' }, { type: 'started' }, { type: 'cancel' }, { type: 'stopped', seconds: 3 }]);
+  assertDeepEqual(r.commands, ['start', 'discard'], "faqat tashlash");
+  assertEqual(r.state.phase, 'idle', 'idle');
+  // Mikrofon ochilmasdan bekor qilinsa, keyin ochilgan yozuv ham tashlanadi.
+  const early = play('toggle', [{ type: 'click' }, { type: 'cancel' }, { type: 'started' }]);
+  assertDeepEqual(early.commands, ['start', 'discard', 'discard'], 'kech ochilgan yozuv ham tashlanadi');
+});
+
+check(report, "rejimlar aralashmaydi, o'chirilgan holatda boshlanmaydi, 30 s da avtomatik yuboriladi", () => {
+  assertDeepEqual(play('toggle', [{ type: 'press' }]).commands, [], "toggle'da press e'tiborsiz");
+  assertDeepEqual(play('hold', [{ type: 'click' }]).commands, [], "hold'da click e'tiborsiz");
+  assertEqual(recordingStep(INITIAL_RECORD_STATE, { type: 'click' }, 'toggle', true).command, null, "o'chiq");
+  const auto = play('toggle', [{ type: 'click' }, { type: 'started' }, { type: 'stopped', seconds: 30 }]);
+  assertDeepEqual(auto.commands, ['start', 'send'], 'maksimal vaqtda yuboriladi');
+  const failed = play('toggle', [{ type: 'click' }, { type: 'startFailed' }]);
+  assertEqual(failed.state.phase, 'idle', "mikrofon ruxsati yo'q — idle");
+});
+
+await checkAsync(report, "AudioContext 'suspended' -> resume() chaqiriladi (0.00 s yozuv sababi)", async () => {
+  let resumed = 0;
+  const ctx = {
+    state: 'suspended',
+    async resume() {
+      resumed += 1;
+      ctx.state = 'running';
+    },
+  };
+  assertEqual(await ensureAudioRunning(ctx), true, 'ishga tushdi');
+  assertEqual(resumed, 1, 'resume chaqirildi');
+  assertEqual(await ensureAudioRunning(ctx), true, 'ishlab turibdi');
+  assertEqual(resumed, 1, 'qayta chaqirilmaydi');
+  const broken = {
+    state: 'suspended',
+    async resume() {
+      throw new Error('not allowed');
+    },
+  };
+  assertEqual(await ensureAudioRunning(broken), false, 'xato — false');
+});
+
+async function* fromList(chunks: Uint8Array[], delayMs = 0): AsyncGenerator<Uint8Array> {
+  for (const chunk of chunks) {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    yield chunk;
+  }
+}
+const bytes = (...values: number[]): Uint8Array => new Uint8Array(values);
+async function collect(iterable: AsyncIterable<Uint8Array>): Promise<number[]> {
+  const out: number[] = [];
+  for await (const chunk of iterable) out.push(...chunk);
+  return out;
+}
+
+await checkAsync(report, "audio oqimi: bo'laklar tartibda, kech kelganlari ham; bir martalik", async () => {
+  const registry = new AudioStreamRegistry();
+  let stats: { firstByteMs: number | null; bytes: number } | null = null;
+  const handle = registry.open({
+    mime: 'audio/mpeg',
+    source: fromList([bytes(1, 2), bytes(3), bytes(4, 5)], 5),
+    onDone: (s) => {
+      stats = s;
+    },
+  });
+  const taken = registry.take(handle.id);
+  assert(taken !== null, 'olindi');
+  assertEqual(taken.mime, 'audio/mpeg', 'mime');
+  assertDeepEqual(await collect(taken.chunks), [1, 2, 3, 4, 5], 'tartib');
+  assertEqual(registry.take(handle.id), null, 'ikkinchi marta — null');
+  assertEqual(registry.size, 0, 'xotiradan o\'chirildi');
+  assertEqual((stats as { bytes: number } | null)?.bytes, 5, 'statistika');
+});
+
+await checkAsync(report, "audio oqimi: noma'lum id, manba xatosi, muddat va hajm chegarasi", async () => {
+  const registry = new AudioStreamRegistry({ ttlMs: 30, maxBytes: 4 });
+  assertEqual(registry.take('00000000-0000-0000-0000-000000000000'), null, "noma'lum");
+
+  async function* failing(): AsyncGenerator<Uint8Array> {
+    yield bytes(1);
+    throw new Error('TTS uzildi');
+  }
+  const bad = registry.open({ mime: 'audio/mpeg', source: failing() });
+  let caught: unknown;
+  try {
+    await collect(registry.take(bad.id)!.chunks);
+  } catch (err) {
+    caught = err;
+  }
+  assert(caught instanceof Error && caught.message === 'TTS uzildi', 'xato iste\'molchiga yetadi');
+
+  const big = registry.open({ mime: 'audio/mpeg', source: fromList([bytes(1, 2, 3), bytes(4, 5, 6)]) });
+  let tooBig: unknown;
+  try {
+    await collect(registry.take(big.id)!.chunks);
+  } catch (err) {
+    tooBig = err;
+  }
+  assert(tooBig instanceof Error && tooBig.message.includes('hajm'), 'hajm chegarasi');
+
+  const old = registry.open({ mime: 'audio/mpeg', source: fromList([bytes(1)]) });
+  await new Promise((r) => setTimeout(r, 60));
+  assertEqual(registry.take(old.id), null, "muddati o'tgan oqim — null");
+});
+
+check(report, "oqimsiz TTS: javob gaplarga bo'linadi (ko'pi bilan 2), qisqa bo'lak qo'shiladi", () => {
+  assertDeepEqual(splitForParallelTts('Narxi qancha? Menga oldin aytishgandi.'), ['Narxi qancha?', 'Menga oldin aytishgandi.'], '2 gap');
+  assertDeepEqual(splitForParallelTts('Bitta gap xolos'), ['Bitta gap xolos'], '1 gap');
+  assertDeepEqual(splitForParallelTts('Ha. Mayli, keyin gaplashamiz. Rahmat sizga katta.'), ['Ha. Mayli, keyin gaplashamiz.', 'Rahmat sizga katta.'], "qisqa 'Ha.' qo'shildi");
+  assertEqual(splitForParallelTts('Bir. Ikki gapim bor. Uch gapim ham bor. To\'rtinchisi ham.').length, 2, 'ko\'pi bilan 2');
+});
+
+await checkAsync(report, "route GET /voice-audio/:id: 200 oqim, ikkinchi marta va noma'lum — 404 (stage tts)", async () => {
+  const registry = new AudioStreamRegistry();
+  const handle = registry.open({ mime: 'audio/mpeg', source: fromList([bytes(7, 8), bytes(9)], 2) });
+  const fakeVoice = {
+    takeVoiceTurn: async () => {
+      throw new Error('kerak emas');
+    },
+    speakOpeningLine: async () => null,
+    openAudioStream: (id: string) => registry.take(id),
+  };
+  const app = Fastify({ logger: false });
+  await registerTrainingRoutes(app, {
+    engine: {} as never,
+    scoring: {} as never,
+    withTenant: (async () => undefined) as never,
+    voice: fakeVoice as never,
+    getContext: () => ({ businessId: randomUUID(), userId: randomUUID(), seatId: null }),
+    config: { autoScoreOnEnd: false },
+  });
+  await app.ready();
+  const url = `/api/v1/training/voice-audio/${handle.id}`;
+  const ok = await app.inject({ url });
+  assertEqual(ok.statusCode, 200, '200');
+  assertEqual(ok.headers['content-type'], 'audio/mpeg', 'mime');
+  assertEqual(ok.headers['cache-control'], 'no-store', 'keshlanmaydi');
+  assertDeepEqual([...ok.rawPayload], [7, 8, 9], 'baytlar');
+  const again = await app.inject({ url });
+  assertEqual(again.statusCode, 404, 'bir martalik');
+  assertEqual((again.json() as { stage: string }).stage, 'tts', 'bosqich');
+  const junk = await app.inject({ url: '/api/v1/training/voice-audio/not-a-uuid' });
+  assertEqual(junk.statusCode, 404, "noto'g'ri id");
+  await app.close();
 });
 
 // ---------------------------------------------------------------------------

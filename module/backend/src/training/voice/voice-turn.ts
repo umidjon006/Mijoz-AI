@@ -43,6 +43,11 @@ import * as voiceRepo from './repo.js';
 import { normalizeForSpeech } from './speech-text.js';
 import { clampTone, DEFAULT_TONE, toneInstruction, type VoiceTone } from './tone.js';
 import { checkWav, parseWav } from './wav.js';
+import {
+  AudioStreamRegistry,
+  splitForParallelTts,
+  type AudioStreamHandle,
+} from './audio-stream.js';
 
 /** Narxlar foydalanuvchi tomonidan to'ldiriladi (provayderning narx sahifasidan). */
 export interface VoiceCostRates {
@@ -74,6 +79,14 @@ export interface VoiceTurnDeps {
   maxMinutesPerSession?: number | undefined;
   logger?: TrainingLogger | undefined;
   now?: (() => Date) | undefined;
+  /**
+   * Mijoz audiosini OQIM bilan uzatish (`tts.synthesizeStream` bo'lsa).
+   * Default `true`: navbat javobi LLM tugashi bilan qaytadi, audio esa
+   * `audioStream` URL'idan kelishi bilan ijro etiladi.
+   */
+  streamTts?: boolean | undefined;
+  /** Testlar uchun; default — xizmatning o'z registri. */
+  audioStreams?: AudioStreamRegistry | undefined;
 }
 
 export interface VoiceTurnInput {
@@ -85,8 +98,11 @@ export interface VoiceTurnInput {
 export interface VoiceTimings {
   sttMs: number;
   llmMs: number;
+  /** Oqimli TTS'da 0 — audio javobdan KEYIN, URL orqali keladi (`ttsStreamed`). */
   ttsMs: number;
   totalMs: number;
+  /** `true` — TTS oqim bilan: ijro birinchi bo'lak kelishi bilan boshlanadi. */
+  ttsStreamed?: boolean;
 }
 
 export interface VoiceTurnResult {
@@ -96,6 +112,8 @@ export interface VoiceTurnResult {
   tone: VoiceTone;
   audio: Buffer;
   audioMime: string;
+  /** Oqimli TTS: audio shu id bo'yicha (bir marta) olinadi; `audio` bo'sh bo'ladi. */
+  audioStream?: AudioStreamHandle;
   timings: VoiceTimings;
   /** `true` — nutq tanilmadi: holat O'ZGARMADI, navbat sanalmadi. */
   needsRepeat: boolean;
@@ -123,6 +141,11 @@ export interface VoiceService {
     ctx: TrainingContext,
     input: { sessionId: string },
   ): Promise<VoiceSpeech | null>;
+  /**
+   * Oqimli audio (bir marta). Id — taxmin qilib bo'lmaydigan UUID, 60 s yashaydi.
+   * Topilmasa `null` (route 404 beradi).
+   */
+  openAudioStream(id: string): { mime: string; chunks: AsyncIterable<Uint8Array> } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +232,8 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
   const { engine, withTenant, stt, tts, models } = deps;
   const now = deps.now ?? ((): Date => new Date());
   // Eng kam 1 SEKUND (daqiqa emas) — testlar kichik byudjetni ham sinay olsin.
+  const streaming = deps.streamTts ?? true;
+  const audioStreams = deps.audioStreams ?? new AudioStreamRegistry();
   const maxSeconds = Math.max(
     1,
     (deps.maxMinutesPerSession ?? VOICE_DEFAULT_MAX_MINUTES) * 60,
@@ -230,24 +255,35 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
   ): Promise<{ audio: Buffer; mime: string; ms: number; chars: number }> {
     const speech = normalizeForSpeech(text, lang);
     const startedMs = Date.now();
-    let out;
-    try {
-      out = await tts.synthesize({
-        text: speech,
+    const request = (part: string) =>
+      tts.synthesize({
+        text: part,
         lang,
         tone,
         instructions: toneInstruction(tone),
         ...(models.voice ? { voice: models.voice } : {}),
       });
+    try {
+      // Oqimsiz TTS: gaplar PARALLEL sintez qilinadi (vaqt ≈ eng uzun gap,
+      // yig'indi emas). MP3 bo'laklarini ketma-ket qo'shish to'g'ri fayl
+      // beradi; boshqa formatda (WAV sarlavhasi) — bitta so'rov.
+      const parts = splitForParallelTts(speech);
+      let audio: Buffer;
+      let mime: string;
+      const outs = parts.length > 1 ? await Promise.all(parts.map(request)) : [];
+      if (outs.length > 1 && outs.every((o) => o.mime === 'audio/mpeg')) {
+        audio = Buffer.concat(outs.map((o) => o.audio));
+        mime = 'audio/mpeg';
+      } else {
+        // Bitta gap yoki MP3 emas (bo'laklarni qo'shib bo'lmaydi) — bitta so'rov.
+        const out = await request(speech);
+        audio = out.audio;
+        mime = out.mime;
+      }
+      return { audio, mime, ms: Date.now() - startedMs, chars: speech.length };
     } catch (err) {
       throw new TrainingError('voice_tts_failed', `ovoz yaratilmadi: ${describeLlmError(err)}`, err);
     }
-    return {
-      audio: out.audio,
-      mime: out.mime,
-      ms: out.latencyMs > 0 ? out.latencyMs : Date.now() - startedMs,
-      chars: speech.length,
-    };
   }
 
   /** STT ga beriladigan so'z yordamchilari: lug'at + taklif NOMLARI. */
@@ -426,6 +462,10 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
         throw asVoiceError(err);
       }
     },
+
+    openAudioStream(id) {
+      return audioStreams.take(id);
+    },
   };
 
   async function takeVoiceTurnInner(
@@ -435,8 +475,12 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
     const totalStartedMs = Date.now();
     const { tooShort, durationSec } = validateVoiceAudio(input.audio, input.mime);
 
-    // Sessiyani oldin o'qiymiz: til, holat va arxetip kerak.
-    const session = await engine.getSession(ctx, { sessionId: input.sessionId });
+    // Sessiya (til, holat) va STT so'z ishoralari bir-biriga bog'liq emas —
+    // PARALLEL o'qiladi.
+    const [session, hints] = await Promise.all([
+      engine.getSession(ctx, { sessionId: input.sessionId }),
+      tooShort ? Promise.resolve<string[]>([]) : sttHints(ctx.businessId),
+    ]);
     if (session.status !== 'active') {
       throw new TrainingError('session_not_active', `sessiya holati: ${session.status}`);
     }
@@ -467,7 +511,6 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       let sttMs = 0;
       let sttRejected: string | undefined;
       if (!tooShort) {
-        const hints = await sttHints(ctx.businessId);
         let heard;
         try {
           heard = await stt.transcribeShort({
@@ -518,8 +561,43 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       const llmMs = Date.now() - llmStartedMs;
 
       // --- Ovoz ---------------------------------------------------------
+      // Oqimli TTS bo'lsa — sintez SHU ZAHOTI boshlanadi va javob uni
+      // kutmasdan qaytadi; brauzer `audioStream` URL'idan birinchi bo'lak
+      // kelishi bilan ijroni boshlaydi.
       const tone = turn.meta.tone;
-      const spoken = await speak(turn.customerReply, lang, tone);
+      let spoken: Awaited<ReturnType<typeof speak>>;
+      let audioStream: AudioStreamHandle | undefined;
+      if (streaming && tts.synthesizeStream) {
+        const speech = normalizeForSpeech(turn.customerReply, lang);
+        const stream = tts.synthesizeStream({
+          text: speech,
+          lang,
+          tone,
+          instructions: toneInstruction(tone),
+          ...(models.voice ? { voice: models.voice } : {}),
+        });
+        const sessionId = input.sessionId;
+        audioStream = audioStreams.open({
+          mime: stream.mime,
+          source: stream.chunks,
+          onDone: (stats) => {
+            if (stats.error !== undefined) {
+              deps.logger?.warn(
+                { sessionId, stage: 'tts' },
+                `TTS oqimi xato bilan tugadi: ${describeLlmError(stats.error)}`,
+              );
+            } else {
+              deps.logger?.info(
+                { sessionId, ttsFirstByteMs: stats.firstByteMs, ttsTotalMs: stats.totalMs, bytes: stats.bytes },
+                `[voice] tts oqimi: birinchi bayt ${stats.firstByteMs ?? '-'} ms, jami ${stats.totalMs} ms`,
+              );
+            }
+          },
+        });
+        spoken = { audio: Buffer.alloc(0), mime: stream.mime, ms: 0, chars: speech.length };
+      } else {
+        spoken = await speak(turn.customerReply, lang, tone);
+      }
 
       // --- Telemetriya: IKKI navbatga ham `meta` ------------------------
       // Motor ikki qatorni ketma-ket yozdi; qulf ostida ekanmiz, demak
@@ -563,7 +641,8 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
         tone,
         audio: spoken.audio,
         audioMime: spoken.mime,
-        timings: { sttMs, llmMs, ttsMs: spoken.ms, totalMs },
+        timings: { sttMs, llmMs, ttsMs: spoken.ms, totalMs, ...(audioStream ? { ttsStreamed: true } : {}) },
+        ...(audioStream ? { audioStream } : {}),
         needsRepeat: false,
         ended: turn.ended,
         outcome: turn.outcome,

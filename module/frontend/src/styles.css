@@ -376,6 +376,32 @@
   opacity: 0.6;
 }
 
+.mq-rec-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #fff;
+  background: var(--mq-bad);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mq-rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  animation: mq-rec-blink 1s steps(2, start) infinite;
+}
+
+@keyframes mq-rec-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
 .mq-improvement {
   background: #fff;
   border: 1px solid var(--mq-line);

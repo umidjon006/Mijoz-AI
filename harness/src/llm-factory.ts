@@ -43,6 +43,12 @@ export const DEFAULT_SCORING_MODEL = 'claude-sonnet-5-5';
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const DEFAULT_SCORING_TIMEOUT_MS = 120_000;
 export const DEFAULT_JSON_MODE: JsonMode = 'object';
+/**
+ * Mijoz navbati javobi kichik (JSON + ko'pi bilan 2 gap, ~150 token).
+ * Kichik chegara: model "uzun gapirib ketsa" ham kechikish oshmaydi.
+ * Persona (katta JSON) va boshqa bosqichlar — `maxTokens` (1024).
+ */
+export const TURN_STAGE_MAX_TOKENS: Readonly<Record<string, number>> = { 'training.turn': 400 };
 /** Baholash JSON'i katta (mezonlar + coaching) — 1024 token kesib qo'yardi. */
 export const SCORING_MAX_TOKENS = 4096;
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'] as const;
@@ -234,6 +240,7 @@ export function createTrainerLlm({
       maxTokensParam: config.maxTokensParam,
       timeoutMs,
       ...(maxTokens ? { maxTokens } : {}),
+      ...(scoring ? {} : { stageMaxTokens: TURN_STAGE_MAX_TOKENS }),
       ...(effort ? { reasoningEffort: effort } : {}),
     }),
     provider: 'openai-compatible',
@@ -341,6 +348,23 @@ function shortPath(path: string): string {
   const marker = `${'harness'}/`;
   const at = path.lastIndexOf(marker);
   return at >= 0 ? path.slice(at) : path;
+}
+
+/**
+ * Kechikish bo'yicha ogohlantirishlar (startda chiqariladi). Mijoz navbati
+ * jonli suhbat — reasoning yoqilgan bo'lsa har javob bir necha soniya kechikadi.
+ */
+export function latencyWarnings(config: ProviderConfig): string[] {
+  const out: string[] = [];
+  if (config.demoRequested || config.provider !== 'openai-compatible') return out;
+  if (config.reasoningEffort !== 'none' && config.reasoningEffort !== 'minimal') {
+    out.push(
+      `Diqqat: mijoz bosqichida reasoning ${config.reasoningEffort ?? "provayder default'i"} — ` +
+        'har navbat sekinlashadi. Tavsiya: TRAINER_REASONING_EFFORT=none ' +
+        "(rad etilsa [llm] param-fallback qatori chiqadi va reasoning provayder default'iga qaytadi).",
+    );
+  }
+  return out;
 }
 
 /** Qaysi model ishlayotganini bir qatorda ko'rsatadi. */

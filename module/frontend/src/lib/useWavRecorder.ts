@@ -13,25 +13,32 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { ensureAudioRunning, MIN_RECORDING_SECONDS } from './voice-recording.js';
+
 export const WAV_SAMPLE_RATE = 16_000;
 
 export interface UseWavRecorderOptions {
   /** Shu vaqtdan oshsa yozuv O'ZI to'xtaydi (sekund). */
   maxSeconds?: number;
-  /** Bundan qisqa yozuv yuborilmaydi (sekund). */
+  /** Bundan qisqa yozuv uchun WAV yasalmaydi (sekund). */
   minSeconds?: number;
   /**
    * `maxSeconds` ga yetib yozuv O'ZI to'xtaganda chaqiriladi. Bo'lmasa
    * yozuv shunchaki tashlab yuborilardi — shuning uchun chaqiruvchi uni
    * aynan `stop()` dagidek yuborishi mumkin.
    */
-  onAutoStop?: (wav: Blob | null) => void;
+  onAutoStop?: (result: RecordingResult) => void;
+}
+
+/** Yozuv natijasi: juda qisqa bo'lsa `wav` = `null` (bu XATO emas). */
+export interface RecordingResult {
+  wav: Blob | null;
+  seconds: number;
 }
 
 export type RecorderError =
   | { kind: 'permission'; message: string }
-  | { kind: 'unsupported'; message: string }
-  | { kind: 'too_short'; message: string };
+  | { kind: 'unsupported'; message: string };
 
 export interface WavRecorder {
   recording: boolean;
@@ -40,9 +47,12 @@ export interface WavRecorder {
   /** Joriy yozuv davomiyligi (sekund). */
   seconds: number;
   error: RecorderError | null;
-  start: () => Promise<void>;
-  /** To'xtatadi va WAV qaytaradi; juda qisqa bo'lsa `null`. */
-  stop: () => Promise<Blob | null>;
+  /** Yozishni boshlaydi; mikrofon ochilmasa `false`. */
+  start: () => Promise<boolean>;
+  /** To'xtatadi; juda qisqa bo'lsa `wav` = `null` (xato EMAS — qayta yozish mumkin). */
+  stop: () => Promise<RecordingResult>;
+  /** Joriy yozuvni tashlaydi (hech narsa yuborilmaydi). */
+  cancel: () => void;
   /** Mikrofonni butunlay bo'shatadi (sahifadan chiqishda). */
   release: () => void;
 }
@@ -86,7 +96,7 @@ export function encodeWav(chunks: readonly Float32Array[], sampleRate: number): 
 
 export function useWavRecorder(options: UseWavRecorderOptions = {}): WavRecorder {
   const maxSeconds = options.maxSeconds ?? 30;
-  const minSeconds = options.minSeconds ?? 0.3;
+  const minSeconds = options.minSeconds ?? MIN_RECORDING_SECONDS;
 
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
@@ -169,11 +179,14 @@ export function useWavRecorder(options: UseWavRecorderOptions = {}): WavRecorder
     silent.connect(context.destination);
   }, [maxSeconds]);
 
-  const start = useCallback(async (): Promise<void> => {
-    if (recordingRef.current) return;
+  const start = useCallback(async (): Promise<boolean> => {
+    if (recordingRef.current) return true;
     setError(null);
     try {
       await ensureAudio();
+      // Kontekst `suspended` bo'lsa `onaudioprocess` ishlamaydi va har yozuv
+      // 0.00 s bo'lib qoladi — har safar `resume()` qilamiz.
+      if (contextRef.current) await ensureAudioRunning(contextRef.current);
     } catch (err) {
       const known = err as RecorderError;
       setError(
@@ -184,44 +197,48 @@ export function useWavRecorder(options: UseWavRecorderOptions = {}): WavRecorder
               message: err instanceof Error ? err.message : String(err),
             },
       );
-      return;
+      return false;
     }
     chunksRef.current = [];
     samplesRef.current = 0;
     setSeconds(0);
     recordingRef.current = true;
     setRecording(true);
+    return true;
   }, [ensureAudio]);
 
-  const stop = useCallback(async (): Promise<Blob | null> => {
-    if (!recordingRef.current) return null;
+  const stop = useCallback(async (): Promise<RecordingResult> => {
+    const rate = contextRef.current?.sampleRate ?? WAV_SAMPLE_RATE;
+    const elapsed = samplesRef.current / rate;
+    if (!recordingRef.current) return { wav: null, seconds: 0 };
     recordingRef.current = false;
     setRecording(false);
 
-    const rate = contextRef.current?.sampleRate ?? WAV_SAMPLE_RATE;
-    const elapsed = samplesRef.current / rate;
     const chunks = chunksRef.current;
     chunksRef.current = [];
+    samplesRef.current = 0;
 
-    if (elapsed < minSeconds) {
-      setError({
-        kind: 'too_short',
-        message: `Juda qisqa (${elapsed.toFixed(2)} s) — tugmani biroz uzoqroq bosib turing.`,
-      });
-      return null;
-    }
-
-    return encodeWav(chunks, rate);
+    // Juda qisqa — XATO emas: chaqiruvchi yumshoq xabar ko'rsatadi.
+    if (elapsed < minSeconds) return { wav: null, seconds: elapsed };
+    return { wav: encodeWav(chunks, rate), seconds: elapsed };
   }, [minSeconds]);
+
+  const cancel = useCallback((): void => {
+    recordingRef.current = false;
+    chunksRef.current = [];
+    samplesRef.current = 0;
+    setRecording(false);
+    setSeconds(0);
+  }, []);
 
   // `onaudioprocess` ichidan chaqirish uchun oxirgi `stop` ni saqlaymiz.
   // Vaqt tugaganda yozuv YO'QOLMAYDI: `onAutoStop` ga beriladi.
   const onAutoStop = options.onAutoStop;
   useEffect(() => {
     autoStopRef.current = () => {
-      void stop().then((wav) => onAutoStop?.(wav));
+      void stop().then((result) => onAutoStop?.(result));
     };
   }, [stop, onAutoStop]);
 
-  return { recording, level, seconds, error, start, stop, release };
+  return { recording, level, seconds, error, start, stop, cancel, release };
 }

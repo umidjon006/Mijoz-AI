@@ -113,6 +113,11 @@ export interface VoiceTurnResponse {
   tone: string;
   audio: string;
   audioMime: string;
+  /**
+   * Oqimli TTS: mijoz audiosi shu URL'dan (bir marta, ~60 s ichida) keladi va
+   * birinchi bo'lak kelishi bilan ijro etiladi; `audio` bo'sh bo'ladi.
+   */
+  audioStreamUrl?: string;
   /** `true` — nutq tanilmadi: holat o'zgarmadi, navbat sanalmadi. */
   needsRepeat: boolean;
   ended: boolean;
@@ -120,7 +125,7 @@ export interface VoiceTurnResponse {
   endReason: string | null;
   turnCount: number;
   debug?: {
-    timings?: { sttMs: number; llmMs: number; ttsMs: number; totalMs: number };
+    timings?: { sttMs: number; llmMs: number; ttsMs: number; totalMs: number; ttsStreamed?: boolean };
     costUsd?: number;
   };
 }

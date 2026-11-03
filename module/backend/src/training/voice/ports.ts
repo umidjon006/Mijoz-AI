@@ -87,8 +87,21 @@ export interface TtsResult {
   firstByteMs?: number;
 }
 
+/**
+ * Oqimli TTS: audio bo'laklari provayderdan kelishi bilan uzatiladi —
+ * brauzer birinchi bo'lak kelishi bilan ijroni boshlaydi (butun faylni
+ * kutmaydi). `chunks` ni iste'mol qilish so'rovni boshlaydi.
+ */
+export interface TtsStream {
+  /** Masalan `audio/mpeg`. */
+  mime: string;
+  chunks: AsyncIterable<Uint8Array>;
+}
+
 export interface TtsPort {
   synthesize(req: TtsRequest): Promise<TtsResult>;
+  /** IXTIYORIY: oqimli sintez. Bo'lmasa javob gaplarga bo'linib parallel sintez qilinadi. */
+  synthesizeStream?(req: TtsRequest): TtsStream;
 }
 
 /**

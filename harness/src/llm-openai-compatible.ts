@@ -94,6 +94,11 @@ export interface OpenAiCompatibleOptions {
   apiKey: string;
   model: string;
   maxTokens?: number;
+  /**
+   * Bosqich bo'yicha javob byudjeti (`maxTokens` o'rniga), masalan mijoz
+   * navbati (`training.turn`) — JSON + 2 gap, ~150 token yetadi.
+   */
+  stageMaxTokens?: Readonly<Record<string, number>>;
   /** Eski nomlar (`json_object`, `json_schema`) ham qabul qilinadi. */
   jsonMode?: JsonMode | 'json_object' | 'json_schema';
   /** `reasoning_effort` (none | minimal | low | ...). Berilmasa yuborilmaydi. */
@@ -116,6 +121,7 @@ interface ChatCompletionResponse {
     completion_tokens?: number;
     total_tokens?: number;
     completion_tokens_details?: { reasoning_tokens?: number };
+    prompt_tokens_details?: { cached_tokens?: number };
   };
   error?: { message?: string };
 }
@@ -291,6 +297,7 @@ export async function postChatCompletion(opts: {
 
     const choice = json.choices?.[0];
     const reasoningTokens = json.usage?.completion_tokens_details?.reasoning_tokens;
+    const cachedInputTokens = json.usage?.prompt_tokens_details?.cached_tokens;
     return {
       content: choice?.message?.content ?? '',
       finishReason: choice?.finish_reason ?? null,
@@ -299,6 +306,7 @@ export async function postChatCompletion(opts: {
         outputTokens: billableOutputTokens(json.usage),
         model: typeof body.model === 'string' ? body.model : undefined,
         ...(reasoningTokens ? { reasoningTokens } : {}),
+        ...(cachedInputTokens ? { cachedInputTokens } : {}),
       },
       latencyMs: Date.now() - startedAt,
       status: res.status,
@@ -488,7 +496,9 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
   const log = options.log === undefined ? defaultLlmLogSink() : options.log;
   const maxTokensParam = resolveMaxTokensParam(options.maxTokensParam, baseUrl);
   // Javob byudjeti + yashirin reasoning uchun zaxira.
-  const completionLimit = maxTokens + reasoningHeadroom(reasoningEffort);
+  // Javob byudjeti (bosqich bo'yicha) + yashirin reasoning uchun zaxira.
+  const completionLimitFor = (stage: string): number =>
+    (options.stageMaxTokens?.[stage] ?? maxTokens) + reasoningHeadroom(reasoningEffort);
 
   const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
@@ -496,7 +506,7 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
     const startedAt = Date.now();
     const body = buildChatBody(req, {
       model,
-      maxTokens: completionLimit,
+      maxTokens: completionLimitFor(req.stage),
       maxTokensParam,
       jsonMode,
       ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -532,6 +542,7 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
             outputTokens: usage.outputTokens,
             model,
             ...(usage.reasoningTokens ? { reasoningTokens: usage.reasoningTokens } : {}),
+            ...(usage.cachedInputTokens ? { cachedInputTokens: usage.cachedInputTokens } : {}),
           },
         };
       } catch (err) {
