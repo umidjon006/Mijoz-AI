@@ -16,7 +16,8 @@
  */
 import { getArchetype } from '../archetypes.js';
 import type { TrainingEngine } from '../engine.js';
-import { TrainingError } from '../errors.js';
+import { describeLlmError, isTrainingError, TrainingError } from '../errors.js';
+import { classifyHeardUzText, transliterateUzCyrillic } from '../language.js';
 import { offerTopic } from '../offer-facts.js';
 import type {
   GetBusinessProfile,
@@ -229,13 +230,18 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
   ): Promise<{ audio: Buffer; mime: string; ms: number; chars: number }> {
     const speech = normalizeForSpeech(text, lang);
     const startedMs = Date.now();
-    const out = await tts.synthesize({
-      text: speech,
-      lang,
-      tone,
-      instructions: toneInstruction(tone),
-      ...(models.voice ? { voice: models.voice } : {}),
-    });
+    let out;
+    try {
+      out = await tts.synthesize({
+        text: speech,
+        lang,
+        tone,
+        instructions: toneInstruction(tone),
+        ...(models.voice ? { voice: models.voice } : {}),
+      });
+    } catch (err) {
+      throw new TrainingError('voice_tts_failed', `ovoz yaratilmadi: ${describeLlmError(err)}`, err);
+    }
     return {
       audio: out.audio,
       mime: out.mime,
@@ -262,7 +268,13 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
     sessionId: string,
     state: TrainingState,
     lang: VoiceLang,
-    timing: { sttMs: number; durationSec: number; totalStartedMs: number },
+    timing: {
+      sttMs: number;
+      durationSec: number;
+      totalStartedMs: number;
+      /** STT matn qaytardi, lekin u rad etildi (masalan boshqa tilda). */
+      sttRejected?: string;
+    },
   ): Promise<VoiceTurnResult> {
     const already = await voiceRepo.countRepeatTurns(tx, sessionId);
     if (already >= VOICE_MAX_REPEATS) {
@@ -290,6 +302,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
         meta: {
           voice: true,
           needsRepeat: true,
+          ...(timing.sttRejected ? { sttRejected: timing.sttRejected } : {}),
           sttMs: timing.sttMs,
           sttModel: models.stt,
           ttsMs: spoken.ms,
@@ -387,158 +400,213 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
     };
   }
 
+  /**
+   * Foydalanuvchi HECH QACHON umumiy "internal_error" olmasin: kutilmagan
+   * xato ham bosqichli `TrainingError` ga aylantiriladi (route `stage` beradi).
+   */
+  function asVoiceError(err: unknown): unknown {
+    if (isTrainingError(err)) return err;
+    const message = err instanceof Error ? err.message : String(err);
+    return new TrainingError('voice_failed', `ovozli navbat bajarilmadi: ${message.slice(0, 200)}`, err);
+  }
+
   return {
     async takeVoiceTurn(ctx, input) {
-      const totalStartedMs = Date.now();
-      const { tooShort, durationSec } = validateVoiceAudio(input.audio, input.mime);
-
-      // Sessiyani oldin o'qiymiz: til, holat va arxetip kerak.
-      const session = await engine.getSession(ctx, { sessionId: input.sessionId });
-      if (session.status !== 'active') {
-        throw new TrainingError('session_not_active', `sessiya holati: ${session.status}`);
+      try {
+        return await takeVoiceTurnInner(ctx, input);
+      } catch (err) {
+        throw asVoiceError(err);
       }
-      const lang = session.persona.language as VoiceLang;
+    },
 
-      // DIQQAT: qulf tashqi tranzaksiyada turadi, motor esa O'ZINING
-      // tranzaksiyasini oladi — ya'ni bir navbatga 2 ta ulanish kerak.
-      return await withTenant(ctx.businessId, async (tx) => {
-        // Bir sessiyada bir vaqtda BITTA ovozli navbat (DB qulfi).
-        if (!(await voiceRepo.tryLockSessionForVoice(tx, input.sessionId))) {
-          throw new TrainingError(
-            'voice_turn_in_progress',
-            'shu sessiyada ovozli navbat allaqachon ketmoqda',
-          );
-        }
+    async speakOpeningLine(ctx, input) {
+      try {
+        return await speakOpeningLineInner(ctx, input);
+      } catch (err) {
+        throw asVoiceError(err);
+      }
+    },
+  };
 
-        // --- Byudjet qo'riqchisi (sinov xarajatini cheklaydi) --------------
-        const usedSec = await voiceRepo.usedVoiceSeconds(tx, input.sessionId);
-        if (usedSec + durationSec > maxSeconds) {
-          return await endOnBudget(tx, ctx, input.sessionId, session.state, lang, {
-            usedSec,
-            totalStartedMs,
-          });
-        }
+  async function takeVoiceTurnInner(
+    ctx: Parameters<VoiceService['takeVoiceTurn']>[0],
+    input: Parameters<VoiceService['takeVoiceTurn']>[1],
+  ): ReturnType<VoiceService['takeVoiceTurn']> {
+    const totalStartedMs = Date.now();
+    const { tooShort, durationSec } = validateVoiceAudio(input.audio, input.mime);
 
-        // --- STT ----------------------------------------------------------
-        let sellerText = '';
-        let sttMs = 0;
-        if (!tooShort) {
-          const hints = await sttHints(ctx.businessId);
-          const heard = await stt.transcribeShort({
+    // Sessiyani oldin o'qiymiz: til, holat va arxetip kerak.
+    const session = await engine.getSession(ctx, { sessionId: input.sessionId });
+    if (session.status !== 'active') {
+      throw new TrainingError('session_not_active', `sessiya holati: ${session.status}`);
+    }
+    const lang = session.persona.language as VoiceLang;
+
+    // DIQQAT: qulf tashqi tranzaksiyada turadi, motor esa O'ZINING
+    // tranzaksiyasini oladi — ya'ni bir navbatga 2 ta ulanish kerak.
+    return await withTenant(ctx.businessId, async (tx) => {
+      // Bir sessiyada bir vaqtda BITTA ovozli navbat (DB qulfi).
+      if (!(await voiceRepo.tryLockSessionForVoice(tx, input.sessionId))) {
+        throw new TrainingError(
+          'voice_turn_in_progress',
+          'shu sessiyada ovozli navbat allaqachon ketmoqda',
+        );
+      }
+
+      // --- Byudjet qo'riqchisi (sinov xarajatini cheklaydi) --------------
+      const usedSec = await voiceRepo.usedVoiceSeconds(tx, input.sessionId);
+      if (usedSec + durationSec > maxSeconds) {
+        return await endOnBudget(tx, ctx, input.sessionId, session.state, lang, {
+          usedSec,
+          totalStartedMs,
+        });
+      }
+
+      // --- STT ----------------------------------------------------------
+      let sellerText = '';
+      let sttMs = 0;
+      let sttRejected: string | undefined;
+      if (!tooShort) {
+        const hints = await sttHints(ctx.businessId);
+        let heard;
+        try {
+          heard = await stt.transcribeShort({
             audio: input.audio,
             mime: VOICE_AUDIO.mime,
             lang,
             ...(hints.length > 0 ? { hints } : {}),
           });
-          sellerText = heard.text.trim();
-          sttMs = heard.latencyMs;
+        } catch (err) {
+          throw new TrainingError('voice_stt_failed', `nutq tanilmadi: ${describeLlmError(err)}`, err);
         }
+        sellerText = heard.text.trim();
+        sttMs = heard.latencyMs;
 
-        // --- Tanilmadi: "takrorlaysizmi" ----------------------------------
-        if (sellerText.length < VOICE_MIN_TEXT_CHARS) {
-          return await askToRepeat(tx, ctx, input.sessionId, session.state, lang, {
-            sttMs,
-            durationSec,
-            totalStartedMs,
-          });
+        // Transkript o'zbek LOTIN bo'lishi shart: kirill -> o'giriladi;
+        // aniq boshqa til (qozoq, turk, rus...) — ishonchsiz, "takrorlaysizmi".
+        if (lang === 'uz' && sellerText.length > 0) {
+          const kind = classifyHeardUzText(sellerText);
+          if (kind === 'uz_cyrillic') {
+            sellerText = transliterateUzCyrillic(sellerText);
+          } else if (kind === 'foreign') {
+            sttRejected = 'foreign_language';
+            deps.logger?.warn(
+              { sessionId: input.sessionId, sttModel: models.stt },
+              "STT boshqa tilda matn qaytardi — 'takrorlaysizmi' so'raladi",
+            );
+            sellerText = '';
+          }
         }
+      }
 
-        // --- Motor (bitta LLM chaqiruvi) ----------------------------------
-        const llmStartedMs = Date.now();
-        const turn = await engine.takeTurn(ctx, {
-          sessionId: input.sessionId,
-          sellerText,
+      // --- Tanilmadi: "takrorlaysizmi" ----------------------------------
+      if (sellerText.length < VOICE_MIN_TEXT_CHARS) {
+        return await askToRepeat(tx, ctx, input.sessionId, session.state, lang, {
+          sttMs,
+          durationSec,
+          totalStartedMs,
+          ...(sttRejected ? { sttRejected } : {}),
         });
-        const llmMs = Date.now() - llmStartedMs;
+      }
 
-        // --- Ovoz ---------------------------------------------------------
-        const tone = turn.meta.tone;
-        const spoken = await speak(turn.customerReply, lang, tone);
-
-        // --- Telemetriya: IKKI navbatga ham `meta` ------------------------
-        // Motor ikki qatorni ketma-ket yozdi; qulf ostida ekanmiz, demak
-        // eng katta seq — mijoz, undan bittasi oldin — sotuvchi.
-        const customerSeq = await voiceRepo.maxTurnSeq(tx, input.sessionId);
-        const sellerSeq = customerSeq - 1;
-        const totalMs = Date.now() - totalStartedMs;
-        const cost = voiceCost(deps.cost, { audioSec: durationSec, chars: spoken.chars });
-        if (!cost.priced) warnOnceAboutCost();
-
-        await voiceRepo.mergeTurnMeta(tx, {
-          sessionId: input.sessionId,
-          seq: sellerSeq,
-          meta: {
-            voice: true,
-            sttMs,
-            sttModel: models.stt,
-            voiceSec: Number(durationSec.toFixed(2)),
-          },
-        });
-        await voiceRepo.mergeTurnMeta(tx, {
-          sessionId: input.sessionId,
-          seq: customerSeq,
-          meta: {
-            voice: true,
-            ttsMs: spoken.ms,
-            ttsModel: models.tts,
-            ...(models.voice ? { ttsVoice: models.voice } : {}),
-            ttsChars: spoken.chars,
-            tone,
-            ...(turn.meta.toneClamped ? { toneClamped: true } : {}),
-            totalMs,
-            voiceCostUsd: cost.usd,
-          },
-        });
-        await voiceRepo.addSessionCost(tx, input.sessionId, cost.usd);
-
-        return {
-          sellerText,
-          customerText: turn.customerReply,
-          tone,
-          audio: spoken.audio,
-          audioMime: spoken.mime,
-          timings: { sttMs, llmMs, ttsMs: spoken.ms, totalMs },
-          needsRepeat: false,
-          ended: turn.ended,
-          outcome: turn.outcome,
-          endReason: turn.endReason,
-          turnCount: turn.turnCount,
-          costUsd: cost.usd,
-        };
+      // --- Motor (bitta LLM chaqiruvi) ----------------------------------
+      const llmStartedMs = Date.now();
+      const turn = await engine.takeTurn(ctx, {
+        sessionId: input.sessionId,
+        sellerText,
       });
-    },
+      const llmMs = Date.now() - llmStartedMs;
 
-    async speakOpeningLine(ctx, { sessionId }) {
-      const session = await engine.getSession(ctx, { sessionId });
-      if (session.persona.direction !== 'inbound') return null;
+      // --- Ovoz ---------------------------------------------------------
+      const tone = turn.meta.tone;
+      const spoken = await speak(turn.customerReply, lang, tone);
 
-      // Birinchi gap — mijozning (motor `startSession` da yozgan) 1-navbati.
-      const first = session.transcript[0];
-      if (!first || first.speaker !== 'customer') return null;
-
-      const lang = session.persona.language as VoiceLang;
-      const tone = clampTone(undefined, session.state, getArchetype(session.archetypeKey)).tone;
-      const spoken = await speak(first.text, lang, tone);
-      const cost = voiceCost(deps.cost, { audioSec: 0, chars: spoken.chars });
+      // --- Telemetriya: IKKI navbatga ham `meta` ------------------------
+      // Motor ikki qatorni ketma-ket yozdi; qulf ostida ekanmiz, demak
+      // eng katta seq — mijoz, undan bittasi oldin — sotuvchi.
+      const customerSeq = await voiceRepo.maxTurnSeq(tx, input.sessionId);
+      const sellerSeq = customerSeq - 1;
+      const totalMs = Date.now() - totalStartedMs;
+      const cost = voiceCost(deps.cost, { audioSec: durationSec, chars: spoken.chars });
       if (!cost.priced) warnOnceAboutCost();
 
-      await withTenant(ctx.businessId, async (tx) => {
-        await voiceRepo.addSessionCost(tx, sessionId, cost.usd);
-        await voiceRepo.mergeTurnMeta(tx, {
-          sessionId,
-          seq: 1,
-          meta: { voice: true, ttsMs: spoken.ms, ttsModel: models.tts, ttsChars: spoken.chars, tone },
-        });
+      await voiceRepo.mergeTurnMeta(tx, {
+        sessionId: input.sessionId,
+        seq: sellerSeq,
+        meta: {
+          voice: true,
+          sttMs,
+          sttModel: models.stt,
+          voiceSec: Number(durationSec.toFixed(2)),
+        },
       });
+      await voiceRepo.mergeTurnMeta(tx, {
+        sessionId: input.sessionId,
+        seq: customerSeq,
+        meta: {
+          voice: true,
+          ttsMs: spoken.ms,
+          ttsModel: models.tts,
+          ...(models.voice ? { ttsVoice: models.voice } : {}),
+          ttsChars: spoken.chars,
+          tone,
+          ...(turn.meta.toneClamped ? { toneClamped: true } : {}),
+          totalMs,
+          voiceCostUsd: cost.usd,
+        },
+      });
+      await voiceRepo.addSessionCost(tx, input.sessionId, cost.usd);
 
       return {
-        text: first.text,
+        sellerText,
+        customerText: turn.customerReply,
+        tone,
         audio: spoken.audio,
         audioMime: spoken.mime,
-        tone,
-        ttsMs: spoken.ms,
+        timings: { sttMs, llmMs, ttsMs: spoken.ms, totalMs },
+        needsRepeat: false,
+        ended: turn.ended,
+        outcome: turn.outcome,
+        endReason: turn.endReason,
+        turnCount: turn.turnCount,
         costUsd: cost.usd,
       };
-    },
-  };
+    });
+  }
+
+  async function speakOpeningLineInner(
+    ctx: Parameters<VoiceService['speakOpeningLine']>[0],
+    { sessionId }: Parameters<VoiceService['speakOpeningLine']>[1],
+  ): ReturnType<VoiceService['speakOpeningLine']> {
+    const session = await engine.getSession(ctx, { sessionId });
+    if (session.persona.direction !== 'inbound') return null;
+
+    // Birinchi gap — mijozning (motor `startSession` da yozgan) 1-navbati.
+    const first = session.transcript[0];
+    if (!first || first.speaker !== 'customer') return null;
+
+    const lang = session.persona.language as VoiceLang;
+    const tone = clampTone(undefined, session.state, getArchetype(session.archetypeKey)).tone;
+    const spoken = await speak(first.text, lang, tone);
+    const cost = voiceCost(deps.cost, { audioSec: 0, chars: spoken.chars });
+    if (!cost.priced) warnOnceAboutCost();
+
+    await withTenant(ctx.businessId, async (tx) => {
+      await voiceRepo.addSessionCost(tx, sessionId, cost.usd);
+      await voiceRepo.mergeTurnMeta(tx, {
+        sessionId,
+        seq: 1,
+        meta: { voice: true, ttsMs: spoken.ms, ttsModel: models.tts, ttsChars: spoken.chars, tone },
+      });
+    });
+
+    return {
+      text: first.text,
+      audio: spoken.audio,
+      audioMime: spoken.mime,
+      tone,
+      ttsMs: spoken.ms,
+      costUsd: cost.usd,
+    };
+  }
 }

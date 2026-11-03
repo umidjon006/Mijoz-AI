@@ -12,10 +12,12 @@ import Fastify from 'fastify';
 
 import { getArchetype } from './archetypes.js';
 import { createTrainingEngine } from './engine.js';
-import { isTrainingError } from './errors.js';
+import { isTrainingError, TrainingError } from './errors.js';
+import { classifyHeardUzText } from './language.js';
+import { describeApiError } from '../../../frontend/src/lib/api-error.js';
 import type { GetBusinessProfile, TrainingContext, WithTenant } from './ports.js';
 import { parseBusinessProfile } from './profile-schema.js';
-import { registerTrainingRoutes } from './routes.js';
+import { errorStage, registerTrainingRoutes } from './routes.js';
 import { computeMetrics } from './scoring/metrics.js';
 import { createScoringService } from './scoring/scoring.js';
 import { initState, type TrainingState } from './state.js';
@@ -947,6 +949,92 @@ async function dbBlock(): Promise<void> {
     await app.close();
   });
 
+  await checkAsync(report, "STT o'zbek kirillida qaytsa -> transkript lotinda", async () => {
+    const llm = new FakeTrainerLlm([personaScript('outbound'), fakeTurn({ reply: 'Qancha turadi?' })]);
+    const { engine, sessionId } = await startSession(llm, 'outbound');
+    const voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: new FakeStt(['Ассалому алайкум, таклиф ҳақида гаплашсак']),
+      tts: new FakeTts(),
+      models: { stt: 'fake-stt', tts: 'fake-tts' },
+      getBusinessProfile,
+    });
+    const result = await voice.takeVoiceTurn(ctx, { sessionId, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+    assertEqual(result.sellerText, "Assalomu alaykum, taklif haqida gaplashsak", 'lotinga o\'girildi');
+    const session = await engine.getSession(ctx, { sessionId });
+    assert(
+      session.transcript.some((t) => t.text === "Assalomu alaykum, taklif haqida gaplashsak"),
+      'DB da lotin matn',
+    );
+  });
+
+  await checkAsync(report, "STT boshqa tilda (qozoq) -> 'eshitolmadim', LLM yo'q", async () => {
+    const llm = new FakeTrainerLlm([personaScript('outbound')]);
+    const { engine, sessionId } = await startSession(llm, 'outbound');
+    const callsBefore = llm.callCount;
+    const voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: new FakeStt(['Сәлеметсіз бе, бағасы қанша?']),
+      tts: new FakeTts(),
+      models: { stt: 'fake-stt', tts: 'fake-tts' },
+      getBusinessProfile,
+    });
+    const result = await voice.takeVoiceTurn(ctx, { sessionId, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+    assert(result.needsRepeat, "takrorlaysizmi");
+    assertEqual(result.customerText, VOICE_REPEAT_LINE, 'qat\'iy gap');
+    assertEqual(llm.callCount, callsBefore, 'LLM chaqirilmadi');
+  });
+
+  await checkAsync(report, "STT provayder xatosi -> voice_stt_failed; route 502 + stage='stt' (internal_error EMAS)", async () => {
+    const llm = new FakeTrainerLlm([personaScript('outbound')]);
+    const { engine, sessionId } = await startSession(llm, 'outbound');
+    const failingStt: SttPort = {
+      async transcribeShort() {
+        throw new Error("OpenAI STT HTTP 400: Language code 'uz' is not recognized.");
+      },
+    };
+    const voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: failingStt,
+      tts: new FakeTts(),
+      models: { stt: 'fake-stt', tts: 'fake-tts' },
+      getBusinessProfile,
+    });
+    let code: string | null = null;
+    try {
+      await voice.takeVoiceTurn(ctx, { sessionId, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+    } catch (err) {
+      code = err instanceof TrainingError ? err.code : 'boshqa';
+    }
+    assertEqual(code, 'voice_stt_failed', 'kod');
+
+    const app = Fastify({ logger: false });
+    await registerTrainingRoutes(app, {
+      engine,
+      scoring: createScoringService({ withTenant, llm }),
+      withTenant,
+      voice,
+      getContext: () => ctx,
+      config: { autoScoreOnEnd: false },
+    });
+    await app.ready();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/training/sessions/${sessionId}/voice-turn`,
+      headers: { 'content-type': 'audio/wav' },
+      payload: makeWav(3),
+    });
+    const json = res.json() as { error: string; stage: string; message: string };
+    assertEqual(res.statusCode, 502, '502');
+    assertEqual(json.error, 'voice_stt_failed', 'kod');
+    assertEqual(json.stage, 'stt', 'bosqich');
+    assert(json.message.includes('nutq tanilmadi'), "o'zbekcha xabar");
+    await app.close();
+  });
+
   await checkAsync(report, 'route: voice berilmasa /voice-turn YO\'Q (404)', async () => {
     const llm = new FakeTrainerLlm([personaScript('outbound')]);
     const engine = makeEngine(llm);
@@ -996,6 +1084,50 @@ check(report, 'narx tavsifida kalit nomi emas, ENV nomi bor', () => {
   const text = describeVoiceCostRates(undefined);
   assert(text.includes('OPENAI_STT_PRICE_PER_MIN'), 'env nomi');
   assert(!/sk-/.test(text), 'kalit izi yo\'q');
+});
+
+// ---------------------------------------------------------------------------
+// 7. STT matni tili va xato bosqichlari (sof)
+// ---------------------------------------------------------------------------
+section('7. STT matni tili, xato bosqichi va UI xabari');
+
+check(report, "STT natijasi: o'zbek lotin / o'zbek kirill / aniq boshqa til", () => {
+  assertEqual(classifyHeardUzText("Assalomu alaykum, xizmatingiz narxi qancha?"), 'latin', 'uz lotin');
+  assertEqual(classifyHeardUzText('Ассалому алайкум, нархи қанча?'), 'uz_cyrillic', 'uz kirill');
+  assertEqual(classifyHeardUzText('Сәлеметсіз бе, бағасы қанша?'), 'foreign', 'qozoq (ә, і)');
+  assertEqual(classifyHeardUzText('Здравствуйте, сколько это стоит?'), 'foreign', 'rus');
+  assertEqual(classifyHeardUzText('Merhaba, fiyatı ne kadar?'), 'foreign', 'turk (ı)');
+  assertEqual(classifyHeardUzText('Hello, how much is the price?'), 'foreign', 'ingliz');
+  assertEqual(classifyHeardUzText("Ha, o'ylab ko'raman"), 'latin', "qisqa o'zbekcha");
+});
+
+check(report, 'xato kodi -> bosqich (stt, tts, llm, audio, session, server)', () => {
+  assertEqual(errorStage('voice_stt_failed'), 'stt', 'stt');
+  assertEqual(errorStage('voice_not_recognized'), 'stt', 'tanilmadi');
+  assertEqual(errorStage('voice_tts_failed'), 'tts', 'tts');
+  assertEqual(errorStage('llm_timeout'), 'llm', 'llm');
+  assertEqual(errorStage('voice_audio_too_large'), 'audio', 'audio');
+  assertEqual(errorStage('voice_turn_in_progress'), 'session', 'session');
+  assertEqual(errorStage('voice_failed'), 'server', 'kutilmagan');
+});
+
+check(report, "UI xabari: xom JSON emas, bosqich o'zbekcha", () => {
+  const body = {
+    error: 'voice_stt_failed',
+    stage: 'stt',
+    message: "nutq tanilmadi: [http] provayder HTTP xato qaytardi: HTTP 400: Language code 'uz' is not recognized",
+  };
+  // 1) host tanani xatoga biriktirgan.
+  const attached = describeApiError(Object.assign(new Error('502 ...'), { body }));
+  assert(attached.startsWith('Nutqni tanish (STT) bosqichida xato'), attached);
+  assert(attached.includes("matn bilan yozib ko'ring"), 'maslahat');
+  // 2) faqat matnda JSON bor.
+  const inText = describeApiError(new Error(`502 ${JSON.stringify(body)}`));
+  assert(inText.startsWith('Nutqni tanish (STT)'), inText);
+  assert(!inText.includes('{'), "xom JSON yo'q");
+  // 3) eski server: stage yo'q, xom JSON -> umumiy xabar.
+  const legacy = describeApiError(new Error('500 {"error":"internal_error"}'));
+  assert(!legacy.includes('{'), "xom JSON ko'rsatilmaydi");
 });
 
 // ---------------------------------------------------------------------------

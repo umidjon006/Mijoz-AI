@@ -45,7 +45,18 @@ async function request<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
     } catch {
       // JSON emas — matnning o'zi.
     }
-    throw new Error(`${response.status} ${detail.slice(0, 400)}`);
+    // Tana xatoga biriktiriladi — modul UI'si `stage` ni shundan o'qiydi
+    // (`describeApiError`), foydalanuvchi xom JSON ko'rmaydi.
+    let body: unknown = null;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      // JSON emas.
+    }
+    throw Object.assign(new Error(`${response.status} ${detail.slice(0, 400)}`), {
+      status: response.status,
+      body,
+    });
   }
 
   if (response.status === 204) return undefined as T;

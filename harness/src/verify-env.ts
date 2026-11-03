@@ -62,9 +62,15 @@ import {
   createOpenAiStt,
   createOpenAiTts,
   filterVoiceModels,
+  OpenAiVoiceConfigError,
+  parseSttLanguageMode,
   redactSecrets,
+  resetSttLanguageMemoryForTests,
+  sttRequestFields,
+  UZ_STT_PROMPT,
   type OpenAiVoiceConfig,
 } from './voice/openai.js';
+import { rankStt, scoreSample, summarizeStt } from './voice/stt-compare.js';
 import {
   BusinessDataError,
   businessProfilePath,
@@ -499,6 +505,7 @@ async function main(): Promise<void> {
     'db-local',
     'diag-llm',
     'rescore',
+    'diag-stt',
   ];
 
   for (const name of entryPoints) {
@@ -1035,7 +1042,8 @@ async function main(): Promise<void> {
     });
 
   try {
-    await checkAsync(report, "STT: til uz, model, lug'at ishoralari prompt'da; matn qaytadi", async () => {
+    await checkAsync(report, "STT (default omit): til kodi YO'Q, model, lug'at ishoralari; matn qaytadi", async () => {
+      resetSttLanguageMemoryForTests();
       const seen = voiceFetch(() => new Response(JSON.stringify({ text: '  Assalomu alaykum  ' })));
       const out = await createOpenAiStt(voiceConfig).transcribeShort({
         audio: wav,
@@ -1046,9 +1054,86 @@ async function main(): Promise<void> {
       assertEqual(out.text, 'Assalomu alaykum', 'matn trim');
       assert(seen[0]?.url.endsWith('/audio/transcriptions'), 'endpoint');
       const form = seen[0]?.init?.body as FormData;
-      assertEqual(form.get('language'), 'uz', 'til');
+      assertEqual(form.get('language'), null, "omit: language yuborilmaydi (gpt-4o-mini-transcribe 'uz' ni rad etadi)");
       assertEqual(form.get('model'), 'stt-model-x', 'model env\'dan');
       assert(String(form.get('prompt')).includes('sinov darsi'), 'ishoralar');
+    });
+
+    check(report, 'STT til rejimlari: omit / code / prompt maydonlari', () => {
+      const req = { lang: 'uz' as const, hints: ['sinov darsi'] };
+      assertEqual(sttRequestFields(req, 'omit', true).language, undefined, "omit: kod yo'q");
+      assertEqual(sttRequestFields(req, 'code', true).language, 'uz', 'code: uz');
+      assertEqual(sttRequestFields(req, 'code', false).language, undefined, 'code, lekin rad etilgan: yo\'q');
+      const prompt = sttRequestFields(req, 'prompt', true);
+      assertEqual(prompt.language, undefined, "prompt: kod yo'q");
+      assert(prompt.prompt?.startsWith(UZ_STT_PROMPT) ?? false, "o'zbekcha prompt");
+      assert(prompt.prompt?.includes('sinov darsi') ?? false, "lug'at");
+      assertEqual(parseSttLanguageMode(undefined), 'omit', "bo'sh -> omit");
+      let caught: unknown;
+      try {
+        parseSttLanguageMode('uz');
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof OpenAiVoiceConfigError, "noto'g'ri rejim -> xato");
+    });
+
+    await checkAsync(report, "STT (code): 400 'Language code uz' -> BIR marta tilsiz qayta, keyin eslab qolinadi", async () => {
+      resetSttLanguageMemoryForTests();
+      const languageError = () =>
+        new Response(
+          JSON.stringify({ error: { message: "Language code 'uz' is not recognized. Try adding the language name to your prompt." } }),
+          { status: 400 },
+        );
+      const seen = voiceFetch((entry) =>
+        (entry.init?.body as FormData).get('language') ? languageError() : new Response(JSON.stringify({ text: 'Salom' })),
+      );
+      const stt = createOpenAiStt({ ...voiceConfig, sttLanguageMode: 'code' });
+      const out = await stt.transcribeShort({ audio: wav, mime: 'audio/wav', lang: 'uz' });
+      assertEqual(out.text, 'Salom', 'tilsiz qayta urinish ishladi');
+      assertEqual(seen.length, 2, '2 ta so\'rov');
+      assertEqual((seen[1]?.init?.body as FormData).get('language'), null, "ikkinchisida til yo'q");
+      await stt.transcribeShort({ audio: wav, mime: 'audio/wav', lang: 'uz' });
+      assertEqual(seen.length, 3, 'keyingi chaqiruv — bitta so\'rov (eslab qolingan)');
+      assertEqual((seen[2]?.init?.body as FormData).get('language'), null, 'darhol tilsiz');
+    });
+
+    await checkAsync(report, "STT: tilga aloqasiz 400 qayta urinilmaydi", async () => {
+      resetSttLanguageMemoryForTests();
+      const seen = voiceFetch(
+        () => new Response(JSON.stringify({ error: { message: 'Invalid file format.' } }), { status: 400 }),
+      );
+      let caught: unknown;
+      try {
+        await createOpenAiStt({ ...voiceConfig, sttLanguageMode: 'code' }).transcribeShort({
+          audio: wav,
+          mime: 'audio/wav',
+          lang: 'uz',
+        });
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof LlmCallError && caught.status === 400, 'xato chiqdi');
+      assertEqual(seen.length, 1, 'bitta so\'rov');
+    });
+
+    check(report, "diag:stt: WER/CER kirill->lotindan keyin, boshqa til belgilanadi, reyting", () => {
+      const ref = "Assalomu alaykum, narxi qancha?";
+      const cyr = scoreSample(ref, 'Ассалому алайкум, нархи қанча?');
+      assertEqual(cyr.werLatin, 0, "o'girilgach xatosiz");
+      assert(cyr.wer > 0.5, "xom kirill — katta WER");
+      assertEqual(cyr.script, 'uz_cyrillic', 'yozuv');
+      assertEqual(scoreSample(ref, "assalomu alaykum narxi qancha").wer, 0, 'harf/tinish normallashtiriladi');
+      assertEqual(scoreSample(ref, 'Сәлеметсіз бе, бағасы қанша?').script, 'foreign', 'qozoq');
+      const ranking = rankStt(
+        summarizeStt([
+          { model: 'a', mode: 'omit', n: 1, reference: ref, text: 'Ассалому алайкум, нархи қанча?', latencyMs: 900 },
+          { model: 'b', mode: 'omit', n: 1, reference: ref, text: 'assalom narx', latencyMs: 300 },
+          { model: 'c', mode: 'omit', n: 1, reference: ref, text: null, latencyMs: 0, error: 'HTTP 400' },
+        ]),
+      );
+      assertDeepEqual(ranking.map((r) => r.model), ['a', 'b', 'c'], 'aniqlik birinchi, xato oxirida');
+      assertEqual(ranking[2]?.errors, 1, 'xato sanaldi');
     });
 
     await checkAsync(report, "TTS: ohang ko'rsatmasi yuboriladi, audio va mime qaytadi", async () => {

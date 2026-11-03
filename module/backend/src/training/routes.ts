@@ -56,7 +56,41 @@ const STATUS_BY_CODE: Record<TrainingErrorCode, number> = {
   voice_budget_exhausted: 409,
   // Audio keldi, lekin nutq tanilmadi (chegara tugadi) — matnga o'tish kerak.
   voice_not_recognized: 422,
+  // Provayder (STT/TTS) xatosi — bizning tomonda emas.
+  voice_stt_failed: 502,
+  voice_tts_failed: 502,
+  voice_failed: 500,
 };
+
+/** Xato qaysi BOSQICHDA bo'ldi — UI foydalanuvchiga shuni o'zbekcha aytadi. */
+export type ErrorStage = 'audio' | 'stt' | 'llm' | 'tts' | 'session' | 'server';
+
+export function errorStage(code: TrainingErrorCode | 'internal_error'): ErrorStage {
+  switch (code) {
+    case 'voice_unsupported_media':
+    case 'voice_audio_too_large':
+      return 'audio';
+    case 'voice_stt_failed':
+    case 'voice_not_recognized':
+      return 'stt';
+    case 'voice_tts_failed':
+      return 'tts';
+    case 'llm_invalid_output':
+    case 'llm_timeout':
+    case 'llm_provider_error':
+    case 'persona_generation_failed':
+      return 'llm';
+    case 'profile_missing':
+    case 'session_not_found':
+    case 'session_forbidden':
+    case 'session_not_active':
+    case 'voice_turn_in_progress':
+    case 'voice_budget_exhausted':
+      return 'session';
+    default:
+      return 'server';
+  }
+}
 
 export interface TrainingRoutesConfig {
   /** Marshrut prefiksi. Default `/api/v1/training`. */
@@ -222,12 +256,18 @@ export async function registerTrainingRoutes(
         }
         return reply.code(status).send({
           error: err.code,
+          stage: errorStage(err.code),
           message: err.message,
           ...(err.llmErrorKind ? { category: err.llmErrorKind } : {}),
         });
       }
       deps.logger?.error({ err }, 'training: kutilmagan xato');
-      return reply.code(500).send({ error: 'internal_error' });
+      // Xom stack/JSON emas: bosqich va qisqa o'zbekcha xabar (tafsilot — server logida).
+      return reply.code(500).send({
+        error: 'internal_error',
+        stage: 'server',
+        message: "kutilmagan server xatosi — tafsilot server logida",
+      });
     }
   }
 

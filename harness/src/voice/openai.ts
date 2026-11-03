@@ -33,6 +33,24 @@ export interface OpenAiVoiceConfig {
   /** `mp3` yoki `opus` — brauzer ikkalasini ham ijro etadi. */
   ttsFormat: string;
   timeoutMs: number;
+  /**
+   * STT ga til qanday aytiladi (`OPENAI_STT_LANGUAGE_MODE`):
+   *  - `omit`   — til kodi yuborilmaydi (default; ba'zi modellar `uz` ni rad etadi);
+   *  - `code`   — `language=uz`;
+   *  - `prompt` — kod yo'q, lekin prompt: "O'zbekcha suhbat ..." + lug'at.
+   */
+  sttLanguageMode?: SttLanguageMode;
+}
+
+export const STT_LANGUAGE_MODES = ['omit', 'code', 'prompt'] as const;
+export type SttLanguageMode = (typeof STT_LANGUAGE_MODES)[number];
+
+export function parseSttLanguageMode(raw: string | undefined): SttLanguageMode {
+  if (raw === undefined) return 'omit';
+  if ((STT_LANGUAGE_MODES as readonly string[]).includes(raw)) return raw as SttLanguageMode;
+  throw new OpenAiVoiceConfigError(
+    `OPENAI_STT_LANGUAGE_MODE "${raw}" noto'g'ri — omit | code | prompt yoki bo'sh`,
+  );
 }
 
 export class OpenAiVoiceConfigError extends Error {
@@ -65,6 +83,7 @@ export function openAiVoiceConfigFromEnv(
     ttsVoice: envStr('OPENAI_TTS_VOICE', env),
     ttsFormat: envStr('OPENAI_TTS_FORMAT', env) ?? 'mp3',
     timeoutMs: Number(envStr('OPENAI_VOICE_TIMEOUT_MS', env) ?? 30_000),
+    sttLanguageMode: parseSttLanguageMode(envStr('OPENAI_STT_LANGUAGE_MODE', env)),
   };
 }
 
@@ -137,36 +156,91 @@ async function failure(what: string, res: Response, apiKey: string): Promise<Err
   });
 }
 
+/** `prompt` rejimida transkripsiya promptining boshi (til va mavzu ishorasi). */
+export const UZ_STT_PROMPT = "O'zbekcha suhbat (o'zbek tili, lotin yozuvi). Savdo qo'ng'irog'i.";
+
+/**
+ * Til kodini rad etgan modellar (`url|model`) — jarayon oxirigacha eslab
+ * qolinadi, keyingi chaqiruvlarda kod umuman yuborilmaydi.
+ */
+const languageRejected = new Set<string>();
+
+/** Faqat testlar uchun. */
+export function resetSttLanguageMemoryForTests(): void {
+  languageRejected.clear();
+}
+
+/** Qaysi maydonlar yuboriladi (sof funksiya — testlanadi). */
+export function sttRequestFields(
+  req: Pick<SttRequest, 'lang' | 'hints'>,
+  mode: SttLanguageMode,
+  languageAllowed: boolean,
+): { language?: string; prompt?: string } {
+  const out: { language?: string; prompt?: string } = {};
+  if (mode === 'code' && languageAllowed) out.language = STT_LANGUAGE[req.lang] ?? 'uz';
+  const hints = req.hints && req.hints.length > 0 ? req.hints.join(', ') : '';
+  const parts: string[] = [];
+  if (mode === 'prompt' && req.lang !== 'ru') parts.push(UZ_STT_PROMPT);
+  // Lug'at/taklif nomlari — tanib olishga yordam beradi (har rejimda).
+  if (hints) parts.push(mode === 'prompt' ? `So'zlar: ${hints}.` : hints);
+  if (parts.length > 0) out.prompt = parts.join(' ').slice(0, 1000);
+  return out;
+}
+
+/** 400 xato til parametri haqidami (masalan "Language code 'uz' is not recognized"). */
+export function isLanguageRejection(err: unknown): boolean {
+  return (
+    err instanceof LlmCallError &&
+    err.kind === 'http' &&
+    err.status === 400 &&
+    /language/i.test(err.providerMessage ?? err.message)
+  );
+}
+
 export function createOpenAiStt(config: OpenAiVoiceConfig): SttPort {
+  const mode = config.sttLanguageMode ?? 'omit';
+  const memoryKey = `${config.baseUrl}|${config.sttModel}`;
+
+  async function post(req: SttRequest, fields: { language?: string; prompt?: string }) {
+    const form = new FormData();
+    // Fayl nomi kengaytmasi muhim: server formatni shundan ham biladi.
+    form.append('file', new Blob([new Uint8Array(req.audio)], { type: req.mime }), 'turn.wav');
+    form.append('model', config.sttModel);
+    form.append('response_format', 'json');
+    if (fields.language) form.append('language', fields.language);
+    if (fields.prompt) form.append('prompt', fields.prompt);
+
+    const startedAt = Date.now();
+    const res = await withTimeout('OpenAI STT', config.timeoutMs, config.apiKey, (signal) =>
+      fetch(`${config.baseUrl}/audio/transcriptions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        body: form,
+        signal,
+      }),
+    );
+    const latencyMs = Date.now() - startedAt;
+    if (!res.ok) throw await failure('OpenAI STT', res, config.apiKey);
+    const json = (await res.json()) as { text?: string; language?: string };
+    return { text: (json.text ?? '').trim(), latencyMs, raw: json };
+  }
+
   return {
     async transcribeShort(req: SttRequest): Promise<SttResult> {
-      const form = new FormData();
-      // Fayl nomi kengaytmasi muhim: server formatni shundan ham biladi.
-      form.append('file', new Blob([new Uint8Array(req.audio)], { type: req.mime }), 'turn.wav');
-      form.append('model', config.sttModel);
-      form.append('language', STT_LANGUAGE[req.lang] ?? 'uz');
-      form.append('response_format', 'json');
-      // Lug'at/taklif nomlari — tanib olishga yordam beradi. Qo'llamaydigan
-      // model buni shunchaki e'tiborsiz qoldiradi.
-      if (req.hints && req.hints.length > 0) {
-        form.append('prompt', req.hints.join(', ').slice(0, 1000));
+      const fields = sttRequestFields(req, mode, !languageRejected.has(memoryKey));
+      try {
+        return await post(req, fields);
+      } catch (err) {
+        // Model til parametrini rad etdi — BIR marta usiz qayta, va eslab qolamiz.
+        if (!isLanguageRejection(err) || fields.language === undefined) throw err;
+        languageRejected.add(memoryKey);
+        console.warn(
+          `[stt] ${config.sttModel} til kodini qabul qilmadi — bundan keyin "language" yuborilmaydi ` +
+            '(OPENAI_STT_LANGUAGE_MODE=omit yoki prompt tavsiya etiladi).',
+        );
+        const { language: _dropped, ...rest } = fields;
+        return await post(req, rest);
       }
-
-      const startedAt = Date.now();
-      const res = await withTimeout('OpenAI STT', config.timeoutMs, config.apiKey, (signal) =>
-        fetch(`${config.baseUrl}/audio/transcriptions`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${config.apiKey}` },
-          body: form,
-          signal,
-        }),
-      );
-      const latencyMs = Date.now() - startedAt;
-
-      if (!res.ok) throw await failure('OpenAI STT', res, config.apiKey);
-
-      const json = (await res.json()) as { text?: string };
-      return { text: (json.text ?? '').trim(), latencyMs, raw: json };
     },
   };
 }

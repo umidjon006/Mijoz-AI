@@ -40,7 +40,13 @@ import {
   describeVoiceCostRates,
   type VoiceService,
 } from '../../module/backend/src/training/voice/voice-turn.js';
-import { createOpenAiStt, createOpenAiTts, missingVoiceConfig, openAiVoiceConfigFromEnv } from './voice/openai.js';
+import {
+  createOpenAiStt,
+  createOpenAiTts,
+  missingVoiceConfig,
+  OpenAiVoiceConfigError,
+  openAiVoiceConfigFromEnv,
+} from './voice/openai.js';
 
 // Bo'sh qiymat = default (avval bo'sh HARNESS_PORT port 0 ga aylanardi).
 const PORT = envInt('HARNESS_PORT', 5180, { min: 1, max: 65535 });
@@ -130,6 +136,7 @@ async function main(): Promise<void> {
     });
     console.log(
       `Ovoz: stt=${voiceConfig.sttModel}` +
+        ` · stt-til=${voiceConfig.sttLanguageMode ?? 'omit'}` +
         ` · tts=${voiceConfig.ttsModel}${voiceConfig.ttsVoice ? ` (${voiceConfig.ttsVoice})` : ''}` +
         ` · host=${new URL(voiceConfig.baseUrl).host} · kalit ${voiceConfig.keyEnv}=o'rnatilgan`,
     );
@@ -215,6 +222,10 @@ main().catch((err: unknown) => {
   }
   if (err instanceof BusinessDataError) {
     console.error(`\n[biznes ma'lumotlari xatosi] ${err.message}\n`);
+    process.exit(1);
+  }
+  if (err instanceof OpenAiVoiceConfigError) {
+    console.error(`\n[ovoz sozlamasi xatosi] ${err.message}\n`);
     process.exit(1);
   }
   if (err instanceof ProviderConfigError) {

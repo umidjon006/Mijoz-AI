@@ -305,6 +305,36 @@ export const UZ_LATIN_REWRITE_SYSTEM = [
 ].join('\n');
 
 // ---------------------------------------------------------------------------
+// STT natijasi (uz): sotuvchi nima deganini tanigan matn
+// ---------------------------------------------------------------------------
+
+/** O'zbek lotin alifbosida YO'Q, lekin turk/ozarbayjon/turkman/qozoq lotinida bor harflar. */
+const TURKIC_LATIN_STRONG = /[şğıəŞĞİƏñÑäÄ]/u;
+const TURKIC_LATIN_WEAK = /[çöüÇÖÜ]/gu;
+const ENGLISH_STOPWORDS = new Set([
+  'the', 'and', 'you', 'your', 'that', 'this', 'with', 'for', 'are', 'is', 'what',
+  'how', 'much', 'does', 'have', 'can', 'will', 'hello', 'please', 'course', 'price',
+]);
+
+/**
+ * STT tanigan matn tili (`uz` sessiya uchun):
+ *  - `latin`       — o'zbek lotin: joyida;
+ *  - `uz_cyrillic` — o'zbek kirill: deterministik lotinga o'giriladi;
+ *  - `foreign`     — aniq boshqa til (qozoq/rus kirill, turk lotin, ingliz):
+ *                    ishonchsiz — "eshitolmadim, takrorlaysizmi" yo'li.
+ */
+export function classifyHeardUzText(text: string): UzTextClass {
+  const base = classifyUzText(text);
+  if (base !== 'latin') return base;
+  if (TURKIC_LATIN_STRONG.test(text)) return 'foreign';
+  if ((text.match(TURKIC_LATIN_WEAK) ?? []).length >= 2) return 'foreign';
+  const words = text.toLowerCase().split(/[^a-z']+/).filter((w) => w.length > 1);
+  const english = words.filter((w) => ENGLISH_STOPWORDS.has(w)).length;
+  if (words.length >= 3 && english / words.length >= 0.3) return 'foreign';
+  return 'latin';
+}
+
+// ---------------------------------------------------------------------------
 // Mijoz javobi (uz)
 // ---------------------------------------------------------------------------
 export type CustomerReplyOutcome = 'ok' | 'transliterated' | 'regenerated' | 'fallback';

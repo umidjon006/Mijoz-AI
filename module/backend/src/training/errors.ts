@@ -16,7 +16,10 @@ export type TrainingErrorCode =
   | 'voice_audio_too_large' // yozuv hajm/davomiylik chegarasidan oshdi
   | 'voice_turn_in_progress' // shu sessiyada ovozli navbat allaqachon ketmoqda
   | 'voice_not_recognized' // nutq tanilmadi va "qaytaring" chegarasi tugadi
-  | 'voice_budget_exhausted'; // sessiyaning ovoz byudjeti tugadi
+  | 'voice_budget_exhausted' // sessiyaning ovoz byudjeti tugadi
+  | 'voice_stt_failed' // nutqni tanish (STT) provayderi xato qaytardi
+  | 'voice_tts_failed' // ovoz yaratish (TTS) provayderi xato qaytardi
+  | 'voice_failed'; // ovozli navbatda kutilmagan xato (bosqichi noma'lum)
 
 export class TrainingError extends Error {
   readonly code: TrainingErrorCode;

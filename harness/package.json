@@ -38,7 +38,8 @@
     "diag:llm": "tsx --env-file-if-exists=.env src/diag-llm.ts",
     "rescore": "tsx --env-file-if-exists=.env src/rescore.ts",
     "verify:training:voice": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-voice.ts",
-    "diag:voice": "tsx --env-file-if-exists=.env src/diag-voice.ts"
+    "diag:voice": "tsx --env-file-if-exists=.env src/diag-voice.ts",
+    "diag:stt": "tsx --env-file-if-exists=.env src/diag-stt.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

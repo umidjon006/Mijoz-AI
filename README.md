@@ -455,8 +455,8 @@ Nima qiladi:
    **birinchi bayt** vaqtini o'lchaydi, fayllarni
    `harness/benchmark/out/openai-tts/` ga **tinglash uchun** yozadi;
 4. STT: `harness/benchmark/samples/` da yozuvlar bo'lsa (`npm run bench:record`
-   bilan yoziladi), ularni `uz` tilida tanib, matn, kechikish va (etalon
-   bo'lsa) **WER** ni chiqaradi;
+   bilan yoziladi), ularni tanib, matn, kechikish va (etalon bo'lsa) **WER**
+   ni chiqaradi (STT modellarini batafsil solishtirish — `npm run diag:stt`);
 5. oxirida `harness/.env` uchun **tavsiya** beradi.
 
 Ohang ko'rsatmasini qo'llamaydigan model uchrasa, skript buni aniq aytadi:
@@ -472,6 +472,7 @@ OPENAI_STT_MODEL=...               # diag:voice tavsiya qiladi
 OPENAI_TTS_MODEL=...               # diag:voice tavsiya qiladi
 OPENAI_TTS_VOICE=...               # diag:voice tavsiya qiladi
 OPENAI_TTS_FORMAT=mp3              # bo'sh = mp3
+OPENAI_STT_LANGUAGE_MODE=omit      # omit | code | prompt (bo'sh = omit) — pastga qarang
 VOICE_MAX_MINUTES_PER_SESSION=10   # sinov xarajatini cheklaydi
 
 # Narx tariflari — OpenAI narx sahifasidan O'ZINGIZ to'ldirasiz.
@@ -479,6 +480,44 @@ VOICE_MAX_MINUTES_PER_SESSION=10   # sinov xarajatini cheklaydi
 OPENAI_STT_PRICE_PER_MIN=
 OPENAI_TTS_PRICE_PER_1M_CHARS=
 ```
+
+**STT tili (`OPENAI_STT_LANGUAGE_MODE`).** Ba'zi modellar (masalan
+`gpt-4o-mini-transcribe`) `language=uz` ni **400** bilan rad etadi
+("Language code 'uz' is not recognized"). Shuning uchun:
+
+- `omit` (default) — til kodi yuborilmaydi, faqat lug'at/taklif nomlari ishora sifatida;
+- `prompt` — kod yo'q, lekin prompt: "O'zbekcha suhbat (o'zbek tili, lotin yozuvi).
+  Savdo qo'ng'irog'i." + lug'at va taklif nomlari;
+- `code` — `language=uz` yuboriladi.
+
+Har rejimda: API til haqida 400 qaytarsa, so'rov **bir marta** tilsiz qayta
+yuboriladi va bu jarayon oxirigacha shu model uchun eslab qolinadi.
+
+**Transkript har doim o'zbek lotinida.** STT kirillda qaytarsa —
+deterministik transliteratsiya bilan lotinga o'giriladi; aniq boshqa tilda
+(qozoq, turk, rus, ingliz) qaytarsa — ishonchsiz hisoblanadi va mijoz
+"Kechirasiz, eshitolmadim, takrorlaysizmi?" deydi (LLM chaqirilmaydi).
+
+**Xatolar bosqich bilan.** Ovozli navbat xatosi UI'da xom JSON emas, bosqich
+bilan o'zbekcha chiqadi: "Nutqni tanish (STT) bosqichida xato: …". Server
+javobi: `{error, stage, message}` (`stage`: audio | stt | llm | tts | session | server).
+
+### STT modellarini solishtirish — `npm run diag:stt`
+
+```bash
+npm run bench:record          # brauzerda sentences.uz.txt gaplarini o'qib yozing
+npm run diag:stt              # narx taxmini, tasdiq so'raydi (pullik)
+npm run diag:stt -- --yes     # so'ramasdan
+npm run diag:stt -- --limit 5 # faqat 5 ta namuna
+```
+
+Kalitga ochiq modellardan (`gpt-4o-mini-transcribe`, `gpt-4o-transcribe`,
+`gpt-transcribe`, `gpt-live-transcribe`; diarize faqat `--with-diarize`)
+har biri × til rejimi (`omit`, `prompt`) × namuna uchun: tanilgan matn, WER
+va CER (apostrof/harf/tinish normallashtirilgan, kirill → lotin o'girilgandan
+keyin ham), kechikish, provayder aytgan til. Oxirida reyting va `.env` uchun
+`OPENAI_STT_MODEL` / `OPENAI_STT_LANGUAGE_MODE` tavsiyasi. Namuna bo'lmasa
+hech qanday pullik chaqiruv qilinmaydi.
 
 `OPENAI_STT_MODEL` yoki `OPENAI_TTS_MODEL` bo'sh bo'lsa **ovoz route'lari
 umuman ro'yxatga olinmaydi** va matnli rejim hech narsa sezmaydi. Server

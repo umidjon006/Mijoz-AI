@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
+import { describeApiError } from '../lib/api-error.js';
 import type { TrainingApi, VoiceTurnResponse } from '../lib/api.js';
 import { useWavRecorder } from '../lib/useWavRecorder.js';
 import { Notice } from './ui.js';
@@ -116,7 +117,7 @@ export function VoiceControls({
 
       } catch (err) {
         setPhase('idle');
-        setError(err instanceof Error ? err.message : String(err));
+        setError(describeApiError(err));
       } finally {
         busyRef.current = false;
       }
@@ -142,7 +143,7 @@ export function VoiceControls({
       setPhase('playing');
       await player.play().catch(() => setPhase('idle'));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeApiError(err));
     } finally {
       busyRef.current = false;
     }
