@@ -20,6 +20,8 @@ import {
   canRecord,
   ensureAudioRunning,
   INITIAL_RECORD_STATE,
+  joinChunks,
+  trimSilence,
   MIN_RECORDING_SECONDS,
   recordingStep,
   type RecordEvent,
@@ -1340,6 +1342,38 @@ check(report, "rejimlar aralashmaydi, o'chirilgan holatda boshlanmaydi, 30 s da 
   assertDeepEqual(auto.commands, ['start', 'send'], 'maksimal vaqtda yuboriladi');
   const failed = play('toggle', [{ type: 'click' }, { type: 'startFailed' }]);
   assertEqual(failed.state.phase, 'idle', "mikrofon ruxsati yo'q — idle");
+});
+
+/** `seconds` uzunlikdagi signal: `speech` oralig'ida ovoz (sinus), qolgani jimlik. */
+function signal(rate: number, seconds: number, speech: Array<[number, number]>): Float32Array {
+  const out = new Float32Array(Math.round(rate * seconds));
+  for (const [from, to] of speech) {
+    for (let i = Math.round(from * rate); i < Math.round(to * rate); i += 1) out[i] = 0.3 * Math.sin(i / 3);
+  }
+  return out;
+}
+
+check(report, "jimlik kesiladi: bosh va oxir (200 ms zaxira bilan), o'rtadagi pauza qoladi", () => {
+  const rate = 16_000;
+  const trimmed = trimSilence(signal(rate, 4, [[1, 1.5], [2.5, 3]]), rate);
+  const sec = trimmed.length / rate;
+  assert(sec > 2.3 && sec < 2.5, `kutilgan ~2.4 s (2.0 nutq+pauza + 2×0.2 zaxira), kelgan ${sec.toFixed(2)}`);
+});
+
+check(report, "faqat jimlik -> bo'sh (yuborilmaydi); kesilgandan keyin 0.4 s dan qisqa -> 'juda qisqa'", () => {
+  const rate = 16_000;
+  assertEqual(trimSilence(signal(rate, 3, []), rate).length, 0, "bo'sh");
+  // 3 s yozuv, lekin nutq atigi 0.1 s: kesilgach ~0.5 s -> 0.4 dan uzun; 0.0 s nutq -> 0.
+  const tiny = trimSilence(signal(rate, 3, [[1, 1.02]]), rate).length / rate;
+  assert(tiny < 0.5, `qisqa nutq: ${tiny.toFixed(2)} s`);
+  const step = recordingStep(
+    { phase: 'stopping', stopRequested: false, notice: null },
+    { type: 'stopped', seconds: trimSilence(signal(rate, 3, []), rate).length / rate },
+    'toggle',
+  );
+  assertEqual(step.command, 'discard', "jimlik — serverga yuborilmaydi");
+  assertEqual(step.state.notice, 'too_short', 'yumshoq xabar');
+  assertEqual(joinChunks([new Float32Array([1, 2]), new Float32Array([3])]).length, 3, "bo'laklar qo'shiladi");
 });
 
 await checkAsync(report, "AudioContext 'suspended' -> resume() chaqiriladi (0.00 s yozuv sababi)", async () => {

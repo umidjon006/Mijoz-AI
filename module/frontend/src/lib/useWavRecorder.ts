@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { ensureAudioRunning, MIN_RECORDING_SECONDS } from './voice-recording.js';
+import { ensureAudioRunning, joinChunks, MIN_RECORDING_SECONDS, trimSilence } from './voice-recording.js';
 
 export const WAV_SAMPLE_RATE = 16_000;
 
@@ -209,7 +209,6 @@ export function useWavRecorder(options: UseWavRecorderOptions = {}): WavRecorder
 
   const stop = useCallback(async (): Promise<RecordingResult> => {
     const rate = contextRef.current?.sampleRate ?? WAV_SAMPLE_RATE;
-    const elapsed = samplesRef.current / rate;
     if (!recordingRef.current) return { wav: null, seconds: 0 };
     recordingRef.current = false;
     setRecording(false);
@@ -218,9 +217,13 @@ export function useWavRecorder(options: UseWavRecorderOptions = {}): WavRecorder
     chunksRef.current = [];
     samplesRef.current = 0;
 
+    // Boshdagi/oxirdagi jimlik kesiladi: STT tezroq va aniqroq, "juda qisqa"
+    // qarori esa HAQIQIY nutq davomiyligiga qaraydi (faqat jimlik — yuborilmaydi).
+    const speech = trimSilence(joinChunks(chunks), rate);
+    const elapsed = speech.length / rate;
     // Juda qisqa — XATO emas: chaqiruvchi yumshoq xabar ko'rsatadi.
     if (elapsed < minSeconds) return { wav: null, seconds: elapsed };
-    return { wav: encodeWav(chunks, rate), seconds: elapsed };
+    return { wav: encodeWav([speech], rate), seconds: elapsed };
   }, [minSeconds]);
 
   const cancel = useCallback((): void => {

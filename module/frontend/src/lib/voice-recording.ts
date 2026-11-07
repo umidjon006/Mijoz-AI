@@ -146,3 +146,44 @@ export async function ensureAudioRunning(context: {
   }
   return context.state === 'running';
 }
+
+/**
+ * Boshdagi va oxirdagi jimlikni kesadi (o'rtadagi pauzalar saqlanadi).
+ * 20 ms oynalar bo'yicha RMS; `threshold` dan baland birinchi va oxirgi
+ * oyna atrofida `padMs` zaxira qoldiriladi (so'z boshi/oxiri kesilmasin).
+ * Hammasi jimlik bo'lsa — bo'sh massiv (0 s -> "juda qisqa", yuborilmaydi).
+ */
+export function trimSilence(
+  samples: Float32Array,
+  sampleRate: number,
+  options: { threshold?: number; padMs?: number; frameMs?: number } = {},
+): Float32Array {
+  const threshold = options.threshold ?? 0.015;
+  const frame = Math.max(1, Math.round((sampleRate * (options.frameMs ?? 20)) / 1000));
+  const pad = Math.round((sampleRate * (options.padMs ?? 200)) / 1000);
+  let first = -1;
+  let last = -1;
+  for (let start = 0; start < samples.length; start += frame) {
+    const end = Math.min(samples.length, start + frame);
+    let sum = 0;
+    for (let i = start; i < end; i += 1) sum += (samples[i] as number) ** 2;
+    if (Math.sqrt(sum / (end - start)) >= threshold) {
+      if (first < 0) first = start;
+      last = end;
+    }
+  }
+  if (first < 0) return new Float32Array(0);
+  return samples.slice(Math.max(0, first - pad), Math.min(samples.length, last + pad));
+}
+
+/** Bo'laklarni bitta massivga qo'shadi. */
+export function joinChunks(chunks: readonly Float32Array[]): Float32Array {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
