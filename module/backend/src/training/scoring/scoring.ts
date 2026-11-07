@@ -25,7 +25,7 @@ import {
   type RegenerateFields,
   type UzLatinReport,
 } from '../language.js';
-import { hasPriceFacts, isPriceRedLine, PRICE_ACCURACY_CRITERION } from '../offer-facts.js';
+import { findPriceMismatches, hasPriceFacts, isPriceRedLine, PRICE_ACCURACY_CRITERION } from '../offer-facts.js';
 import { personaCardSchema, type PersonaCard } from '../persona.js';
 import type { BusinessProfile } from '../profile-schema.js';
 import type {
@@ -873,6 +873,13 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
         };
       }
       if (priceCheck) processed.coaching.priceCheck = priceCheck;
+      if (priceCheck === 'checked' && profile) {
+        // Mexanik tekshiruv: sotuvchi profilda yo'q narx aytdimi (LLM bahosidan tashqari).
+        processed.coaching.priceMismatches = findPriceMismatches(turns, profile).map((m) => ({
+          turnSeq: m.turnSeq,
+          figure: m.figure,
+        }));
+      }
       processed.coaching.lowQualityReasons = [
         ...(evidenceLow ? (['evidence'] as const) : []),
         ...(languageLow ? (['language'] as const) : []),

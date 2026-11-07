@@ -77,7 +77,7 @@ import {
   userFacingScoringText,
   type GetPlaybook,
 } from './scoring/scoring.js';
-import { hasPriceFacts, isPriceRedLine } from './offer-facts.js';
+import { findPriceMismatches, hasPriceFacts, isPriceRedLine } from './offer-facts.js';
 import { buildPersonaUserPrompt, PROMPT_VERSION, TURN_STATIC_PREFIX } from './prompts.js';
 import {
   buildScoringSystemPrompt,
@@ -1966,6 +1966,16 @@ function verifyNoPriceMode(): void {
     const out = processLlmScoring(raw, scope.criteria, turns, [], { redLines: scope.redLines, script: null });
     assertEqual(out.coaching.redLineViolations?.length ?? 0, 0, 'belgilanmadi');
     assert(!out.criteria.some((c) => c.code === 'product_accuracy'), 'mezon natijada yo\'q');
+  });
+
+  check(report, "findPriceMismatches: profildagi narx/karrasi — ok; boshqa narx — belgilanadi; narxsizda — hech narsa", () => {
+    const priced = { primaryOffers: ["Paket A: 2 oy. Narx: oyiga 900 000 so'm"], additionalNotes: null };
+    const t = (text: string) => [{ seq: 5, speaker: 'seller' as const, text }];
+    assertEqual(findPriceMismatches(t("oyiga 900 ming so'm"), priced).length, 0, '900 ming');
+    assertEqual(findPriceMismatches(t("ikki oyga 1 800 000 so'm"), priced).length, 0, 'karrasi');
+    assertEqual(findPriceMismatches(t("2 000 000 so'm bo'ladi"), priced).length, 1, 'xato narx');
+    assertEqual(findPriceMismatches(t('raqamim 90 123 45 67'), priced).length, 0, 'telefon emas');
+    assertEqual(findPriceMismatches(t("2 000 000 so'm"), NO_PRICE).length, 0, 'narxsiz rejim');
   });
 
   check(report, "baholash prompti: narxsiz — narx tekshiruvi o'chiq, narx qizil chiziqlari ko'rsatilmaydi", () => {

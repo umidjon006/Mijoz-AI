@@ -18,7 +18,9 @@
  */
 export function offerTopic(offer: string): string {
   const text = offer.trim();
-  const separators = [':', ' — ', ' – ', ' - ', ','];
+  // "Nom — Qism: shartlar" — `:` dan oldingi qism raqamsiz bo'lsa, u to'liq nom.
+  const colon = text.indexOf(':');
+  const separators = colon > 0 && !/\d/.test(text.slice(0, colon)) ? [':'] : [':', ' — ', ' – ', ' - ', ','];
   let cut = text.length;
   for (const sep of separators) {
     const at = text.indexOf(sep);
@@ -137,3 +139,36 @@ export function isPriceRedLine(rule: string): boolean {
 
 /** Narx aniqligini baholaydigan mezon kodi (standart rubrikada). */
 export const PRICE_ACCURACY_CRITERION = 'product_accuracy';
+
+const PRICE_CONTEXT = /so['ʻ‘’`]?m|sum\b|сум|narx|ming|mln|million|to['ʻ‘’`]?lov|\$|dollar/iu;
+
+export interface PriceMismatch {
+  turnSeq: number;
+  figure: number;
+  text: string;
+}
+
+/**
+ * Sotuvchi aytgan, profilda YO'Q narx raqamlari (mexanik tekshiruv; asosiy
+ * hakam — LLM baholovchi). Ruxsat: profildagi narx yoki uning 1..12 karrasi
+ * (masalan oylik narx x oylar soni). Faqat narx konteksti bor gaplar
+ * ("so'm", "narx", "ming"...) va >= 10 000 raqamlar — telefon/sana emas.
+ * Profilda narx fakti bo'lmasa — bo'sh (narxsiz rejimda tekshirilmaydi).
+ */
+export function findPriceMismatches(
+  turns: ReadonlyArray<{ seq: number; speaker: 'seller' | 'customer'; text: string }>,
+  profile: { primaryOffers: readonly string[]; additionalNotes?: string | null },
+): PriceMismatch[] {
+  if (!hasPriceFacts(profile)) return [];
+  const known = [...profile.primaryOffers, profile.additionalNotes ?? ''].flatMap((t) => extractPriceFigures(t));
+  const allowed = new Set<number>();
+  for (const value of known) for (let k = 1; k <= 12; k += 1) allowed.add(value * k);
+  const out: PriceMismatch[] = [];
+  for (const turn of turns) {
+    if (turn.speaker !== 'seller' || !PRICE_CONTEXT.test(turn.text)) continue;
+    for (const figure of extractPriceFigures(turn.text)) {
+      if (figure >= 10_000 && !allowed.has(figure)) out.push({ turnSeq: turn.seq, figure, text: turn.text });
+    }
+  }
+  return out;
+}

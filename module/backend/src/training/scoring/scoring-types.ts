@@ -90,6 +90,8 @@ export interface CoachingResult {
    * qizil chiziqlari olib tashlangan). Profil bo'lmasa — yo'q.
    */
   priceCheck?: 'checked' | 'skipped_no_data';
+  /** Sotuvchi aytgan, profilda yo'q narxlar (mexanik tekshiruv; faqat `priceCheck: 'checked'`). */
+  priceMismatches?: Array<{ turnSeq: number; figure: number }>;
 }
 
 export interface KeyMomentResult {

@@ -148,6 +148,8 @@ export const mashq = {
   criterionNotScored: 'Baholanmadi',
   /** Profilda narx fakti yo'q — narx aniqligi mezoni va narx qizil chiziqlari baholanmadi. */
   priceCheckSkipped: "Narx/shart aniqligi tekshirilmadi (ma'lumot kiritilmagan)",
+  /** Sotuvchi profilda yo'q narx aytgan (mexanik tekshiruv). */
+  priceMismatchTitle: "Profilda yo'q narx aytildi:",
   evidenceLabel: 'Dalil',
   evidenceRejected: 'Dalil tekshiruvdan o\'tmadi, shuning uchun baho qo\'yilmadi',
   weight: 'vazn',

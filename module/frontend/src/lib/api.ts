@@ -225,6 +225,8 @@ export interface ResultPayload {
     lowQualityReasons?: Array<'evidence' | 'language'>;
     /** `skipped_no_data` — profilda narx yo'q, narx/shart aniqligi tekshirilmadi. */
     priceCheck?: 'checked' | 'skipped_no_data';
+    /** Sotuvchi aytgan, profilda yo'q narxlar. */
+    priceMismatches?: Array<{ turnSeq: number; figure: number }>;
   } | null;
   keyMoments: Array<{ turnSeq: number; kind: string; explanation: string }>;
   model: string | null;

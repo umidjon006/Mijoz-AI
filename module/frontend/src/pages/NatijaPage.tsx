@@ -235,6 +235,21 @@ export function NatijaPage({
           <span data-testid="price-check-skipped">{mashq.priceCheckSkipped}</span>
         </Notice>
       ) : null}
+      {result.coaching?.priceMismatches && result.coaching.priceMismatches.length > 0 ? (
+        <Notice kind="warn">
+          <span data-testid="price-mismatches">
+            {mashq.priceMismatchTitle}{' '}
+            {result.coaching.priceMismatches.map((m, i) => (
+              <span key={`${m.turnSeq}-${m.figure}`}>
+                {i > 0 ? ', ' : ''}
+                <button type="button" className="mq-quote" onClick={() => jumpToTurn(m.turnSeq)}>
+                  {m.figure.toLocaleString('ru-RU')} (#{m.turnSeq})
+                </button>
+              </span>
+            ))}
+          </span>
+        </Notice>
+      ) : null}
       <RedLineViolations
         violations={result.coaching?.redLineViolations}
         onQuoteClick={jumpToTurn}

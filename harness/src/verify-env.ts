@@ -46,7 +46,9 @@ import {
 import { LlmCallError } from '../../module/backend/src/training/errors.js';
 import { personaCardSchema } from '../../module/backend/src/training/persona.js';
 import { turnResultSchema } from '../../module/backend/src/training/state.js';
-import { llmScoringSchema } from '../../module/backend/src/training/scoring/scoring.js';
+import { llmScoringSchema, resolvePriceScope } from '../../module/backend/src/training/scoring/scoring.js';
+import { DEFAULT_TRAINING_RUBRIC, flattenCriteria } from '../../module/backend/src/training/scoring/rubric.js';
+import { findPriceMismatches, hasPriceFacts, offerTopic } from '../../module/backend/src/training/offer-facts.js';
 import {
   applyParamFix,
   billableOutputTokens,
@@ -1043,6 +1045,31 @@ async function main(): Promise<void> {
     const real = resolveBusinessData(undefined, { profilePath: realPath, demoPath: demoProfilePath, scriptPath: join(dir, 'x.md') });
     assertEqual(real.isDemo, false, 'haqiqiy');
     assert(!describeBusinessData(real).includes('DEMO'), "haqiqiy profilda DEMO yozuvi yo'q");
+  });
+
+  check(report, "narxli profil (IT Live shakli): narx tekshiruvi YOQILGAN; to'g'ri narx — ok, noto'g'ri — belgilanadi", () => {
+    const profile = {
+      primaryOffers: [
+        "Dasturlash — Foundation: 3 oy. Telegram bot yasash o'rgatiladi. Narx: 690 000 so'm.",
+        "AI kursi: Prompt yozish, Avtomatlashtirish, \"Ikkinchi miya\" yaratish, Vibe Coding. 2 oy. Narx: oyiga 900 000 so'm. Agar birdan to'lasa: 1 600 000 so'm.",
+      ],
+      redLines: [] as string[],
+    };
+    assert(hasPriceFacts(profile), 'narx fakti bor');
+    const scope = resolvePriceScope(profile as unknown as BusinessProfile, flattenCriteria(DEFAULT_TRAINING_RUBRIC));
+    assertEqual(scope.priceCheck, 'checked', 'tekshiruv yoqilgan');
+    assert(scope.criteria.some((c) => c.code === 'product_accuracy'), "\"Mahsulot va narx bo'yicha to'g'ri ma'lumot\" mezoni bor");
+    const ok = findPriceMismatches([{ seq: 1, speaker: 'seller', text: "AI kursi 900 000 so'm oyiga" }], profile);
+    assertEqual(ok.length, 0, "900 000 so'm oyiga — to'g'ri");
+    const lump = findPriceMismatches([{ seq: 1, speaker: 'seller', text: "Birdan to'lasangiz 1 600 000 so'm" }], profile);
+    assertEqual(lump.length, 0, "1 600 000 — to'g'ri");
+    const bad = findPriceMismatches([{ seq: 3, speaker: 'seller', text: "AI kursi 2 000 000 so'm" }], profile);
+    assertEqual(bad.length, 1, "2 000 000 so'm — belgilanadi");
+    assertEqual(bad[0]?.figure, 2_000_000, 'raqam');
+    assertEqual(bad[0]?.turnSeq, 3, 'navbat');
+    const customer = findPriceMismatches([{ seq: 2, speaker: 'customer', text: "2 000 000 so'm emasmi?" }], profile);
+    assertEqual(customer.length, 0, 'mijoz gapi tekshirilmaydi');
+    assertEqual(offerTopic(profile.primaryOffers[0] as string), 'Dasturlash — Foundation', "to'liq nom (':' gacha)");
   });
 
   await checkAsync(report, "demo profildan narxlar olib tashlangan nusxa ham DEMO (belgi yo'qolmaydi)", async () => {
