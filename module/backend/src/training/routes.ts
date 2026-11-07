@@ -19,7 +19,7 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-import { ARCHETYPE_KEYS, getArchetype, listArchetypes } from './archetypes.js';
+import { ARCHETYPE_KEYS, getArchetype, listArchetypes, type ArchetypeKey } from './archetypes.js';
 import type { TrainingEngine } from './engine.js';
 import { isTrainingError, TrainingError, type TrainingErrorCode } from './errors.js';
 import type { PersonaCard } from './persona.js';
@@ -103,6 +103,11 @@ export interface TrainingRoutesConfig {
   autoScoreOnEnd?: boolean;
   /** Bir foydalanuvchi uchun daqiqadagi so'rov chegarasi. Default 60. */
   rateLimitPerMinute?: number;
+  /**
+   * UI'da ko'rsatiladigan mijoz turlari (tartib saqlanadi). Berilmasa — hammasi.
+   * Faqat ro'yxatni cheklaydi; arxetiplar mantig'i o'zgarmaydi.
+   */
+  archetypes?: readonly ArchetypeKey[];
   /**
    * Debug ma'lumotini (holat sonlari, blockers) javobga qo'shish.
    * FAQAT harness uchun; modul o'zi hech qachon `true` qilmaydi.
@@ -225,6 +230,7 @@ export async function registerTrainingRoutes(
   const prefix = deps.config?.prefix ?? '/api/v1/training';
   const autoScore = deps.config?.autoScoreOnEnd ?? true;
   const allowDebug = deps.config?.allowDebug ?? false;
+  const visibleArchetypes = deps.config?.archetypes;
   const rateLimit = createRateLimiter(deps.config?.rateLimitPerMinute ?? 60);
   const authorize = deps.authorize ?? ((): void => undefined);
 
@@ -288,14 +294,16 @@ export async function registerTrainingRoutes(
 
   app.get(`${prefix}/archetypes`, async (req, reply) =>
     guard(req, reply, 'training:use', async () => ({
-      archetypes: listArchetypes().map((a) => ({
-        key: a.key,
-        title: a.title,
-        description: a.description,
-        difficulty: a.difficulty,
-        intent: a.intent,
-        maxTurns: a.maxTurns,
-      })),
+      archetypes: listArchetypes()
+        .filter((a) => !visibleArchetypes || (visibleArchetypes as readonly string[]).includes(a.key))
+        .map((a) => ({
+          key: a.key,
+          title: a.title,
+          description: a.description,
+          difficulty: a.difficulty,
+          intent: a.intent,
+          maxTurns: a.maxTurns,
+        })),
     })),
   );
 

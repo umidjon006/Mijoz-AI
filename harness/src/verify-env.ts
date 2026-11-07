@@ -71,6 +71,7 @@ import {
   type OpenAiVoiceConfig,
 } from './voice/openai.js';
 import { rankStt, scoreSample, summarizeStt } from './voice/stt-compare.js';
+import { parseArchetypeList } from './demo-env.js';
 import {
   BusinessDataError,
   businessProfilePath,
@@ -536,6 +537,26 @@ async function main(): Promise<void> {
     assert(recover > 0, 'failStalePending chaqirilmagan');
     assert(listen > recover, "listen'dan oldin bo'lishi kerak");
     assert(source.includes('olderThanMs: config.scoringTimeoutMs'), 'chegara = baholash timeout\'i');
+  });
+
+  check(report, "DEMO_ARCHETYPES: bo'sh -> hammasi, ro'yxat, takror, noma'lum -> xato", () => {
+    assertEqual(parseArchetypeList(undefined), undefined, "yo'q");
+    assertEqual(parseArchetypeList('  , '), undefined, "bo'sh");
+    assertDeepEqual(parseArchetypeList('ready_buyer, negotiator'), ['ready_buyer', 'negotiator'], "ro'yxat");
+    assertDeepEqual(parseArchetypeList('negotiator,negotiator'), ['negotiator'], 'takror');
+    let caught: unknown;
+    try {
+      parseArchetypeList('ready_buyer,vip');
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof Error && caught.message.includes('vip'), "noma'lum kalit aytiladi");
+  });
+
+  await checkAsync(report, 'server.ts: DEMO_ARCHETYPES route va _harness ga uzatiladi', async () => {
+    const source = await readFile(join(harnessRoot, 'src', 'server.ts'), 'utf8');
+    assert(source.includes("parseArchetypeList(envStr('DEMO_ARCHETYPES'))"), 'env o\'qiladi');
+    assert(source.includes('...(archetypes ? { archetypes } : {})'), 'route config');
   });
 
   await checkAsync(report, "server.ts: DEMO_PRESENTATION — debug yo'q, UI'ga presentation flag", async () => {

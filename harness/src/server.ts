@@ -21,7 +21,7 @@ import { registerTrainingRoutes } from '../../module/backend/src/training/routes
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile, TrainingContext } from '../../module/backend/src/training/ports.js';
 import { createScoringService } from '../../module/backend/src/training/scoring/scoring.js';
-import { DEMO_BUSINESS_ID, DEMO_USER_ID, ensureDemoRows } from './demo-env.js';
+import { DEMO_BUSINESS_ID, DEMO_USER_ID, ensureDemoRows, parseArchetypeList } from './demo-env.js';
 import { BusinessDataError, describeBusinessData, resolveBusinessData } from './business-data.js';
 import {
   createTrainerLlm,
@@ -155,6 +155,9 @@ async function main(): Promise<void> {
   const fakeAuth = envBool('HARNESS_AUTH', true);
   // Rahbariyatga ko'rsatish rejimi (bo'sh = o'chiq).
   const presentation = envBool('DEMO_PRESENTATION', false);
+  // UI'da ko'rsatiladigan mijoz turlari (bo'sh = to'rttalasi).
+  const archetypes = parseArchetypeList(envStr('DEMO_ARCHETYPES'));
+  console.log(`Mijoz turlari: ${archetypes ? archetypes.join(', ') : 'hammasi (DEMO_ARCHETYPES bo\'sh)'}`);
   if (presentation) console.log("Taqdimot rejimi: DEMO_PRESENTATION=1 (STT tekshiruvi, debug yo'q, do'stona xatolar).");
 
   await registerTrainingRoutes(app, {
@@ -180,7 +183,12 @@ async function main(): Promise<void> {
     },
     ...(voice ? { voice } : {}),
     // Taqdimot rejimida debug ma'lumoti (holat sonlari, vaqtlar) umuman yuborilmaydi.
-    config: { allowDebug: !presentation, autoScoreOnEnd: true, rateLimitPerMinute: 240 },
+    config: {
+      allowDebug: !presentation,
+      autoScoreOnEnd: true,
+      rateLimitPerMinute: 240,
+      ...(archetypes ? { archetypes } : {}),
+    },
     logger: app.log,
   });
 
@@ -201,6 +209,7 @@ async function main(): Promise<void> {
     debug: !presentation,
     /** `DEMO_PRESENTATION=1`: STT tekshiruvi default, debug/provayder paneli yo'q, do'stona xatolar. */
     presentation,
+    archetypes: archetypes ?? null,
   }));
 
   await app.listen({ port: PORT, host: '127.0.0.1' });

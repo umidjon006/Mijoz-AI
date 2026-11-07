@@ -1631,6 +1631,25 @@ check(report, "taqdimot rejimi: xatolar do'stona — kod, HTTP, JSON, provayder 
   assertEqual(errorStage('voice_review_expired'), 'session', 'bosqich');
 });
 
+await checkAsync(report, "route GET /archetypes: config.archetypes ro'yxatni cheklaydi (bo'sh — hammasi)", async () => {
+  const make = async (archetypes?: readonly ('ready_buyer' | 'negotiator' | 'problematic' | 'info_seeker')[]) => {
+    const app = Fastify({ logger: false });
+    await registerTrainingRoutes(app, {
+      engine: {} as never,
+      scoring: {} as never,
+      withTenant: (async () => undefined) as never,
+      getContext: () => ({ businessId: randomUUID(), userId: randomUUID(), seatId: null }),
+      config: { autoScoreOnEnd: false, ...(archetypes ? { archetypes } : {}) },
+    });
+    await app.ready();
+    const res = await app.inject({ url: '/api/v1/training/archetypes' });
+    await app.close();
+    return (res.json() as { archetypes: Array<{ key: string }> }).archetypes.map((a) => a.key);
+  };
+  assertEqual((await make()).length, 4, "hammasi");
+  assertDeepEqual(await make(['ready_buyer', 'negotiator']), ['ready_buyer', 'negotiator'], 'faqat tanlanganlar');
+});
+
 // ---------------------------------------------------------------------------
 await dbBlock();
 

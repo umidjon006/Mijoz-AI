@@ -547,6 +547,10 @@ tafsilotsiz, do'stona o'zbekcha; yuqorida bir bosishli **"Yangi mashq"** (joriy
 suhbatni yopib, oxirgi mijoz turi bilan yangisini boshlaydi). `DEMO_LLM=1` dagi
 qizil "DEMO AI" ogohlantirishi ataylab qoldirilgan.
 
+**`DEMO_ARCHETYPES=ready_buyer,negotiator`** — UI'da qaysi mijoz turlari
+ko'rinadi (vergul bilan; bo'sh = to'rttalasi; noma'lum kalit — server startda
+xato). Faqat ro'yxat cheklanadi, arxetiplar mantig'i o'zgarmaydi.
+
 Demo'dan oldingi holat git tegida: `demo-v1`.
 
 ### Yozish usuli va kechikish

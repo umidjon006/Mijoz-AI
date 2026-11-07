@@ -12,6 +12,7 @@ import {
   profileSchema,
   type BusinessProfile,
 } from '../../module/backend/src/training/profile-schema.js';
+import { ARCHETYPE_KEYS, type ArchetypeKey } from '../../module/backend/src/training/archetypes.js';
 import type { TrainingContext } from '../../module/backend/src/training/ports.js';
 import { superuserDatabaseUrl } from './withTenant.js';
 
@@ -76,6 +77,25 @@ export interface CliArgs {
   direction?: 'inbound' | 'outbound';
   debug: boolean;
   sessions?: number;
+}
+
+/**
+ * `DEMO_ARCHETYPES=ready_buyer,negotiator` — UI'da ko'rsatiladigan mijoz turlari.
+ * Bo'sh -> `undefined` (hammasi). Noma'lum kalit jim o'tkazilmaydi — xato.
+ */
+export function parseArchetypeList(raw: string | undefined): ArchetypeKey[] | undefined {
+  const keys = (raw ?? '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+  if (keys.length === 0) return undefined;
+  const unknown = keys.filter((k) => !(ARCHETYPE_KEYS as readonly string[]).includes(k));
+  if (unknown.length > 0) {
+    throw new Error(
+      `DEMO_ARCHETYPES da noma'lum mijoz turi: ${unknown.join(', ')}. Mavjud: ${ARCHETYPE_KEYS.join(', ')}`,
+    );
+  }
+  return [...new Set(keys)] as ArchetypeKey[];
 }
 
 export function parseArgs(argv: readonly string[]): CliArgs {

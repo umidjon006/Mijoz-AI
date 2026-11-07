@@ -31,3 +31,6 @@ harness/.pg-local/
 
 # Haqiqiy qo'ng'iroq yozuvlari va transkriptlar — SHAXSIY, hech qachon commit qilinmaydi
 harness/data/real-calls/
+
+# Haqiqiy biznes xom ma'lumotlari (kurslar, skript, e'tirozlar, FAQ) — commit qilinmaydi
+harness/data/real-business/
