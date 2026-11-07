@@ -152,8 +152,20 @@ tushiring. Demo profillar faqat aniq so'ralganda ishlatiladi:
 `HARNESS_PROFILE=taksi npm run serve` yoki `npm run play -- --profile taksi`
 (demo rejimida skript yo'q).
 
-**`business-profile.json`** — boshlang'ich nusxa sifatida `o_quv_markaz` demo
-profili qo'yilgan; uni o'z biznesingiz ma'lumotlari bilan almashtiring:
+**Haqiqiy fayllar git'da emas.** `harness/data/business-profile.json` va
+`harness/data/sales-script.md` `.gitignore` da — faqat shu kompyuterda turadi.
+Git'da faqat namunalar: `business-profile.demo.json` va `sales-script.example.md`.
+`business-profile.json` bo'lmasa demo namuna yuklanadi. Demo ma'lumot ishlatilsa
+(demo kalit, demo namuna yoki uning nusxasi) server startda
+`Biznes: <fayl> · DEMO MA'LUMOT` deb yozadi va UI tepasida (taqdimot rejimida ham)
+jigarrang **"DEMO MA'LUMOT"** belgisi turadi — demo ma'lumot hech qachon haqiqiy
+deb ko'rsatilmaydi.
+
+**Topshirish paketi:** `npm run handoff:pack` -> `dist/handoff-<commit>.tar.gz`
+(faqat commit qilingan fayllar; `harness/data/**` va `.env` hech qachon kirmaydi,
+arxiv ro'yxati qayta tekshiriladi).
+
+`business-profile.json` shakli (namuna — `business-profile.demo.json` dan qisqartirilgan):
 
 ```json
 {

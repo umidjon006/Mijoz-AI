@@ -47,6 +47,7 @@
     "corpus:transcribe": "npm run corpus:transcribe -w sotuv-trener-harness --",
     "corpus:compare": "npm run corpus:compare -w sotuv-trener-harness --",
     "corpus:analyze": "npm run corpus:analyze -w sotuv-trener-harness --",
-    "verify:corpus": "npm run verify:corpus -w sotuv-trener-harness --"
+    "verify:corpus": "npm run verify:corpus -w sotuv-trener-harness --",
+    "handoff:pack": "npm run handoff:pack -w sotuv-trener-harness"
   }
 }

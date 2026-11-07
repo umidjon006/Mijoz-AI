@@ -20,6 +20,7 @@
  *  11. OpenAI ovoz adapterlari (soxta fetch): so'rov shakli, xatolarda kalit
  *      yo'q, timeout toifasi.
  */
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,7 +73,10 @@ import {
 } from './voice/openai.js';
 import { rankStt, scoreSample, summarizeStt } from './voice/stt-compare.js';
 import { parseArchetypeList } from './demo-env.js';
+import { forbiddenHandoffEntries, HANDOFF_PATHSPECS } from './handoff.js';
 import {
+  describeBusinessData,
+  demoProfilePath,
   BusinessDataError,
   businessProfilePath,
   dataDir,
@@ -515,6 +519,7 @@ async function main(): Promise<void> {
     'corpus-compare',
     'corpus-analyze',
     'verify-corpus',
+    'handoff-pack',
   ];
 
   for (const name of entryPoints) {
@@ -998,12 +1003,71 @@ async function main(): Promise<void> {
     assert(script !== null && script.stages.length >= 3, 'bosqichlar bor');
   });
 
-  check(report, "default manba — fayl (demo emas); demo faqat aniq kalit bilan", () => {
+  check(report, "default manba — business-profile.json (yo'q bo'lsa demo namuna); demo kalit — aniq", () => {
     const fromFile = resolveBusinessData();
-    assert(fromFile.source.endsWith('harness/data/business-profile.json'), `manba: ${fromFile.source}`);
+    assert(
+      fromFile.source.endsWith('harness/data/business-profile.json') ||
+        fromFile.source.endsWith('harness/data/business-profile.demo.json'),
+      `manba: ${fromFile.source}`,
+    );
+    if (fromFile.source.endsWith('.demo.json')) assert(fromFile.isDemo, 'namuna — DEMO');
     const demo = resolveBusinessData('taksi');
     assertEqual(demo.source, 'demo:taksi', 'demo manba');
     assertEqual(demo.script, null, 'demo skriptsiz');
+    assertEqual(demo.isDemo, true, 'demo kalit — DEMO');
+  });
+
+  await checkAsync(report, "haqiqiy fayl yo'q -> demo namuna, DEMO MA'LUMOT; startda qaysi fayl o'qilgani aytiladi", async () => {
+    const r = resolveBusinessData(undefined, {
+      profilePath: join(dir, 'yoq-profil.json'),
+      demoPath: demoProfilePath,
+      scriptPath: join(dir, 'yoq-skript.md'),
+    });
+    assertEqual(r.isDemo, true, 'demo');
+    assert(r.source.endsWith('business-profile.demo.json'), r.source);
+    const line = describeBusinessData(r);
+    assert(line.includes('business-profile.demo.json') && line.includes("DEMO MA'LUMOT"), line);
+  });
+
+  await checkAsync(report, "business-profile.json demo nusxasi bo'lsa ham DEMO; boshqa mazmun — haqiqiy", async () => {
+    const demoJson = JSON.parse(await readFile(demoProfilePath, 'utf8')) as Record<string, unknown>;
+    const copyPath = join(dir, 'copy.json');
+    await writeFile(copyPath, JSON.stringify(demoJson));
+    const copy = resolveBusinessData(undefined, { profilePath: copyPath, demoPath: demoProfilePath, scriptPath: join(dir, 'x.md') });
+    assertEqual(copy.isDemo, true, "nusxa — DEMO (kalitlar tartibi muhim emas)");
+    const realPath = join(dir, 'real.json');
+    await writeFile(realPath, JSON.stringify({ ...demoJson, businessDescription: 'Boshqa markaz tavsifi' }));
+    const real = resolveBusinessData(undefined, { profilePath: realPath, demoPath: demoProfilePath, scriptPath: join(dir, 'x.md') });
+    assertEqual(real.isDemo, false, 'haqiqiy');
+    assert(!describeBusinessData(real).includes('DEMO'), "haqiqiy profilda DEMO yozuvi yo'q");
+  });
+
+  check(report, "git: haqiqiy profil/skript ignore va kuzatilmaydi; namunalar kuzatiladi", () => {
+    const repo = join(harnessRoot, '..');
+    const ignored = (path: string): boolean => spawnSync('git', ['check-ignore', '-q', path], { cwd: repo }).status === 0;
+    const tracked = (path: string): boolean =>
+      spawnSync('git', ['ls-files', '--error-unmatch', path], { cwd: repo, stdio: 'ignore' }).status === 0;
+    assert(ignored('harness/data/business-profile.json') && !tracked('harness/data/business-profile.json'), 'business-profile.json');
+    assert(ignored('harness/data/sales-script.md') && !tracked('harness/data/sales-script.md'), 'sales-script.md');
+    assert(ignored('harness/data/real-business/x.txt') && ignored('harness/data/real-calls/x.mp3'), 'xom papkalar');
+    assert(tracked('harness/data/business-profile.demo.json') && !ignored('harness/data/business-profile.demo.json'), 'demo namuna');
+    assert(tracked('harness/data/sales-script.example.md'), 'skript namunasi');
+  });
+
+  check(report, "handoff paketi: harness/data/** va .env taqiqlangan, .env.example mumkin", () => {
+    assert(HANDOFF_PATHSPECS.includes(':(exclude)harness/data/**'), 'pathspec');
+    assertDeepEqual(
+      forbiddenHandoffEntries([
+        'module/backend/src/training/engine.ts',
+        'harness/data/business-profile.demo.json',
+        'harness/data/real-calls/a.mp3',
+        'harness/.env',
+        'harness/.env.example',
+        'README.md',
+      ]),
+      ['harness/data/business-profile.demo.json', 'harness/data/real-calls/a.mp3', 'harness/.env'],
+      'taqiqlanganlar',
+    );
   });
 
   function expectDataError(fn: () => unknown, ...parts: string[]): void {

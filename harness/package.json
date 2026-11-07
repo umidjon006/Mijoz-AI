@@ -45,7 +45,8 @@
     "corpus:transcribe": "tsx --env-file-if-exists=.env src/corpus-transcribe.ts",
     "corpus:compare": "tsx --env-file-if-exists=.env src/corpus-compare.ts",
     "corpus:analyze": "tsx --env-file-if-exists=.env src/corpus-analyze.ts",
-    "verify:corpus": "tsx --env-file-if-exists=.env src/verify-corpus.ts"
+    "verify:corpus": "tsx --env-file-if-exists=.env src/verify-corpus.ts",
+    "handoff:pack": "tsx --env-file-if-exists=.env src/handoff-pack.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

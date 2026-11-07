@@ -195,6 +195,8 @@ async function main(): Promise<void> {
   // Profil va rejim haqida ma'lumot (frontend ko'rsatishi uchun).
   app.get('/api/v1/training/_harness', async () => ({
     profileKey: business.source,
+    /** Demo profil ishlatilyapti — UI "DEMO MA'LUMOT" belgisini ko'rsatadi. */
+    demoData: business.isDemo,
     hasSalesScript: business.script !== null,
     industry: profile.industry,
     callDirection: profile.callDirection,
@@ -214,7 +216,7 @@ async function main(): Promise<void> {
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   console.log(`\nHarness backend: http://127.0.0.1:${PORT}`);
-  console.log(`Profil: ${business.source} (${profile.industry})`);
+  console.log(describeBusinessData(business));
   console.log(`LLM:    ${describeLlm(turnLlm)}`);
   console.log(`Baholash: ${describeLlm(scoringResolved)}`);
   console.log(`Soxta auth: ${fakeAuth ? 'yoqilgan (HARNESS_AUTH=1)' : "O'CHIRILGAN"}\n`);

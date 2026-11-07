@@ -25,7 +25,7 @@ import { createTrainingEngine } from '../../module/backend/src/training/engine.j
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
 import { DEMO_CONTEXT, ensureDemoRows, parseArgs } from './demo-env.js';
-import { BusinessDataError, resolveBusinessData } from './business-data.js';
+import { BusinessDataError, describeBusinessData, resolveBusinessData } from './business-data.js';
 import { priceCall } from './llm-anthropic.js';
 import {
   createTrainerLlm,
@@ -77,6 +77,7 @@ async function main(): Promise<void> {
   const sessionsPerKind = args.sessions ?? 5;
   const business = resolveBusinessData(args.profile);
   const profile = business.profile;
+  console.log(describeBusinessData(business));
 
   const archetypes = [...ARCHETYPE_KEYS];
   const avgTurns = 8;

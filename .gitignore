@@ -34,3 +34,7 @@ harness/data/real-calls/
 
 # Haqiqiy biznes xom ma'lumotlari (kurslar, skript, e'tirozlar, FAQ) — commit qilinmaydi
 harness/data/real-business/
+
+# Haqiqiy biznes profili va skripti — LOKAL, commit qilinmaydi (namunalar: *.demo.json, *.example.md)
+harness/data/business-profile.json
+harness/data/sales-script.md

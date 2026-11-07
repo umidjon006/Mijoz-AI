@@ -76,6 +76,8 @@ interface HarnessInfo {
   voice?: { enabled: boolean; sttModel?: string; ttsModel?: string; missing?: string[] };
   /** `DEMO_PRESENTATION=1` — rahbariyatga ko'rsatish rejimi. */
   presentation?: boolean;
+  /** Demo biznes profili ishlatilyapti (haqiqiy ma'lumot emas). */
+  demoData?: boolean;
   debug?: boolean;
 }
 
@@ -121,6 +123,39 @@ function Shell(): JSX.Element {
           <span style={{ fontWeight: 400 }}>
             Bu haqiqiy model emas (DEMO_LLM=1). Javoblar sodda va qolipli — sifat,
             kechikish yoki narx haqida xulosa chiqarmang.
+          </span>
+        </div>
+      ) : null}
+      {/* Demo PROFIL ma'lumoti — har qanday rejimda (taqdimotda ham) ko'rinadi:
+          demo ma'lumot hech qachon haqiqiy deb ko'rsatilmasin. */}
+      {info?.demoData ? (
+        <div
+          style={{
+            font: '600 13px system-ui, sans-serif',
+            background: '#7a3e00',
+            color: '#fff',
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+          role="status"
+          data-testid="demo-data-badge"
+        >
+          <span
+            style={{
+              background: '#fff',
+              color: '#7a3e00',
+              borderRadius: 999,
+              padding: '2px 10px',
+              letterSpacing: '0.06em',
+            }}
+          >
+            DEMO MA'LUMOT
+          </span>
+          <span style={{ fontWeight: 400 }}>
+            Bu namuna biznes profili — narx, kurs va shartlar haqiqiy emas
+            ({info.profileKey}).
           </span>
         </div>
       ) : null}

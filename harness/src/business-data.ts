@@ -26,7 +26,10 @@ import { listDemoProfileKeys, loadDemoProfile } from './demo-env.js';
 import { harnessRoot } from './env.js';
 
 export const dataDir = resolve(harnessRoot, 'data');
+/** Haqiqiy profil — git'da IGNORE qilingan, faqat shu kompyuterda. */
 export const businessProfilePath = resolve(dataDir, 'business-profile.json');
+/** Demo namuna (git'da) — haqiqiy fayl bo'lmasa shu yuklanadi va "DEMO MA'LUMOT" deb belgilanadi. */
+export const demoProfilePath = resolve(dataDir, 'business-profile.demo.json');
 export const salesScriptPath = resolve(dataDir, 'sales-script.md');
 
 export class BusinessDataError extends Error {
@@ -85,35 +88,89 @@ export function loadSalesScriptFile(path = salesScriptPath): SalesScript | null 
 
 export interface ResolvedBusinessData {
   profile: BusinessProfile;
-  /** Qaysi manbadan: `harness/data/business-profile.json` yoki `demo:<kalit>`. */
+  /**
+   * Qaysi manbadan: `harness/data/business-profile.json`,
+   * `harness/data/business-profile.demo.json` yoki `demo:<kalit>`.
+   */
   source: string;
   script: SalesScript | null;
+  /**
+   * DEMO ma'lumot ishlatilyaptimi: demo kalit, demo namuna fayli, yoki
+   * `business-profile.json` aslida demo profilning nusxasi. UI shunda
+   * "DEMO MA'LUMOT" belgisini ko'rsatadi — demo hech qachon haqiqiy deb ko'rinmasin.
+   */
+  isDemo: boolean;
+}
+
+/** Ikki profil mazmunan bir xilmi (kalitlar tartibidan qat'i nazar). */
+function sameProfile(a: BusinessProfile, b: BusinessProfile): boolean {
+  const canon = (v: unknown): unknown =>
+    Array.isArray(v)
+      ? v.map(canon)
+      : v && typeof v === 'object'
+        ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])]))
+        : v;
+  return JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+}
+
+/** Profil demo ma'lumotmi: demo namuna yoki `demo-profiles.json` dagi biror profil bilan bir xil. */
+export function isDemoProfile(profile: BusinessProfile, demoPath = demoProfilePath): boolean {
+  const candidates: BusinessProfile[] = listDemoProfileKeys().map((key) => loadDemoProfile(key));
+  if (existsSync(demoPath)) {
+    try {
+      candidates.push(parseBusinessProfileJson(readFileSync(demoPath, 'utf8'), shortPath(demoPath)));
+    } catch {
+      // buzuq namuna — taqqoslanmaydi
+    }
+  }
+  return candidates.some((demo) => sameProfile(profile, demo));
+}
+
+export interface BusinessDataPaths {
+  profilePath?: string;
+  demoPath?: string;
+  scriptPath?: string;
 }
 
 /**
  * Harness uchun profil + skript. `demoKey` berilsa — demo profil (skriptsiz);
- * aks holda `harness/data/` dagi fayllar.
+ * aks holda `harness/data/business-profile.json` (bo'lmasa — demo namuna
+ * `business-profile.demo.json`, "DEMO MA'LUMOT" belgisi bilan).
  */
-export function resolveBusinessData(demoKey?: string): ResolvedBusinessData {
+export function resolveBusinessData(demoKey?: string, paths: BusinessDataPaths = {}): ResolvedBusinessData {
   if (demoKey) {
     if (!listDemoProfileKeys().includes(demoKey)) {
       throw new BusinessDataError(
         `"${demoKey}" demo profili yo'q. Mavjud: ${listDemoProfileKeys().join(', ')}`,
       );
     }
-    return { profile: loadDemoProfile(demoKey), source: `demo:${demoKey}`, script: null };
+    return { profile: loadDemoProfile(demoKey), source: `demo:${demoKey}`, script: null, isDemo: true };
   }
+  const profilePath = paths.profilePath ?? businessProfilePath;
+  const demoPath = paths.demoPath ?? demoProfilePath;
+  const scriptPath = paths.scriptPath ?? salesScriptPath;
+  if (!existsSync(profilePath) && existsSync(demoPath)) {
+    return {
+      profile: loadBusinessProfileFile(demoPath),
+      source: shortPath(demoPath),
+      script: loadSalesScriptFile(scriptPath),
+      isDemo: true,
+    };
+  }
+  const profile = loadBusinessProfileFile(profilePath);
   return {
-    profile: loadBusinessProfileFile(),
-    source: shortPath(businessProfilePath),
-    script: loadSalesScriptFile(),
+    profile,
+    source: shortPath(profilePath),
+    script: loadSalesScriptFile(scriptPath),
+    isDemo: isDemoProfile(profile, demoPath),
   };
 }
 
-/** Startda bir qator: qaysi profil, skript bormi (nechta bosqich). */
+/** Startda bir qator: qaysi FAYL o'qildi, demo-mi, skript bormi (nechta bosqich). */
 export function describeBusinessData(data: ResolvedBusinessData): string {
   return (
-    `Biznes: ${data.source} (${data.profile.industry}) · skript: ` +
-    (data.script ? `${data.script.stages.length} bosqich` : "yo'q")
+    `Biznes: ${data.source} (${data.profile.industry})` +
+    (data.isDemo ? " · DEMO MA'LUMOT (haqiqiy profil emas)" : '') +
+    ` · skript: ${data.script ? `${data.script.stages.length} bosqich` : "yo'q"}`
   );
 }

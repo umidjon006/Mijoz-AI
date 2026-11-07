@@ -16,7 +16,7 @@ import { ARCHETYPE_KEYS, getArchetype } from '../../module/backend/src/training/
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile } from '../../module/backend/src/training/ports.js';
 import { DEMO_CONTEXT, ensureDemoRows, parseArgs } from './demo-env.js';
-import { BusinessDataError, resolveBusinessData } from './business-data.js';
+import { BusinessDataError, describeBusinessData, resolveBusinessData } from './business-data.js';
 import { unsaidPriceFigures } from '../../module/backend/src/training/offer-facts.js';
 import { priceCall } from './llm-anthropic.js';
 import {
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   const llm = resolved.llm;
   const engine = createTrainingEngine({ withTenant, getBusinessProfile, llm, priceCall });
 
-  console.log(`Profil: ${business.source} — ${profile.industry}`);
+  console.log(describeBusinessData(business));
   console.log(`LLM:    ${describeLlm(resolved)}\n`);
 
   let totalCost = 0;

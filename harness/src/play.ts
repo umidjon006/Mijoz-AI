@@ -22,7 +22,7 @@ import {
   ensureDemoRows,
   parseArgs,
 } from './demo-env.js';
-import { BusinessDataError, resolveBusinessData } from './business-data.js';
+import { BusinessDataError, describeBusinessData, resolveBusinessData } from './business-data.js';
 import { priceCall } from './llm-anthropic.js';
 import {
   createTrainerLlm,
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   const rl = createInterface({ input, output });
 
   console.log(`\nArxetip: ${archetype.key} — ${archetype.title} (qiyinlik ${archetype.difficulty}/5)`);
-  console.log(`Profil:  ${business.source} — ${profile.industry}`);
+  console.log(describeBusinessData(business));
   console.log(`LLM:     ${describeLlm(resolved)}`);
   console.log('Persona generatsiya qilinyapti...\n');
 
