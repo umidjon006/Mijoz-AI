@@ -84,6 +84,12 @@ export interface CoachingResult {
   languageCheck?: { transliterated: number; regenerated: number; hidden: string[] };
   /** `quality: 'low'` sababi(lar)i — UI mos ogohlantirishni ko'rsatadi. */
   lowQualityReasons?: Array<'evidence' | 'language'>;
+  /**
+   * Narx/shart aniqligi: `checked` — profil narxlari bilan solishtirildi;
+   * `skipped_no_data` — profilda narx fakti yo'q, tekshirilmadi (mezon va narx
+   * qizil chiziqlari olib tashlangan). Profil bo'lmasa — yo'q.
+   */
+  priceCheck?: 'checked' | 'skipped_no_data';
 }
 
 export interface KeyMomentResult {

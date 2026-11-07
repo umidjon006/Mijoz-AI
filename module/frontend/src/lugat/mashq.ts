@@ -146,6 +146,8 @@ export const mashq = {
 
   criteria: 'Mezonlar bo\'yicha baho',
   criterionNotScored: 'Baholanmadi',
+  /** Profilda narx fakti yo'q — narx aniqligi mezoni va narx qizil chiziqlari baholanmadi. */
+  priceCheckSkipped: "Narx/shart aniqligi tekshirilmadi (ma'lumot kiritilmagan)",
   evidenceLabel: 'Dalil',
   evidenceRejected: 'Dalil tekshiruvdan o\'tmadi, shuning uchun baho qo\'yilmadi',
   weight: 'vazn',

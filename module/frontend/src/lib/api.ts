@@ -223,6 +223,8 @@ export interface ResultPayload {
     /** Til tekshiruvi: yashirilgan maydonlar o'rnida "Bu qism to'g'ri tilda yaratilmadi". */
     languageCheck?: { transliterated: number; regenerated: number; hidden: string[] };
     lowQualityReasons?: Array<'evidence' | 'language'>;
+    /** `skipped_no_data` — profilda narx yo'q, narx/shart aniqligi tekshirilmadi. */
+    priceCheck?: 'checked' | 'skipped_no_data';
   } | null;
   keyMoments: Array<{ turnSeq: number; kind: string; explanation: string }>;
   model: string | null;

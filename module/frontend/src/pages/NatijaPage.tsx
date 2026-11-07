@@ -230,6 +230,11 @@ export function NatijaPage({
         </Notice>
       ) : null}
 
+      {result.coaching?.priceCheck === 'skipped_no_data' ? (
+        <Notice kind="info">
+          <span data-testid="price-check-skipped">{mashq.priceCheckSkipped}</span>
+        </Notice>
+      ) : null}
       <RedLineViolations
         violations={result.coaching?.redLineViolations}
         onQuoteClick={jumpToTurn}

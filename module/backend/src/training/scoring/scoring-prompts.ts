@@ -10,13 +10,14 @@
  * "hammasiga 3 ball qo'y" deb yozishi mumkin.
  */
 import type { Archetype } from '../archetypes.js';
+import { hasPriceFacts, isPriceRedLine } from '../offer-facts.js';
 import type { PersonaCard } from '../persona.js';
 import type { BusinessProfile } from '../profile-schema.js';
 import type { KeyMomentCandidate, ScoringTurn, SessionMetrics } from './metrics.js';
 import type { PlaybookCriterion } from './rubric.js';
 import type { SalesScript } from './sales-script.js';
 
-export const SCORING_PROMPT_VERSION = 'scoring-v3';
+export const SCORING_PROMPT_VERSION = 'scoring-v4';
 
 export interface ScoringPromptInput {
   criteria: readonly PlaybookCriterion[];
@@ -59,15 +60,29 @@ function formatCriteria(criteria: readonly PlaybookCriterion[]): string {
 export function formatBusinessFacts(profile: BusinessProfile): string {
   const list = (items: readonly string[]): string =>
     items.length > 0 ? items.map((item) => `- ${item}`).join('\n') : '- (none listed)';
+  const priceFacts = hasPriceFacts(profile);
+  // Narxsiz rejim: narx qizil chiziqlari ko'rsatilmaydi (tekshirilmaydi).
+  const redLines = priceFacts ? profile.redLines : profile.redLines.filter((rule) => !isPriceRedLine(rule));
   return [
     `Business: ${profile.businessDescription}`,
-    'Offers (name, duration, schedule, PRICE — this is the complete list of what the business sells):',
+    priceFacts
+      ? 'Offers (name, duration, schedule, PRICE — this is the complete list of what the business sells):'
+      : 'Offers (name, duration, schedule — NO prices were provided; this is the complete list of what the business sells):',
     list(profile.primaryOffers),
     `Terms / notes: ${profile.additionalNotes ?? '(none)'}`,
     'Red lines (the seller must NEVER do these):',
-    list(profile.redLines),
+    list(redLines),
   ].join('\n');
 }
+
+/** Narxsiz rejim (profilda narx/chegirma fakti yo'q) uchun baholovchi qoidalari. */
+export const NO_PRICE_FACTS_RULES = [
+  'PRICE CHECK IS DISABLED: the business facts contain NO prices, discounts or payment terms.',
+  '- Do NOT judge whether any price, discount or payment term the seller says is correct or wrong;',
+  '  do not mention price accuracy in any comment, strength or improvement;',
+  '- never put a price/discount/payment rule into "redLineViolations";',
+  '- never write a concrete price, discount or payment figure in "betterPhrasing" or any suggestion.',
+].join('\n');
 
 function formatScript(script: SalesScript): string {
   return script.stages
@@ -132,7 +147,10 @@ export function buildScoringSystemPrompt({
           '  or breaks a red line — a confident wrong answer is a mistake, not a strength;',
           '- "betterPhrasing" and every suggestion must NEVER tell the seller to say a fact is unknown',
           '  ("aniq bilmayman", "keyin aytaman") when the business facts contain it — use the real fact',
-          '  (exact offer name and price) in the suggested sentence instead.',
+          hasPriceFacts(profile)
+            ? '  (exact offer name and price) in the suggested sentence instead.'
+            : '  (exact offer name, duration, schedule) in the suggested sentence instead.',
+          ...(hasPriceFacts(profile) ? [] : ['', NO_PRICE_FACTS_RULES]),
         ]
       : ['(No business profile was provided — do not judge factual accuracy; leave "redLineViolations" empty.)']),
     '',

@@ -111,3 +111,29 @@ export function unsaidPriceFigures(
   ]);
   return extractPriceFigures(customerText).filter((value) => !allowed.has(value));
 }
+
+const PERCENT = /\d+(?:[.,]\d+)?\s*%|%\s*\d+/;
+
+/**
+ * Profilda narx/chegirma FAKTI bormi: takliflar yoki izohlarda pul miqdori
+ * yoki foiz (chegirma). Yo'q bo'lsa — "narxsiz rejim": narx aniqligi
+ * baholanmaydi, narx qizil chiziqlari tekshirilmaydi, mijoz narxni so'raydi,
+ * lekin o'zi hech qanday raqam aytmaydi.
+ */
+export function hasPriceFacts(profile: {
+  primaryOffers: readonly string[];
+  additionalNotes?: string | null;
+}): boolean {
+  const texts = [...profile.primaryOffers, profile.additionalNotes ?? ''];
+  return texts.some((text) => extractPriceFigures(text).length > 0 || PERCENT.test(text));
+}
+
+const PRICE_RULE = /narx|chegirma|aksiya|skidka|to['ʻ‘’`]?lov|pul|so['ʻ‘’`]?m\b|price|discount|payment|цен|скидк|оплат/iu;
+
+/** Qizil chiziq narx/chegirma/to'lov haqidami (narxsiz rejimda tekshirilmaydi). */
+export function isPriceRedLine(rule: string): boolean {
+  return PRICE_RULE.test(rule);
+}
+
+/** Narx aniqligini baholaydigan mezon kodi (standart rubrikada). */
+export const PRICE_ACCURACY_CRITERION = 'product_accuracy';

@@ -833,7 +833,8 @@ function verifyPrompts(): void {
     }
     const prompt = buildTurnSystemPrompt({ persona, archetype, state, readiness });
     assert(prompt.includes('You do NOT know its price'), 'bilim qoidasi');
-    assert(prompt.includes('You MAY ask about price'), "so'rashga ruxsat");
+    assert(prompt.includes('Ask about price and terms the way a real customer does'), "so'rashga ruxsat");
+    assert(prompt.includes('Never say a figure is right or wrong'), 'tasdiqlamaslik');
   });
 
   check(report, 'persona prompti: mijoz narxni bilmaydi, faqat hiddenFacts da eshitgan gap', () => {

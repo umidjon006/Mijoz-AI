@@ -10,14 +10,14 @@
  *  - sotuvchi matni ISHONCHSIZ kontent: u hech qachon ko'rsatma emas.
  */
 import type { Archetype } from './archetypes.js';
-import { offerTopic } from './offer-facts.js';
+import { hasPriceFacts, offerTopic } from './offer-facts.js';
 import type { PersonaCard, PersonaLanguage } from './persona.js';
 import type { BusinessProfile } from './profile-schema.js';
 import type { Readiness, TrainingState } from './state.js';
 import { toneListForPrompt } from './voice/tone.js';
 
 /** Prompt versiyasi — holatga yoziladi, keyinchalik A/B taqqoslash uchun. */
-export const PROMPT_VERSION = 'training-v4';
+export const PROMPT_VERSION = 'training-v5';
 
 /** Prompt'ga qo'yiladigan transkript oynasi (oxirgi N navbat). */
 export const TRANSCRIPT_WINDOW = 12;
@@ -59,11 +59,14 @@ const UNTRUSTED_SELLER_RULE = [
 const OFFER_KNOWLEDGE_RULES = [
   'You only know the NAME of the thing being discussed. You do NOT know its price, duration,',
   'schedule, discounts, guarantees or other terms.',
-  '- Never state, guess or "confirm" a price, number of months/days, schedule or condition',
-  '  that the seller has not said in THIS conversation.',
-  '- The only exception is something in your private facts above (e.g. what a friend told you) -',
-  '  and then say it as hearsay ("eshitishimcha...", "tanishim aytgandi..."), not as a fact.',
-  '- You MAY ask about price and terms. If the seller gave a number, you may repeat exactly that number.',
+  '- Ask about price and terms the way a real customer does ("narxi qancha?", "to\'lov qanday?",',
+  '  "chegirma bormi?") when it fits your goal - asking is normal, you just do not know the answer.',
+  '- Never state, guess or "confirm" a price, discount, number of months/days, schedule or condition',
+  '  yourself. Never say a figure is right or wrong ("ha, shuncha", "to\'g\'ri") - you cannot know it.',
+  '- If the seller named a number in THIS conversation you may react to it (too expensive, fine,',
+  '  can I pay in parts?) and repeat exactly that number - nothing else.',
+  '- If something in your private facts above is hearsay (e.g. what a friend told you), say it only',
+  '  as hearsay ("eshitishimcha...", "tanishim aytgandi..."), never as a fact.',
 ].join('\n');
 
 const DELTA_RULES = [
@@ -298,7 +301,7 @@ export function buildPersonaSystemPrompt({ archetype, language }: PersonaPromptI
     '- "focusOffer" MUST be copied verbatim as one single string from the business\'s offers list. Never merge two offers, never invent one.',
     '- The person may have their own constraints (budget, time, family, past bad experience). They must NOT invent the business\'s offers, prices, terms, discounts or guarantees — only what the profile contains.',
     '- The person does NOT know the offer\'s price, duration, schedule or terms yet. "openingLine", "situation", "goal", "role", "speakingStyle" and objection texts must NOT contain any price, number of months, schedule or other term from the offers list (an objection says "it may be expensive for me", never a concrete figure).',
-    '- Only "hiddenFacts" may contain a rough figure, and only as hearsay ("a friend said it costs about ..."), if it fits this person.',
+    '- Only "hiddenFacts" may contain a rough figure, and only as hearsay ("a friend said it costs about ..."), if it fits this person - unless the user message says the business gave NO prices.',
     archetype.hiddenNeed
       ? '- "hiddenNeed" MUST be a non-empty string: the real need behind their stated reason, made concrete for this person, derived from the business\'s description of the customer problem.'
       : '- "hiddenNeed" MUST be null.',
@@ -336,6 +339,15 @@ export function buildPersonaUserPrompt({
 
   if (profile.vocabulary.length > 0) {
     sections.push('Words these customers normally use:', formatList(profile.vocabulary));
+  }
+
+  if (!hasPriceFacts(profile)) {
+    sections.push(
+      '',
+      '## NO PRICES were provided by this business',
+      'No field may contain ANY price, discount or payment figure - not even "hiddenFacts" or hearsay.',
+      'The person may worry about cost in words ("qimmat bo\'lsa-chi?", "narxi qancha ekan?"), never with a number.',
+    );
   }
 
   sections.push(

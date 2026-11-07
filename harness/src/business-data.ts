@@ -13,6 +13,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { offerTopic } from '../../module/backend/src/training/offer-facts.js';
 import {
   profileSchema,
   type BusinessProfile,
@@ -113,7 +114,20 @@ function sameProfile(a: BusinessProfile, b: BusinessProfile): boolean {
   return JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 }
 
-/** Profil demo ma'lumotmi: demo namuna yoki `demo-profiles.json` dagi biror profil bilan bir xil. */
+/**
+ * Demo profildan olingan (tahrirlangan) nusxami: tavsif bir xil yoki takliflar
+ * nomlari to'plami bir xil. Masalan demo profildan narxlar olib tashlansa ham
+ * u baribir DEMO — "DEMO MA'LUMOT" belgisi yo'qolmasin.
+ */
+function derivedFromDemo(a: BusinessProfile, b: BusinessProfile): boolean {
+  const norm = (t: string): string => t.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (norm(a.businessDescription) === norm(b.businessDescription)) return true;
+  const topics = (p: BusinessProfile): string =>
+    [...new Set(p.primaryOffers.map((o) => norm(offerTopic(o))))].sort().join('|');
+  return topics(a) === topics(b);
+}
+
+/** Profil demo ma'lumotmi: demo namuna yoki `demo-profiles.json` dagi biror profil (yoki uning tahrirlangan nusxasi). */
 export function isDemoProfile(profile: BusinessProfile, demoPath = demoProfilePath): boolean {
   const candidates: BusinessProfile[] = listDemoProfileKeys().map((key) => loadDemoProfile(key));
   if (existsSync(demoPath)) {
@@ -123,7 +137,7 @@ export function isDemoProfile(profile: BusinessProfile, demoPath = demoProfilePa
       // buzuq namuna — taqqoslanmaydi
     }
   }
-  return candidates.some((demo) => sameProfile(profile, demo));
+  return candidates.some((demo) => sameProfile(profile, demo) || derivedFromDemo(profile, demo));
 }
 
 export interface BusinessDataPaths {

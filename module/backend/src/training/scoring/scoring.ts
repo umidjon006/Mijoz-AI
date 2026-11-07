@@ -25,6 +25,7 @@ import {
   type RegenerateFields,
   type UzLatinReport,
 } from '../language.js';
+import { hasPriceFacts, isPriceRedLine, PRICE_ACCURACY_CRITERION } from '../offer-facts.js';
 import { personaCardSchema, type PersonaCard } from '../persona.js';
 import type { BusinessProfile } from '../profile-schema.js';
 import type {
@@ -209,6 +210,31 @@ export interface ProcessedScoring {
   failureNotes: string[];
   /** Qabul qilinmagan qizil chiziq da'volari va olib tashlangan "kuchli tomonlar" (audit/log). */
   droppedNotes: string[];
+}
+
+export interface PriceScope {
+  criteria: readonly PlaybookCriterion[];
+  redLines: readonly string[];
+  /** Profil bo'lmasa — `undefined` (faktlar umuman tekshirilmaydi). */
+  priceCheck: 'checked' | 'skipped_no_data' | undefined;
+}
+
+/**
+ * Narxsiz rejim: profilda narx/chegirma fakti yo'q bo'lsa, narx aniqligi
+ * mezoni olib tashlanadi (ball qo'yilmaydi, vazni `computeSkillScore` da
+ * qolganlarga taqsimlanadi) va narx qizil chiziqlari tekshirilmaydi.
+ */
+export function resolvePriceScope(
+  profile: BusinessProfile | null,
+  criteria: readonly PlaybookCriterion[],
+): PriceScope {
+  if (!profile) return { criteria, redLines: [], priceCheck: undefined };
+  if (hasPriceFacts(profile)) return { criteria, redLines: profile.redLines, priceCheck: 'checked' };
+  return {
+    criteria: criteria.filter((c) => c.code !== PRICE_ACCURACY_CRITERION),
+    redLines: profile.redLines.filter((rule) => !isPriceRedLine(rule)),
+    priceCheck: 'skipped_no_data',
+  };
 }
 
 export interface ProcessScoringContext {
@@ -732,7 +758,11 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
     } catch (err) {
       deps.logger?.warn({ err }, 'getSalesScript xato berdi — skriptga moslik baholanmaydi');
     }
-    const processContext: ProcessScoringContext = { redLines: profile?.redLines ?? [], script };
+    // Narxsiz rejim: profilda narx/chegirma fakti yo'q — narx aniqligi mezoni
+    // baholanmaydi (vazni qolganlarga taqsimlanadi), narx qizil chiziqlari
+    // tekshirilmaydi; debrief "tekshirilmadi" deydi.
+    const { criteria, redLines, priceCheck } = resolvePriceScope(profile, rubric.criteria);
+    const processContext: ProcessScoringContext = { redLines, script };
     const language = deps.language ?? 'uz';
 
     // 4. LLM (tranzaksiyadan TASHQARIDA — tarmoq chaqiruvi qulf ushlab turmasin).
@@ -741,7 +771,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
 
     const call = async (correction?: string): Promise<LlmScoring> => {
       const promptInput: ScoringPromptInput = {
-        criteria: rubric.criteria,
+        criteria,
         archetype,
         persona,
         metrics,
@@ -779,7 +809,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           `Your previous answer was rejected: ${describeLlmError(err)}. Return a single valid JSON object with all required fields.`,
         );
       }
-      let processed = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
+      let processed = processLlmScoring(raw, criteria, turns, candidates, processContext);
 
       // 5. Dalillar ko'p yiqilsa — bitta qayta urinish.
       if (processed.evidenceFailureRatio > EVIDENCE_FAILURE_RETRY_RATIO) {
@@ -791,7 +821,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
         ].join('\n');
         try {
           raw = await call(correction);
-          const retried = processLlmScoring(raw, rubric.criteria, turns, candidates, processContext);
+          const retried = processLlmScoring(raw, criteria, turns, candidates, processContext);
           if (retried.evidenceFailureRatio <= processed.evidenceFailureRatio) {
             processed = retried;
           }
@@ -842,6 +872,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           hidden: languageReport.hidden,
         };
       }
+      if (priceCheck) processed.coaching.priceCheck = priceCheck;
       processed.coaching.lowQualityReasons = [
         ...(evidenceLow ? (['evidence'] as const) : []),
         ...(languageLow ? (['language'] as const) : []),

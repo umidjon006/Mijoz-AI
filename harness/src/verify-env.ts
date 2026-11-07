@@ -1036,10 +1036,26 @@ async function main(): Promise<void> {
     const copy = resolveBusinessData(undefined, { profilePath: copyPath, demoPath: demoProfilePath, scriptPath: join(dir, 'x.md') });
     assertEqual(copy.isDemo, true, "nusxa — DEMO (kalitlar tartibi muhim emas)");
     const realPath = join(dir, 'real.json');
-    await writeFile(realPath, JSON.stringify({ ...demoJson, businessDescription: 'Boshqa markaz tavsifi' }));
+    await writeFile(
+      realPath,
+      JSON.stringify({ ...demoJson, businessDescription: 'Boshqa markaz tavsifi', primaryOffers: ['Boshqa taklif: 3 oy'] }),
+    );
     const real = resolveBusinessData(undefined, { profilePath: realPath, demoPath: demoProfilePath, scriptPath: join(dir, 'x.md') });
     assertEqual(real.isDemo, false, 'haqiqiy');
     assert(!describeBusinessData(real).includes('DEMO'), "haqiqiy profilda DEMO yozuvi yo'q");
+  });
+
+  await checkAsync(report, "demo profildan narxlar olib tashlangan nusxa ham DEMO (belgi yo'qolmaydi)", async () => {
+    const demoJson = JSON.parse(await readFile(demoProfilePath, 'utf8')) as { primaryOffers: string[] } & Record<string, unknown>;
+    const stripped = {
+      ...demoJson,
+      primaryOffers: demoJson.primaryOffers.map((o) => o.replace(/,?\s*(oyiga\s*)?[\d\s]+so'm/giu, '').trim()),
+    };
+    const p = join(dir, 'stripped.json');
+    await writeFile(p, JSON.stringify(stripped));
+    const r = resolveBusinessData(undefined, { profilePath: p, demoPath: demoProfilePath, scriptPath: join(dir, 'x.md') });
+    assertEqual(r.isDemo, true, 'narxsiz demo nusxa — DEMO');
+    assert(describeBusinessData(r).includes("DEMO MA'LUMOT"), 'start qatorida DEMO');
   });
 
   check(report, "git: haqiqiy profil/skript ignore va kuzatilmaydi; namunalar kuzatiladi", () => {

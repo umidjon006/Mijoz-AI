@@ -72,13 +72,17 @@ import {
   llmScoringSchema,
   enforceScoringLanguage,
   processLlmScoring,
+  resolvePriceScope,
   STALE_PENDING_ERROR,
   userFacingScoringText,
   type GetPlaybook,
 } from './scoring/scoring.js';
+import { hasPriceFacts, isPriceRedLine } from './offer-facts.js';
+import { buildPersonaUserPrompt, PROMPT_VERSION, TURN_STATIC_PREFIX } from './prompts.js';
 import {
   buildScoringSystemPrompt,
   buildScoringUserPrompt,
+  SCORING_PROMPT_VERSION,
   type ScoringPromptInput,
 } from './scoring/scoring-prompts.js';
 import {
@@ -1343,7 +1347,7 @@ async function verifyDbAndRoutes(): Promise<void> {
       const stored = await scoring.getLatestResult(ctxA, okSessionId);
       assert(stored, 'natija yo\'q');
       assertEqual(stored.model, 'fake-scorer', 'model');
-      assertEqual(stored.promptVersion, 'scoring-v3', 'promptVersion');
+      assertEqual(stored.promptVersion, SCORING_PROMPT_VERSION, 'promptVersion');
       assert(Number(stored.costUsd) > 0, 'cost_usd to\'ldirilishi kerak');
       assertEqual(stored.criteria?.length, 8, 'mezonlar soni');
       assertEqual(stored.keyMoments?.length, 1, 'muhim lahzalar');
@@ -1879,6 +1883,134 @@ async function verifyDbAndRoutes(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 11. Narxsiz rejim: profilda narx fakti yo'q
+// ---------------------------------------------------------------------------
+/** Demo profildan narx/chegirma raqamlari olib tashlangan nusxa (faqat nom, muddat, jadval). */
+function stripPrices(profile: BusinessProfile): BusinessProfile {
+  return profileSchema.parse({
+    ...profile,
+    primaryOffers: profile.primaryOffers.map((o) =>
+      o.replace(/,?\s*(oyiga\s*)?\d[\d\s]*so'm/giu, '').replace(/[,:]\s*$/u, '').trim(),
+    ),
+    additionalNotes: profile.additionalNotes,
+  });
+}
+
+function verifyNoPriceMode(): void {
+  section("[11] Narxsiz rejim (profilda narx yo'q)");
+  const NO_PRICE = stripPrices(PROFILE);
+  const criteria = flattenCriteria(DEFAULT_TRAINING_RUBRIC);
+
+  check(report, "hasPriceFacts: narxli demo — ha; narxsiz nusxa — yo'q; foiz chegirma — ha", () => {
+    assertEqual(hasPriceFacts(PROFILE), true, 'narxli');
+    assertEqual(hasPriceFacts(NO_PRICE), false, `narxsiz: ${NO_PRICE.primaryOffers.join(' | ')}`);
+    assertEqual(hasPriceFacts({ primaryOffers: ['A: 3 oy'], additionalNotes: '10% chegirma' }), true, 'foiz');
+    assertEqual(hasPriceFacts({ primaryOffers: ['A: 3 oy, haftada 3 marta'], additionalNotes: null }), false, 'muddat narx emas');
+  });
+
+  check(report, 'isPriceRedLine: narx/chegirma/aksiya — ha; boshqa — yo\'q', () => {
+    assert(isPriceRedLine('Soxta chegirma aytmaslik'), 'chegirma');
+    assert(isPriceRedLine("Narxni keyin o'zgartirmaslik"), 'narx');
+    assert(isPriceRedLine('Aldamchi aksiya aytmaslik'), 'aksiya');
+    assert(!isPriceRedLine("Ish kafolatini va'da qilmaslik"), 'kafolat');
+  });
+
+  check(report, "resolvePriceScope: narxsiz — product_accuracy va narx qizil chiziqlari olib tashlanadi", () => {
+    const scope = resolvePriceScope(NO_PRICE, criteria);
+    assertEqual(scope.priceCheck, 'skipped_no_data', 'priceCheck');
+    assert(!scope.criteria.some((c) => c.code === 'product_accuracy'), 'mezon yo\'q');
+    assertEqual(scope.criteria.length, criteria.length - 1, 'faqat bitta mezon olib tashlandi');
+    assert(!scope.redLines.some(isPriceRedLine), 'narx qizil chizig\'i yo\'q');
+    assert(scope.redLines.includes("Ish kafolatini va'da qilmaslik"), 'boshqa qizil chiziq qoladi');
+    const full = resolvePriceScope(PROFILE, criteria);
+    assertEqual(full.priceCheck, 'checked', 'narxli — checked');
+    assertEqual(full.criteria.length, criteria.length, 'narxli — hammasi');
+    assertEqual(resolvePriceScope(null, criteria).priceCheck, undefined, 'profilsiz');
+  });
+
+  check(report, "narxsiz: ball qolgan mezonlar bo'yicha (vazn qayta taqsimlanadi)", () => {
+    const scope = resolvePriceScope(NO_PRICE, criteria);
+    const all3 = scope.criteria.map((c) => ({
+      code: c.code,
+      name: c.name,
+      weight: c.weight,
+      score: 3 as const,
+      comment: 'ok',
+      evidenceQuote: null,
+      evidenceTurnSeq: null,
+    }));
+    assertEqual(computeSkillScore(all3 as never).skillScore, 100, "hammasi 3 -> 100 (olib tashlangan vazn jazo emas)");
+  });
+
+  check(report, "narxsiz: LLM narx qizil chizig'ini qaytarsa ham belgilanmaydi", () => {
+    const scope = resolvePriceScope(NO_PRICE, criteria);
+    const turns: EvidenceTurn[] = [
+      { seq: 1, speaker: 'seller', text: 'Bugun faqat siz uchun ellik foiz chegirma bor, shoshiling' },
+    ];
+    const raw = llmScoringSchema.parse({
+      criteria: scope.criteria.map((c) => ({ code: c.code, score: null, comment: '-', evidenceQuote: null, evidenceTurnSeq: null })),
+      coaching: { summary: 's', strengths: [], improvements: [] },
+      keyMoments: [],
+      redLineViolations: [
+        {
+          rule: 'Soxta chegirma aytmaslik',
+          evidenceQuote: 'Bugun faqat siz uchun ellik foiz chegirma bor',
+          evidenceTurnSeq: 1,
+          explanation: 'x',
+        },
+      ],
+      scriptAdherence: [],
+    });
+    const out = processLlmScoring(raw, scope.criteria, turns, [], { redLines: scope.redLines, script: null });
+    assertEqual(out.coaching.redLineViolations?.length ?? 0, 0, 'belgilanmadi');
+    assert(!out.criteria.some((c) => c.code === 'product_accuracy'), 'mezon natijada yo\'q');
+  });
+
+  check(report, "baholash prompti: narxsiz — narx tekshiruvi o'chiq, narx qizil chiziqlari ko'rsatilmaydi", () => {
+    const system = buildScoringSystemPrompt(
+      promptInput({ profile: NO_PRICE, criteria: resolvePriceScope(NO_PRICE, criteria).criteria }),
+    );
+    assert(system.includes('PRICE CHECK IS DISABLED'), 'qoida bor');
+    assert(system.includes('NO prices were provided'), 'takliflar sarlavhasi');
+    assert(!system.includes('Soxta chegirma aytmaslik'), 'narx qizil chizig\'i yo\'q');
+    assert(system.includes("Ish kafolatini va'da qilmaslik"), 'boshqa qizil chiziq bor');
+    assert(!system.includes('(exact offer name and price)'), 'narx aytishni maslahat bermaydi');
+    assert(!buildScoringSystemPrompt(promptInput()).includes('PRICE CHECK IS DISABLED'), 'narxli profilda yo\'q');
+    assertEqual(SCORING_PROMPT_VERSION, 'scoring-v4', 'versiya');
+  });
+
+  check(report, "mijoz prompti: narxni so'raydi, lekin o'zi aytmaydi/tasdiqlamaydi", () => {
+    assertEqual(PROMPT_VERSION, 'training-v5', 'versiya');
+    const system = TURN_STATIC_PREFIX;
+    assert(system.includes('Ask about price and terms the way a real customer does'), "so'rash qoidasi");
+    assert(system.includes('Never state, guess or "confirm" a price'), 'aytmaslik qoidasi');
+    const personaUser = buildPersonaUserPrompt({ archetype: NEGOTIATOR, profile: NO_PRICE, direction: 'outbound', language: 'uz' });
+    assert(personaUser.includes('NO PRICES were provided'), 'persona promptida narxsiz qoida');
+    assert(
+      !buildPersonaUserPrompt({ archetype: NEGOTIATOR, profile: PROFILE, direction: 'outbound', language: 'uz' }).includes('NO PRICES'),
+      'narxli profilda yo\'q',
+    );
+  });
+
+  check(report, "persona: narxsiz profilda hiddenFacts dagi narx ham rad etiladi; narxli profilda hearsay mumkin", () => {
+    const card = fakePersona({ objectionKeys: OBJECTION_KEYS, severity: 3, focusOffer: NO_PRICE.primaryOffers[0] as string, direction: 'outbound' });
+    const withHearsay = { ...(card as Record<string, unknown>), hiddenFacts: ["Tanishim oyiga 900 000 so'm deb aytgandi"] };
+    const noPrice = makePersonaCardSchema({ archetype: NEGOTIATOR, profile: NO_PRICE, direction: 'outbound', language: 'uz' }).safeParse(withHearsay);
+    assert(!noPrice.success, 'narxsiz — rad');
+    assert(
+      !noPrice.success && noPrice.error.issues.some((i) => i.path[0] === 'hiddenFacts' && i.message.includes('narx bermagan')),
+      'hiddenFacts xatosi',
+    );
+    const priced = makePersonaCardSchema({ archetype: NEGOTIATOR, profile: PROFILE, direction: 'outbound', language: 'uz' }).safeParse({
+      ...withHearsay,
+      focusOffer: FIRST_OFFER,
+    });
+    assert(priced.success, `narxli — hearsay mumkin: ${priced.success ? '' : priced.error.message}`);
+  });
+}
+
 async function main(): Promise<void> {
   console.log('verify-training-scoring — Step 4 Phase A (haqiqiy LLM ishlatilmaydi)');
 
@@ -1889,6 +2021,7 @@ async function main(): Promise<void> {
   verifyProcessing();
   verifyBusinessFacts();
   verifyRescoreRule();
+  verifyNoPriceMode();
   await verifyLanguageGuard();
 
   try {

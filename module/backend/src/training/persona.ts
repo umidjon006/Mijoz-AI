@@ -22,7 +22,7 @@ import {
   scriptCorrectionNote,
   type EditableText,
 } from './language.js';
-import { extractPriceFigures, offerPriceFigures } from './offer-facts.js';
+import { extractPriceFigures, hasPriceFacts, offerPriceFigures } from './offer-facts.js';
 import type { TrainerLlm, TrainingLogger } from './ports.js';
 import { buildPersonaSystemPrompt, buildPersonaUserPrompt } from './prompts.js';
 import type { BusinessProfile } from './profile-schema.js';
@@ -92,6 +92,9 @@ export function makePersonaCardSchema({
 }: PersonaConstraints) {
   const offers = profile.primaryOffers.map((offer) => offer.trim());
   const offerPrices = offerPriceFigures(offers);
+  // Narxsiz rejim: profilda narx yo'q — mijoz kartasida HECH QANDAY narx raqami
+  // bo'lmasin (hiddenFacts dagi "eshitgan gap" ham), aks holda u to'qima fakt.
+  const noPriceFacts = !hasPriceFacts(profile);
 
   return personaCardSchema.superRefine((card, ctx) => {
     if (card.objections.length !== archetype.objections.count) {
@@ -156,6 +159,22 @@ export function makePersonaCardSchema({
       [['speakingStyle'], card.speakingStyle],
       ...card.objections.map((o, i): [Array<string | number>, string] => [['objections', i, 'text'], o.text]),
     ];
+    if (noPriceFacts) {
+      const all: Array<[Array<string | number>, string]> = [
+        ...knowsPrice,
+        ...card.hiddenFacts.map((f, i): [Array<string | number>, string] => [['hiddenFacts', i], f]),
+      ];
+      for (const [path, text] of all) {
+        const figures = extractPriceFigures(text);
+        if (figures.length > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path,
+            message: `biznes narx bermagan — mijoz kartasida narx raqami (${figures.join(', ')}) bo'lmasin; narx haqida faqat so'z bilan ("qimmat bo'lsa-chi?")`,
+          });
+        }
+      }
+    }
     for (const [path, text] of knowsPrice) {
       const leaked = extractPriceFigures(text).filter((value) => offerPrices.has(value));
       if (leaked.length > 0) {
