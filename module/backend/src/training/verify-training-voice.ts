@@ -8,13 +8,14 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import { sql } from 'drizzle-orm';
 import Fastify from 'fastify';
 
 import { getArchetype } from './archetypes.js';
 import { createTrainingEngine } from './engine.js';
 import { isTrainingError, TrainingError } from './errors.js';
 import { classifyHeardUzText } from './language.js';
-import { describeApiError } from '../../../frontend/src/lib/api-error.js';
+import { describeApiError, errorText, friendlyError } from '../../../frontend/src/lib/api-error.js';
 import {
   canRecord,
   ensureAudioRunning,
@@ -1107,6 +1108,67 @@ async function dbBlock(): Promise<void> {
     assertDeepEqual(texts, ['Narxi qancha?', 'Menga tanishim aytgandi.'], 'ikki parallel so\'rov, tartibda');
   });
 
+  await checkAsync(report, "route + DB: voice-transcribe -> voice-reply; transkriptda tahrirlangan matn, meta'da asl", async () => {
+    const llm = new FakeTrainerLlm([personaScript('outbound'), fakeTurn({ reply: 'Qancha turadi?' })]);
+    const { engine, sessionId } = await startSession(llm, 'outbound');
+    const voice = createVoiceService({
+      engine,
+      withTenant,
+      stt: new FakeStt(['Assalomu alaykum, narx haqida gaplashsak']),
+      tts: new FakeTts(),
+      models: { stt: 'fake-stt', tts: 'fake-tts' },
+      getBusinessProfile,
+    });
+    const app = Fastify({ logger: false });
+    await registerTrainingRoutes(app, {
+      engine,
+      scoring: createScoringService({ withTenant, llm }),
+      withTenant,
+      voice,
+      getContext: () => ctx,
+      config: { autoScoreOnEnd: false },
+    });
+    await app.ready();
+    const heard = await app.inject({
+      method: 'POST',
+      url: `/api/v1/training/sessions/${sessionId}/voice-transcribe`,
+      headers: { 'content-type': 'audio/wav' },
+      payload: makeWav(3),
+    });
+    assertEqual(heard.statusCode, 200, 'transcribe 200');
+    const { transcriptId, sttText } = heard.json() as { transcriptId: string; sttText: string };
+    assertEqual(sttText, 'Assalomu alaykum, narx haqida gaplashsak', 'tanilgan matn');
+    const before = await engine.getSession(ctx, { sessionId });
+    assertEqual(before.transcript.length, 0, "tasdiqdan oldin navbat yo'q");
+
+    const edited = 'Assalomu alaykum, narxlar haqida gaplashsak';
+    const replied = await app.inject({
+      method: 'POST',
+      url: `/api/v1/training/sessions/${sessionId}/voice-reply`,
+      payload: { transcriptId, text: edited },
+    });
+    assertEqual(replied.statusCode, 200, 'reply 200');
+    const after = await engine.getSession(ctx, { sessionId });
+    assertEqual(after.transcript[0]?.text, edited, 'transkriptda tahrirlangan matn');
+    const meta = await withTenant(ctx.businessId, async (tx) => {
+      const rows = await (tx as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+        sql`select state_after -> 'meta' as meta from training_turn where session_id = ${sessionId} and seq = 1`,
+      );
+      const list = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] }).rows ?? []);
+      return (list[0] as { meta?: { sttText?: string; edited?: boolean } } | undefined)?.meta;
+    });
+    assertEqual(meta?.sttText, 'Assalomu alaykum, narx haqida gaplashsak', "meta'da asl STT");
+    assertEqual(meta?.edited, true, 'edited');
+
+    const again = await app.inject({
+      method: 'POST',
+      url: `/api/v1/training/sessions/${sessionId}/voice-reply`,
+      payload: { transcriptId, text: edited },
+    });
+    assertEqual(again.statusCode, 409, 'bir martalik — 409');
+    await app.close();
+  });
+
   await checkAsync(report, 'route: voice berilmasa /voice-turn YO\'Q (404)', async () => {
     const llm = new FakeTrainerLlm([personaScript('outbound')]);
     const engine = makeEngine(llm);
@@ -1404,6 +1466,169 @@ await checkAsync(report, "route GET /voice-audio/:id: 200 oqim, ikkinchi marta v
   const junk = await app.inject({ url: '/api/v1/training/voice-audio/not-a-uuid' });
   assertEqual(junk.statusCode, 404, "noto'g'ri id");
   await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// 9. STT tekshiruvi (transcribe -> foydalanuvchi tasdiqlaydi -> reply) — DB'siz
+// ---------------------------------------------------------------------------
+section("9. STT tekshiruvi: matn tasdiqlangandan keyingina javob (soxta engine/tx)");
+
+/** Zanjirli soxta tranzaksiya: har chaqiruv argumentlari yoziladi, `await` qatorlar beradi. */
+function fakeTx() {
+  const calls: unknown[][] = [];
+  const proxy: unknown = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === 'then') {
+          return (resolve: (rows: unknown) => void) => resolve([{ locked: true, total: '0', maxSeq: 2 }]);
+        }
+        return (...args: unknown[]) => {
+          calls.push(args);
+          return proxy;
+        };
+      },
+    },
+  );
+  return { tx: proxy, calls };
+}
+
+/** Obyekt ichidan (SQL parametrlari ham) satrlarni yig'adi. */
+function collectStrings(value: unknown, out: string[] = [], seen = new WeakSet<object>()): string[] {
+  if (typeof value === 'string') out.push(value);
+  else if (value && typeof value === 'object') {
+    if (seen.has(value)) return out;
+    seen.add(value);
+    for (const v of Object.values(value as Record<string, unknown>)) collectStrings(v, out, seen);
+  }
+  return out;
+}
+
+function reviewHarness(sttTexts: string[]) {
+  const { tx, calls } = fakeTx();
+  const sellerTexts: string[] = [];
+  const engine = {
+    async getSession() {
+      return {
+        status: 'active',
+        archetypeKey: 'negotiator',
+        persona: { language: 'uz', direction: 'outbound' },
+        state: initState(NEGOTIATOR),
+        transcript: [],
+      };
+    },
+    async takeTurn(_ctx: unknown, input: { sellerText: string }) {
+      sellerTexts.push(input.sellerText);
+      return {
+        customerReply: 'Narxi qancha bo\'ladi?',
+        meta: { tone: 'calm', toneClamped: false },
+        ended: false,
+        turnCount: sellerTexts.length,
+      };
+    },
+  };
+  const tts = new FakeTts();
+  const voice = createVoiceService({
+    engine: engine as never,
+    withTenant: (async (_biz: string, fn: (t: unknown) => unknown) => fn(tx)) as never,
+    stt: new FakeStt(sttTexts),
+    tts,
+    models: { stt: 'fake-stt', tts: 'fake-tts' },
+  });
+  return { voice, sellerTexts, tts, metaStrings: () => collectStrings(calls) };
+}
+
+const reviewCtx: TrainingContext = { businessId: randomUUID(), userId: randomUUID(), seatId: null };
+const reviewSession = randomUUID();
+
+await checkAsync(report, "transcribe: faqat matn qaytadi — LLM ham, TTS ham CHAQIRILMAYDI", async () => {
+  const h = reviewHarness(['Assalomu alaykum, narx haqida gaplashsak']);
+  const t = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  assertEqual(t.recognized, true, 'tanildi');
+  assertEqual(t.sttText, 'Assalomu alaykum, narx haqida gaplashsak', 'matn');
+  assertEqual(h.sellerTexts.length, 0, 'mijoz javob bermadi');
+  assertEqual(h.tts.calls.length, 0, "TTS yo'q");
+});
+
+await checkAsync(report, "transcribe: kirill -> lotin; boshqa til -> tanilmadi (bo'sh, yozib yuborish mumkin)", async () => {
+  const h = reviewHarness(['Ассалому алайкум, таклиф ҳақида гаплашсак', 'Здравствуйте, сколько это стоит?']);
+  const cyr = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  assertEqual(cyr.sttText, 'Assalomu alaykum, taklif haqida gaplashsak', 'lotinda');
+  const ru = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  assertEqual(ru.recognized, false, 'tanilmadi');
+  assertEqual(ru.rejected, 'foreign_language', 'sababi');
+  assertEqual(ru.sttText, '', "bo'sh");
+});
+
+await checkAsync(report, "reply: TAHRIRLANGAN matn motorga boradi; meta'da asl sttText va edited:true", async () => {
+  const h = reviewHarness(['Assalomu alaykum, narx haqida gaplashsak']);
+  const t = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  const edited = 'Assalomu alaykum, narxlar haqida gaplashsak';
+  const result = await h.voice.replyToText(reviewCtx, { sessionId: reviewSession, transcriptId: t.transcriptId, text: `  ${edited} ` });
+  assertDeepEqual(h.sellerTexts, [edited], 'transkript/baholash yakuniy matndan');
+  assertEqual(result.sellerText, edited, 'javobdagi sotuvchi matni');
+  assertEqual(result.customerText, "Narxi qancha bo'ladi?", 'mijoz javobi');
+  const meta = h.metaStrings().filter((x) => x.includes('sttText'));
+  assert(meta.some((m) => m.includes('"sttText":"Assalomu alaykum, narx haqida gaplashsak"') && m.includes('"edited":true')), `meta: ${meta.join(' | ')}`);
+});
+
+await checkAsync(report, "reply: o'zgartirilmagan matn -> edited:false; bir martalik", async () => {
+  const h = reviewHarness(['Assalomu alaykum, narx haqida gaplashsak']);
+  const t = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  await h.voice.replyToText(reviewCtx, { sessionId: reviewSession, transcriptId: t.transcriptId, text: t.sttText });
+  assert(h.metaStrings().some((m) => m.includes('"edited":false')), 'edited:false');
+  let code: string | null = null;
+  try {
+    await h.voice.replyToText(reviewCtx, { sessionId: reviewSession, transcriptId: t.transcriptId, text: t.sttText });
+  } catch (err) {
+    code = isTrainingError(err) ? err.code : 'boshqa';
+  }
+  assertEqual(code, 'voice_review_expired', 'ikkinchi marta — eskirgan');
+});
+
+await checkAsync(report, "reply: boshqa foydalanuvchi / boshqa sessiya / bo'sh matn — rad etiladi", async () => {
+  const h = reviewHarness(['Assalomu alaykum, narx haqida gaplashsak']);
+  const t = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  const attempt = async (ctx: TrainingContext, sessionId: string, text: string): Promise<string | null> => {
+    try {
+      await h.voice.replyToText(ctx, { sessionId, transcriptId: t.transcriptId, text });
+      return null;
+    } catch (err) {
+      return isTrainingError(err) ? err.code : 'boshqa';
+    }
+  };
+  assertEqual(await attempt({ ...reviewCtx, userId: randomUUID() }, reviewSession, 'salom'), 'voice_review_expired', 'boshqa foydalanuvchi');
+  assertEqual(await attempt(reviewCtx, randomUUID(), 'salom'), 'voice_review_expired', 'boshqa sessiya');
+  assertEqual(await attempt(reviewCtx, reviewSession, '   '), 'voice_review_expired', "bo'sh matn");
+  assertEqual(h.sellerTexts.length, 0, 'motor chaqirilmadi');
+});
+
+await checkAsync(report, "'Qayta yozish': tashlangan yozuv sekundlari ham byudjetga (voiceSec) yoziladi", async () => {
+  const h = reviewHarness(['birinchi urinish matni', 'ikkinchi urinish matni']);
+  await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(2), mime: VOICE_AUDIO.mime });
+  const second = await h.voice.transcribeVoice(reviewCtx, { sessionId: reviewSession, audio: makeWav(3), mime: VOICE_AUDIO.mime });
+  await h.voice.replyToText(reviewCtx, { sessionId: reviewSession, transcriptId: second.transcriptId, text: second.sttText });
+  assert(h.metaStrings().some((m) => m.includes('"voiceSec":5')), "2 + 3 = 5 s");
+});
+
+check(report, "taqdimot rejimi: xatolar do'stona — kod, HTTP, JSON, provayder matni ko'rinmaydi", () => {
+  const sttErr = Object.assign(new Error('502 ...'), {
+    body: { error: 'voice_stt_failed', stage: 'stt', message: "nutq tanilmadi: HTTP 400: Language code 'uz' is not recognized" },
+  });
+  const friendly = friendlyError(sttErr);
+  assert(friendly.includes("Ovozni tanib bo'lmadi"), friendly);
+  for (const bad of ['HTTP', '{', 'voice_', 'Language code', '400']) assert(!friendly.includes(bad), `"${bad}" ko'rinmasligi kerak`);
+  assertEqual(
+    friendlyError(Object.assign(new Error('409'), { body: { error: 'voice_review_expired', stage: 'session', message: 'x' } })),
+    'Yozuv eskirdi — qaytadan yozing.',
+    'eskirgan yozuv',
+  );
+  assert(friendlyError(new Error('TypeError: Failed to fetch')).includes('Ulanishda muammo'), "tarmoq — umumiy do'stona");
+  assert(friendlyError(new Error('500 {"error":"internal_error"}')).includes('Ulanishda muammo'), 'server');
+  // Oddiy rejimda — bosqich va sabab (texnik tafsilot bilan).
+  assert(errorText(sttErr, false).startsWith('Nutqni tanish (STT) bosqichida xato'), 'oddiy rejim');
+  assertEqual(errorText(sttErr, true), friendly, 'taqdimot rejimi');
+  assertEqual(errorStage('voice_review_expired'), 'session', 'bosqich');
 });
 
 // ---------------------------------------------------------------------------

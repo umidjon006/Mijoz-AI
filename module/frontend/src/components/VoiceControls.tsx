@@ -14,14 +14,20 @@
  * Tugma mantig'i `lib/voice-recording.ts` dagi sof holat mashinasida
  * (testlangan): "juda qisqa" — yumshoq xabar, yozish darhol yana mumkin.
  *
+ * TEKSHIRISH rejimi ("Matnni yuborishdan oldin tekshirish"): yozuvdan keyin
+ * tanilgan matn tahrirlanadigan maydonda chiqadi; mijoz FAQAT "Yuborish"
+ * bosilgandan keyin javob beradi. "Qayta yozish" — matn tashlanadi.
+ * Asl STT matni serverda navbat meta'sida qoladi (`sttText`, `edited`).
+ *
  * Matnli kiritish YO'QOLMAYDI: mikrofon ishlamasa yoki nutq tanilmasa,
  * foydalanuvchi yozib davom etadi.
  */
 import { useCallback, useEffect, useRef, useState, type TouchEvent } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
-import { describeApiError } from '../lib/api-error.js';
+import { apiErrorBody, errorText } from '../lib/api-error.js';
 import type { TrainingApi, VoiceTurnResponse } from '../lib/api.js';
+import { usePresentation } from '../lib/presentation.js';
 import { useWavRecorder, type RecordingResult } from '../lib/useWavRecorder.js';
 import {
   INITIAL_RECORD_STATE,
@@ -55,7 +61,16 @@ export interface VoiceControlsProps {
   enabled?: boolean;
   /** Bosqichlar vaqtini ko'rsatish (harness; prod'da `false`). */
   debug?: boolean;
+  /** Tekshirish rejimi boshlang'ich holati (taqdimot rejimida `true`). */
+  reviewDefault?: boolean;
   events?: VoiceTurnEvents;
+}
+
+/** Tekshirilayotgan STT natijasi. */
+interface ReviewState {
+  transcriptId: string;
+  text: string;
+  recognized: boolean;
 }
 
 type Phase = 'idle' | 'stt' | 'playing';
@@ -83,8 +98,15 @@ export function VoiceControls({
   enabled = false,
   debug = false,
   hasOpeningLine = false,
+  reviewDefault = false,
   events,
 }: VoiceControlsProps): JSX.Element | null {
+  const presentation = usePresentation();
+  const [reviewMode, setReviewMode] = useState(reviewDefault);
+  const [review, setReview] = useState<ReviewState | null>(null);
+  const [replying, setReplying] = useState(false);
+  // Server sozlamasi kech kelishi mumkin (`_harness`) — default'ni kuzatamiz.
+  useEffect(() => setReviewMode(reviewDefault), [reviewDefault]);
   const [mode, setMode] = useState<RecordMode>(readMode);
   const [rec, setRec] = useState<RecordState>(INITIAL_RECORD_STATE);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -118,41 +140,75 @@ export function VoiceControls({
     }
   }, []);
 
+  /** Mijoz navbati natijasi: transkript, holat va audio. */
+  const handleTurnResult = useCallback(
+    async (result: VoiceTurnResponse): Promise<void> => {
+      if (timingRef.current) timingRef.current.responseAt = performance.now();
+      // Tanilgan matn DARHOL ko'rinadi — kutish seziladi.
+      if (result.sellerText) events?.onSellerText(result.sellerText);
+      setLast(result);
+      if (result.needsRepeat) setRepeat(true);
+      events?.onCustomerTurn(result);
+
+      // Audio: oldingi URL bo'shatiladi (xotira oqmasin).
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+      if (result.audioStreamUrl) {
+        // Oqim: brauzer birinchi bo'lak kelishi bilan ijroni boshlaydi.
+        await playUrl(result.audioStreamUrl);
+      } else {
+        const url = audioUrl(result.audio, result.audioMime);
+        urlRef.current = url;
+        await playUrl(url);
+      }
+    },
+    [events, playUrl],
+  );
+
   const send = useCallback(
     async (wav: Blob): Promise<boolean> => {
       setError(null);
       setRepeat(false);
       setPhase('stt');
       try {
-        const result = await api.takeVoiceTurn(sessionId, wav);
-        if (timingRef.current) timingRef.current.responseAt = performance.now();
-
-        // Tanilgan matn DARHOL ko'rinadi — kutish seziladi.
-        if (result.sellerText) events?.onSellerText(result.sellerText);
-        setLast(result);
-        if (result.needsRepeat) setRepeat(true);
-        events?.onCustomerTurn(result);
-
-        // Audio: oldingi URL bo'shatiladi (xotira oqmasin).
-        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-        urlRef.current = null;
-        if (result.audioStreamUrl) {
-          // Oqim: brauzer birinchi bo'lak kelishi bilan ijroni boshlaydi.
-          await playUrl(result.audioStreamUrl);
-        } else {
-          const url = audioUrl(result.audio, result.audioMime);
-          urlRef.current = url;
-          await playUrl(url);
+        if (reviewMode) {
+          // Faqat STT: matn tekshiruvga chiqadi, mijoz hali javob bermaydi.
+          const heard = await api.transcribeVoice(sessionId, wav);
+          setReview({ transcriptId: heard.transcriptId, text: heard.sttText, recognized: heard.recognized });
+          setPhase('idle');
+          return true;
         }
+        await handleTurnResult(await api.takeVoiceTurn(sessionId, wav));
         return true;
       } catch (err) {
         setPhase('idle');
-        setError(describeApiError(err));
+        setError(errorText(err, presentation));
         return false;
       }
     },
-    [api, sessionId, events, playUrl],
+    [api, sessionId, reviewMode, handleTurnResult, presentation],
   );
+
+  /** "Yuborish": tasdiqlangan (tahrirlangan bo'lishi mumkin) matn bilan javob. */
+  const confirmReview = useCallback(async (): Promise<void> => {
+    if (!review || replying || review.text.trim().length === 0) return;
+    setReplying(true);
+    setError(null);
+    setPhase('stt');
+    timingRef.current = { stoppedAt: performance.now(), responseAt: null };
+    try {
+      const result = await api.voiceReply(sessionId, { transcriptId: review.transcriptId, text: review.text.trim() });
+      setReview(null);
+      await handleTurnResult(result);
+    } catch (err) {
+      setPhase('idle');
+      // Yozuv eskirgan bo'lsa — tekshiruv yopiladi, qayta yozish kerak.
+      if (apiErrorBody(err)?.error === 'voice_review_expired') setReview(null);
+      setError(errorText(err, presentation));
+    } finally {
+      setReplying(false);
+    }
+  }, [api, sessionId, review, replying, handleTurnResult, presentation]);
 
   // --- Holat mashinasi: hodisa -> yangi holat + buyruq ---------------------
   const dispatchRef = useRef<(event: RecordEvent) => void>(() => undefined);
@@ -201,7 +257,8 @@ export function VoiceControls({
     [recorder, send],
   );
 
-  const blocked = disabled || openingBusyRef.current;
+  // Tekshiruv ochiq yoki javob kutilayotganda yangi yozuv boshlanmaydi.
+  const blocked = disabled || openingBusyRef.current || review !== null || replying;
   const dispatch = useCallback(
     (event: RecordEvent): void => {
       const step = recordingStep(recRef.current, event, mode, blocked);
@@ -226,11 +283,11 @@ export function VoiceControls({
       urlRef.current = url;
       await playUrl(url);
     } catch (err) {
-      setError(describeApiError(err));
+      setError(errorText(err, presentation));
     } finally {
       openingBusyRef.current = false;
     }
-  }, [api, sessionId, playUrl]);
+  }, [api, sessionId, playUrl, presentation]);
 
   // BO'SHLIQ: toggle — bir bosish; hold — bosib turish (matn maydonida emas).
   useEffect(() => {
@@ -299,7 +356,8 @@ export function VoiceControls({
 
   const active = rec.phase === 'starting' || rec.phase === 'recording' || rec.phase === 'stopping';
   const sending = rec.phase === 'sending';
-  const buttonDisabled = disabled || sending || rec.phase === 'stopping';
+  const reviewOpen = review !== null || replying;
+  const buttonDisabled = disabled || sending || rec.phase === 'stopping' || reviewOpen;
   const buttonLabel = active
     ? mode === 'toggle'
       ? mashq.voiceToggleStop
@@ -310,7 +368,9 @@ export function VoiceControls({
 
   const statusLabel = sending
     ? mashq.voiceListening
-    : phase === 'playing'
+    : replying
+      ? mashq.voiceThinking
+      : phase === 'playing'
       ? mashq.voiceSpeaking
       : '';
 
@@ -338,6 +398,17 @@ export function VoiceControls({
           </button>
         ))}
       </div>
+
+      {/* Tekshirish rejimi */}
+      <label className="mq-small" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={reviewMode}
+          disabled={rec.phase !== 'idle' || reviewOpen}
+          onChange={(event) => setReviewMode(event.target.checked)}
+        />
+        {mashq.voiceReviewToggle}
+      </label>
 
       {hasOpeningLine ? (
         <button
@@ -381,6 +452,43 @@ export function VoiceControls({
       >
         {buttonLabel}
       </button>
+
+      {/* Tekshiruv: tanilgan matn — tuzatib yuborish yoki qayta yozish */}
+      {review ? (
+        <div className="mq-review" style={{ marginTop: 10 }}>
+          <label className="mq-small mq-muted" htmlFor="mq-voice-review">
+            {review.recognized ? mashq.voiceReviewLabel : mashq.voiceReviewEmpty}
+          </label>
+          <textarea
+            id="mq-voice-review"
+            value={review.text}
+            disabled={replying}
+            rows={3}
+            style={{ width: '100%', marginTop: 4 }}
+            onChange={(event) => setReview({ ...review, text: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void confirmReview();
+              }
+            }}
+            autoFocus
+          />
+          <div className="mq-btn-row" style={{ marginTop: 6 }}>
+            <button
+              type="button"
+              className="mq-btn mq-btn-primary"
+              disabled={replying || review.text.trim().length === 0}
+              onClick={() => void confirmReview()}
+            >
+              {replying ? mashq.sending : mashq.voiceReviewSend}
+            </button>
+            <button type="button" className="mq-btn" disabled={replying} onClick={() => setReview(null)}>
+              {mashq.voiceReviewRerecord}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {/* Yozilyapti: qizil belgi + taymer + bekor qilish */}
       {active ? (
@@ -443,7 +551,7 @@ export function VoiceControls({
         }}
       />
 
-      {debug && last?.debug?.timings ? (
+      {debug && !presentation && last?.debug?.timings ? (
         <p className="mq-small mq-muted mq-mono" style={{ marginBottom: 0 }}>
           {mashq.voiceTimings}: STT {last.debug.timings.sttMs} ms · LLM {last.debug.timings.llmMs} ms
           {' · '}TTS{' '}

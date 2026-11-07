@@ -130,6 +130,15 @@ export interface VoiceTurnResponse {
   };
 }
 
+/** Tekshirish rejimi, 1-qadam: tanilgan matn (javob hali so'ralmagan). */
+export interface VoiceTranscriptionResponse {
+  transcriptId: string;
+  sttText: string;
+  recognized: boolean;
+  rejected?: 'too_short' | 'empty' | 'foreign_language';
+  debug?: { sttMs?: number; durationSec?: number };
+}
+
 /** `inbound` sessiyada mijozning birinchi gapi (ovozda). */
 export interface OpeningAudioResponse {
   text: string;
@@ -290,6 +299,10 @@ export interface TrainingApi {
   takeTurn(sessionId: string, text: string): Promise<TurnResponse>;
   /** Ovozli navbat: 16 kHz mono 16-bit PCM WAV. */
   takeVoiceTurn(sessionId: string, wav: Blob): Promise<VoiceTurnResponse>;
+  /** Tekshirish rejimi: faqat STT (mijoz hali javob bermaydi). */
+  transcribeVoice(sessionId: string, wav: Blob): Promise<VoiceTranscriptionResponse>;
+  /** Tekshirish rejimi: tasdiqlangan (tahrirlangan bo'lishi mumkin) matn bilan javob. */
+  voiceReply(sessionId: string, input: { transcriptId: string; text: string }): Promise<VoiceTurnResponse>;
   /** `inbound` bo'lmasa yoki ovoz o'chiq bo'lsa `null`. */
   openingAudio(sessionId: string): Promise<OpeningAudioResponse | null>;
   endSession(sessionId: string, reason?: string): Promise<void>;
@@ -330,6 +343,19 @@ export function createTrainingApi(request: ApiRequest, prefix = '/api/v1/trainin
         method: 'POST',
         rawBody: wav,
         contentType: 'audio/wav',
+      });
+    },
+    transcribeVoice(sessionId, wav) {
+      return request<VoiceTranscriptionResponse>(`${prefix}/sessions/${sessionId}/voice-transcribe`, {
+        method: 'POST',
+        rawBody: wav,
+        contentType: 'audio/wav',
+      });
+    },
+    voiceReply(sessionId, input) {
+      return request<VoiceTurnResponse>(`${prefix}/sessions/${sessionId}/voice-reply`, {
+        method: 'POST',
+        body: input,
       });
     },
     async openingAudio(sessionId) {

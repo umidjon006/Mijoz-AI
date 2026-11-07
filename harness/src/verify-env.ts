@@ -538,6 +538,13 @@ async function main(): Promise<void> {
     assert(source.includes('olderThanMs: config.scoringTimeoutMs'), 'chegara = baholash timeout\'i');
   });
 
+  await checkAsync(report, "server.ts: DEMO_PRESENTATION — debug yo'q, UI'ga presentation flag", async () => {
+    const source = await readFile(join(harnessRoot, 'src', 'server.ts'), 'utf8');
+    assert(source.includes("envBool('DEMO_PRESENTATION', false)"), "bo'sh = o'chiq");
+    assert(source.includes('allowDebug: !presentation'), 'route debug taqdimotda yopiq');
+    assert(/presentation,\n/.test(source), '_harness javobida presentation');
+  });
+
   await checkAsync(report, 'package.json: hamma tsx skriptida --env-file-if-exists', async () => {
     const pkg = JSON.parse(await readFile(join(harnessRoot, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;

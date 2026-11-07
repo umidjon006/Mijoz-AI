@@ -5,6 +5,8 @@
 import { useEffect, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
+import { errorText } from '../lib/api-error.js';
+import { usePresentation } from '../lib/presentation.js';
 import type { SessionListItem, StatsResponse, TrainingApi } from '../lib/api.js';
 import { EmptyState, formatDate, Metric, Notice, OutcomeBadge, Skeleton } from '../components/ui.js';
 
@@ -47,6 +49,7 @@ function Trend({ points }: { points: StatsResponse['skillScoreTrend'] }): JSX.El
 }
 
 export function TarixPage({ api, canViewAll = false, onOpenResult }: TarixPageProps): JSX.Element {
+  const presentation = usePresentation();
   const [sessions, setSessions] = useState<SessionListItem[] | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [userId, setUserId] = useState('');
@@ -61,7 +64,7 @@ export function TarixPage({ api, canViewAll = false, onOpenResult }: TarixPagePr
         setSessions(list);
         setStats(myStats);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(errorText(err, presentation));
       }
     })();
     return () => {
@@ -76,7 +79,7 @@ export function TarixPage({ api, canViewAll = false, onOpenResult }: TarixPagePr
     try {
       setStats(await api.userStats(value));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, presentation));
     }
   }
 

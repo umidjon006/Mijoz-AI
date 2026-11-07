@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
+import { errorText } from '../lib/api-error.js';
+import { usePresentation } from '../lib/presentation.js';
 import type { ResultResponse, TrainingApi } from '../lib/api.js';
 import { canOfferRescore, scoringRunState } from '../lib/rescore.js';
 import {
@@ -49,6 +51,7 @@ export function NatijaPage({
   onRetrySame,
   onAnotherCustomer,
 }: NatijaPageProps): JSX.Element {
+  const presentation = usePresentation();
   const [data, setData] = useState<ResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [timedOut, setTimedOut] = useState(false);
@@ -81,13 +84,13 @@ export function NatijaPage({
       setError(null);
       return state.inProgress || response.result.status === 'pending' ? 'pending' : 'done';
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
       // Natija hali yaratilmagan bo'lishi mumkin (404) — kutamiz.
-      if (message.includes('404') || message.toLowerCase().includes('not_found')) return 'missing';
-      setError(message);
+      if (raw.includes('404') || raw.toLowerCase().includes('not_found')) return 'missing';
+      setError(errorText(err, presentation));
       return 'done';
     }
-  }, [api, sessionId]);
+  }, [api, sessionId, presentation]);
 
   useEffect(() => {
     let stopped = false;
@@ -126,7 +129,7 @@ export function NatijaPage({
       pendingSeen.current = null;
       setPollKey((key) => key + 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, presentation));
     } finally {
       setRescoring(false);
     }

@@ -19,7 +19,8 @@ export type TrainingErrorCode =
   | 'voice_budget_exhausted' // sessiyaning ovoz byudjeti tugadi
   | 'voice_stt_failed' // nutqni tanish (STT) provayderi xato qaytardi
   | 'voice_tts_failed' // ovoz yaratish (TTS) provayderi xato qaytardi
-  | 'voice_failed'; // ovozli navbatda kutilmagan xato (bosqichi noma'lum)
+  | 'voice_failed' // ovozli navbatda kutilmagan xato (bosqichi noma'lum)
+  | 'voice_review_expired'; // tekshirilayotgan yozuv topilmadi/eskirdi — qayta yozish kerak
 
 export class TrainingError extends Error {
   readonly code: TrainingErrorCode;

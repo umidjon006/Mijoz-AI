@@ -62,6 +62,7 @@ const STATUS_BY_CODE: Record<TrainingErrorCode, number> = {
   voice_stt_failed: 502,
   voice_tts_failed: 502,
   voice_failed: 500,
+  voice_review_expired: 409,
 };
 
 /** Xato qaysi BOSQICHDA bo'ldi — UI foydalanuvchiga shuni o'zbekcha aytadi. */
@@ -88,6 +89,7 @@ export function errorStage(code: TrainingErrorCode | 'internal_error'): ErrorSta
     case 'session_not_active':
     case 'voice_turn_in_progress':
     case 'voice_budget_exhausted':
+    case 'voice_review_expired':
       return 'session';
     default:
       return 'server';
@@ -135,6 +137,10 @@ const startSessionBody = z.object({
 });
 
 const turnBody = z.object({ text: z.string().min(1).max(4000) });
+const voiceReplyBody = z.object({
+  transcriptId: z.string().uuid(),
+  text: z.string().trim().min(1).max(4000),
+});
 const endBody = z.object({ reason: z.string().min(1).max(200).optional() });
 const idParams = z.object({ id: z.string().uuid() });
 const statsQuery = z.object({ userId: z.string().uuid().optional() });
@@ -491,25 +497,66 @@ export async function registerTrainingRoutes(
           });
 
           if (result.ended && autoScore) scoreInBackground(ctx, id);
+          return voiceTurnPayload(result);
+        }),
+    );
 
+    /** Ovozli navbat javobi (bir bosqichli va tekshirilgan yo'l uchun bir xil). */
+    function voiceTurnPayload(result: Awaited<ReturnType<typeof voice.takeVoiceTurn>>): Record<string, unknown> {
+      return {
+        sellerText: result.sellerText,
+        customerText: result.customerText,
+        tone: result.tone,
+        // Audio FAQAT shu javobda (yoki bir martalik oqim URL'ida) va saqlanmaydi.
+        audio: result.audio.toString('base64'),
+        audioMime: result.audioMime,
+        ...(result.audioStream ? { audioStreamUrl: `${prefix}/voice-audio/${result.audioStream.id}` } : {}),
+        needsRepeat: result.needsRepeat,
+        ended: result.ended,
+        outcome: result.outcome ?? null,
+        endReason: result.endReason ?? null,
+        turnCount: result.turnCount,
+        ...(allowDebug ? { debug: { timings: result.timings, costUsd: result.costUsd } } : {}),
+      };
+    }
+
+    /**
+     * Tekshirish rejimi, 1-qadam: yozuv -> tanilgan matn (LLM/TTS yo'q, holat
+     * o'zgarmaydi). Foydalanuvchi matnni tuzatib `voice-reply` bilan yuboradi.
+     */
+    app.post(
+      `${prefix}/sessions/:id/voice-transcribe`,
+      { bodyLimit: VOICE_LIMITS.maxBytes },
+      async (req, reply) =>
+        guard(req, reply, 'training:use', async (ctx) => {
+          const { id } = idParams.parse(req.params);
+          const mime = (req.headers['content-type'] ?? '').toString();
+          if (!Buffer.isBuffer(req.body)) {
+            throw new TrainingError(
+              'voice_unsupported_media',
+              `kutilgan ${VOICE_AUDIO.mime}, kelgan "${mime.slice(0, 80)}"`,
+            );
+          }
+          const result = await voice.transcribeVoice(ctx, { sessionId: id, audio: req.body, mime });
           return {
-            sellerText: result.sellerText,
-            customerText: result.customerText,
-            tone: result.tone,
-            // Audio FAQAT shu javobda (yoki bir martalik oqim URL'ida) va saqlanmaydi.
-            audio: result.audio.toString('base64'),
-            audioMime: result.audioMime,
-            ...(result.audioStream
-              ? { audioStreamUrl: `${prefix}/voice-audio/${result.audioStream.id}` }
-              : {}),
-            needsRepeat: result.needsRepeat,
-            ended: result.ended,
-            outcome: result.outcome ?? null,
-            endReason: result.endReason ?? null,
-            turnCount: result.turnCount,
-            ...(allowDebug ? { debug: { timings: result.timings, costUsd: result.costUsd } } : {}),
+            transcriptId: result.transcriptId,
+            sttText: result.sttText,
+            recognized: result.recognized,
+            ...(result.rejected ? { rejected: result.rejected } : {}),
+            ...(allowDebug ? { debug: { sttMs: result.sttMs, durationSec: result.durationSec } } : {}),
           };
         }),
+    );
+
+    /** Tekshirish rejimi, 2-qadam: tasdiqlangan matn -> mijoz javobi (ovozda). */
+    app.post(`${prefix}/sessions/:id/voice-reply`, async (req, reply) =>
+      guard(req, reply, 'training:use', async (ctx) => {
+        const { id } = idParams.parse(req.params);
+        const body = voiceReplyBody.parse(req.body);
+        const result = await voice.replyToText(ctx, { sessionId: id, transcriptId: body.transcriptId, text: body.text });
+        if (result.ended && autoScore) scoreInBackground(ctx, id);
+        return voiceTurnPayload(result);
+      }),
     );
 
     /**

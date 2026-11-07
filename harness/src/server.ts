@@ -153,6 +153,9 @@ async function main(): Promise<void> {
   // Default YOQILGAN: bo'sh HARNESS_AUTH avval auth'ni o'chirib, UI 401 olardi.
   // O'chirish faqat aniq HARNESS_AUTH=0 bilan.
   const fakeAuth = envBool('HARNESS_AUTH', true);
+  // Rahbariyatga ko'rsatish rejimi (bo'sh = o'chiq).
+  const presentation = envBool('DEMO_PRESENTATION', false);
+  if (presentation) console.log("Taqdimot rejimi: DEMO_PRESENTATION=1 (STT tekshiruvi, debug yo'q, do'stona xatolar).");
 
   await registerTrainingRoutes(app, {
     engine,
@@ -176,7 +179,8 @@ async function main(): Promise<void> {
       }
     },
     ...(voice ? { voice } : {}),
-    config: { allowDebug: true, autoScoreOnEnd: true, rateLimitPerMinute: 240 },
+    // Taqdimot rejimida debug ma'lumoti (holat sonlari, vaqtlar) umuman yuborilmaydi.
+    config: { allowDebug: !presentation, autoScoreOnEnd: true, rateLimitPerMinute: 240 },
     logger: app.log,
   });
 
@@ -194,7 +198,9 @@ async function main(): Promise<void> {
     voice: voice
       ? { enabled: true, sttModel: voiceConfig?.sttModel, ttsModel: voiceConfig?.ttsModel }
       : { enabled: false, missing: missingVoiceConfig() },
-    debug: true,
+    debug: !presentation,
+    /** `DEMO_PRESENTATION=1`: STT tekshiruvi default, debug/provayder paneli yo'q, do'stona xatolar. */
+    presentation,
   }));
 
   await app.listen({ port: PORT, host: '127.0.0.1' });

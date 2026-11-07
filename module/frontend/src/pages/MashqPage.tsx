@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
+import { errorText } from '../lib/api-error.js';
+import { usePresentation } from '../lib/presentation.js';
 import type {
   ArchetypeInfo,
   SessionListItem,
@@ -14,7 +16,8 @@ export interface MashqPageProps {
   api: TrainingApi;
   /** Profildagi `callDirection` — `mixed` bo'lsa yo'nalish tanlovi ko'rsatiladi. */
   callDirection?: 'inbound' | 'outbound' | 'mixed';
-  onStarted: (sessionId: string) => void;
+  /** `archetypeKey` — "Yangi mashq" shu mijoz turi bilan boshlashi uchun. */
+  onStarted: (sessionId: string, archetypeKey?: string) => void;
   onOpenResult: (sessionId: string) => void;
   onOpenHistory: () => void;
 }
@@ -26,6 +29,7 @@ export function MashqPage({
   onOpenResult,
   onOpenHistory,
 }: MashqPageProps): JSX.Element {
+  const presentation = usePresentation();
   const [archetypes, setArchetypes] = useState<ArchetypeInfo[] | null>(null);
   const [sessions, setSessions] = useState<SessionListItem[] | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
@@ -49,7 +53,7 @@ export function MashqPage({
         setStats(myStats);
         setSelected((current) => current ?? list[0]?.key ?? null);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(errorText(err, presentation));
       }
     })();
     return () => {
@@ -66,9 +70,9 @@ export function MashqPage({
         archetypeKey: selected,
         ...(direction === 'auto' ? {} : { direction }),
       });
-      onStarted(started.sessionId);
+      onStarted(started.sessionId, selected);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, presentation));
     } finally {
       setStarting(false);
     }

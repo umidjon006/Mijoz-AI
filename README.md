@@ -529,6 +529,26 @@ npm run corpus:analyze -- --ratings ~/Downloads/stt-ratings.csv   # PULLIK (LLM)
   sanoq va misollar koddan. Natija: `customer-style.json` (dvigatelga hali
   ulanmagan) va `CORPUS-REPORT.md` — **tashqariga ulashiladigan yagona fayl**.
 
+### Taqdimot rejimi va STT tekshiruvi
+
+**STT tekshiruvi.** Ovoz panelidagi "Matnni yuborishdan oldin tekshirish"
+yoqilsa: yozuvdan keyin tanilgan matn tahrirlanadigan maydonda chiqadi —
+**"Yuborish"** (mijoz shundan keyingina javob beradi) yoki **"Qayta yozish"**.
+Transkript va baholash yakuniy (tuzatilgan) matndan foydalanadi; asl STT matni
+navbat meta'sida qoladi (`sttText`, `edited: true/false`). Server tomonda:
+`POST /sessions/:id/voice-transcribe` (faqat STT, holat o'zgarmaydi) va
+`POST /sessions/:id/voice-reply` (`{transcriptId, text}`; bir martalik,
+15 daqiqa). Tashlangan yozuvlar sekundlari ham ovoz byudjetiga yoziladi.
+
+**`DEMO_PRESENTATION=1`** (rahbariyatga ko'rsatish uchun, `harness/.env`):
+STT tekshiruvi default yoqiq; debug paneli va yuqoridagi provayder/model
+paneli yashirin (route'lar debug ma'lumot ham bermaydi); xatolar texnik
+tafsilotsiz, do'stona o'zbekcha; yuqorida bir bosishli **"Yangi mashq"** (joriy
+suhbatni yopib, oxirgi mijoz turi bilan yangisini boshlaydi). `DEMO_LLM=1` dagi
+qizil "DEMO AI" ogohlantirishi ataylab qoldirilgan.
+
+Demo'dan oldingi holat git tegida: `demo-v1`.
+
 ### Yozish usuli va kechikish
 
 **Yozish:** ovoz panelida almashtirgich — **"Bosib-bosib o'chirish"** (default:

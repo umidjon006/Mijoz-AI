@@ -74,6 +74,9 @@ interface HarnessInfo {
   model?: string;
   isDemo?: boolean;
   voice?: { enabled: boolean; sttModel?: string; ttsModel?: string; missing?: string[] };
+  /** `DEMO_PRESENTATION=1` — rahbariyatga ko'rsatish rejimi. */
+  presentation?: boolean;
+  debug?: boolean;
 }
 
 function Shell(): JSX.Element {
@@ -86,6 +89,7 @@ function Shell(): JSX.Element {
   }, []);
 
   const isDemo = info?.isDemo === true;
+  const presentation = info?.presentation === true;
 
   return (
     <>
@@ -120,36 +124,40 @@ function Shell(): JSX.Element {
           </span>
         </div>
       ) : null}
-      <div
-        style={{
-          font: '13px system-ui, sans-serif',
-          background: '#fff7e6',
-          color: '#7a5200',
-          borderBottom: '1px solid #f0d79a',
-          padding: '6px 12px',
-        }}
-      >
-        <b>Lokal harness</b>
-        {info ? (
-          <>
-            {' '}
-            · profil: {info.profileKey} ({info.industry}) · LLM: {info.llm}
-            {info.model ? ` (${info.model})` : ''}
-            {' · ovoz: '}
-            {info.voice?.enabled
-              ? `${info.voice.sttModel ?? '?'} / ${info.voice.ttsModel ?? '?'}`
-              : `o'chiq${info.voice?.missing?.length ? ` (${info.voice.missing.join(', ')})` : ''}`}
-          </>
-        ) : (
-          ' · backend ulanmadi: `npm run serve` ishlayaptimi?'
-        )}
-      </div>
+      {/* Provayder/model paneli — taqdimot rejimida ko'rsatilmaydi. */}
+      {presentation ? null : (
+        <div
+          style={{
+            font: '13px system-ui, sans-serif',
+            background: '#fff7e6',
+            color: '#7a5200',
+            borderBottom: '1px solid #f0d79a',
+            padding: '6px 12px',
+          }}
+        >
+          <b>Lokal harness</b>
+          {info ? (
+            <>
+              {' '}
+              · profil: {info.profileKey} ({info.industry}) · LLM: {info.llm}
+              {info.model ? ` (${info.model})` : ''}
+              {' · ovoz: '}
+              {info.voice?.enabled
+                ? `${info.voice.sttModel ?? '?'} / ${info.voice.ttsModel ?? '?'}`
+                : `o'chiq${info.voice?.missing?.length ? ` (${info.voice.missing.join(', ')})` : ''}`}
+            </>
+          ) : (
+            ' · backend ulanmadi: `npm run serve` ishlayaptimi?'
+          )}
+        </div>
+      )}
       <TrainingApp
         api={api}
         callDirection={info?.callDirection ?? 'mixed'}
         voiceEnabled={info?.voice?.enabled === true}
         canViewAll
-        debug
+        debug={info?.debug !== false && !presentation}
+        presentation={presentation}
       />
     </>
   );

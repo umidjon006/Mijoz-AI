@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { mashq } from '../lugat/mashq.js';
+import { errorText } from '../lib/api-error.js';
+import { usePresentation } from '../lib/presentation.js';
 import type { SessionDetail, TranscriptTurn, TrainingApi, TurnResponse } from '../lib/api.js';
 import { Notice, OutcomeBadge, Skeleton } from '../components/ui.js';
 import { Transcript } from '../components/Transcript.js';
@@ -26,6 +28,7 @@ export function SessionPage({
   onFinished,
   onExit,
 }: SessionPageProps): JSX.Element {
+  const presentation = usePresentation();
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
   const [turnCount, setTurnCount] = useState(0);
@@ -48,7 +51,7 @@ export function SessionPage({
         setTurnCount(detail.turnCount);
         if (detail.status !== 'active') setEnded({ outcome: detail.outcome });
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(errorText(err, presentation));
       }
     })();
     return () => {
@@ -72,7 +75,7 @@ export function SessionPage({
       setTurnCount(result.turnCount);
       if (result.ended) setEnded({ outcome: result.outcome });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, presentation));
       setText(value); // matn yo'qolmasin
       setTurns((previous) => previous.slice(0, -1));
     } finally {
@@ -87,7 +90,7 @@ export function SessionPage({
       await api.endSession(sessionId, 'user_ended');
       onFinished(sessionId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, presentation));
       setEnding(false);
     }
   }
@@ -184,7 +187,8 @@ export function SessionPage({
         api={api}
         disabled={Boolean(ended)}
         enabled={voiceEnabled}
-        debug={debug}
+        debug={debug && !presentation}
+        reviewDefault={presentation}
         hasOpeningLine={session?.persona.direction === 'inbound'}
         events={{
           // Tanilgan matn darhol ko'rinadi — mijoz javobi kutilmaydi.
@@ -202,7 +206,7 @@ export function SessionPage({
         }}
       />
 
-      {debug && lastDebug?.state ? (
+      {debug && !presentation && lastDebug?.state ? (
         <details className="mq-panel" style={{ marginTop: 12 }} open>
           <summary>{mashq.debugTitle}</summary>
           <div className="mq-metrics" style={{ marginTop: 10 }}>
