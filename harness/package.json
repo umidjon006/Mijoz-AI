@@ -12,7 +12,7 @@
     "withtenant:smoke": "tsx --env-file-if-exists=.env src/withTenant.ts",
     "verify:training": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training.ts",
     "verify:training:core": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-core.ts",
-    "verify": "npm run verify:env && npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:training:voice && npm run verify:training:bakeoff && npm run verify:frontend",
+    "verify": "npm run verify:env && npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:training:voice && npm run verify:corpus && npm run verify:training:bakeoff && npm run verify:frontend",
     "play": "tsx --env-file-if-exists=.env src/play.ts",
     "smoke:llm": "tsx --env-file-if-exists=.env src/smoke-llm.ts",
     "typecheck": "tsc --noEmit",
@@ -40,7 +40,12 @@
     "verify:training:voice": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-voice.ts",
     "diag:voice": "tsx --env-file-if-exists=.env src/diag-voice.ts",
     "diag:stt": "tsx --env-file-if-exists=.env src/diag-stt.ts",
-    "diag:latency": "tsx --env-file-if-exists=.env src/diag-latency.ts"
+    "diag:latency": "tsx --env-file-if-exists=.env src/diag-latency.ts",
+    "corpus:estimate": "tsx --env-file-if-exists=.env src/corpus-estimate.ts",
+    "corpus:transcribe": "tsx --env-file-if-exists=.env src/corpus-transcribe.ts",
+    "corpus:compare": "tsx --env-file-if-exists=.env src/corpus-compare.ts",
+    "corpus:analyze": "tsx --env-file-if-exists=.env src/corpus-analyze.ts",
+    "verify:corpus": "tsx --env-file-if-exists=.env src/verify-corpus.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

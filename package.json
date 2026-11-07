@@ -42,6 +42,11 @@
     "verify:training:voice": "npm run verify:training:voice -w sotuv-trener-harness",
     "diag:voice": "npm run diag:voice -w sotuv-trener-harness --",
     "diag:stt": "npm run diag:stt -w sotuv-trener-harness --",
-    "diag:latency": "npm run diag:latency -w sotuv-trener-harness --"
+    "diag:latency": "npm run diag:latency -w sotuv-trener-harness --",
+    "corpus:estimate": "npm run corpus:estimate -w sotuv-trener-harness --",
+    "corpus:transcribe": "npm run corpus:transcribe -w sotuv-trener-harness --",
+    "corpus:compare": "npm run corpus:compare -w sotuv-trener-harness --",
+    "corpus:analyze": "npm run corpus:analyze -w sotuv-trener-harness --",
+    "verify:corpus": "npm run verify:corpus -w sotuv-trener-harness --"
   }
 }

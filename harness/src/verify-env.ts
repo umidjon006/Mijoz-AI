@@ -509,6 +509,11 @@ async function main(): Promise<void> {
     'rescore',
     'diag-stt',
     'diag-latency',
+    'corpus-estimate',
+    'corpus-transcribe',
+    'corpus-compare',
+    'corpus-analyze',
+    'verify-corpus',
   ];
 
   for (const name of entryPoints) {

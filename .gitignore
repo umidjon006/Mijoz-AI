@@ -28,3 +28,6 @@ harness/bakeoff/out/
 
 # Dockersiz lokal Postgres klasteri
 harness/.pg-local/
+
+# Haqiqiy qo'ng'iroq yozuvlari va transkriptlar — SHAXSIY, hech qachon commit qilinmaydi
+harness/data/real-calls/

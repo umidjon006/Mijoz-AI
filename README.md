@@ -502,6 +502,33 @@ deterministik transliteratsiya bilan lotinga o'giriladi; aniq boshqa tilda
 bilan o'zbekcha chiqadi: "Nutqni tanish (STT) bosqichida xato: …". Server
 javobi: `{error, stage, message}` (`stage`: audio | stt | llm | tts | session | server).
 
+### Haqiqiy qo'ng'iroqlar korpusi (mijozlar qanday gapiradi)
+
+Yozuvlar: `harness/data/real-calls/audio/` (mp3/wav/m4a...). Butun
+`harness/data/real-calls/` papkasi **git'da ignore qilingan** — yozuvlar,
+transkriptlar va tahlil hech qachon commit qilinmaydi; loglarda faqat fayl
+id'si, davomiylik, sonlar va vaqtlar chiqadi. Mazmun faqat sozlangan OpenAI
+endpoint'iga yuboriladi. `ffmpeg`/`ffprobe` kerak (`sudo apt install ffmpeg`).
+
+```bash
+npm run corpus:estimate     # BEPUL: ffprobe, kanallar, bo'laklar, modellar, daqiqa va narx
+npm run corpus:transcribe   # PULLIK: 3 model (mini, 4o, diarize); tasdiq so'raydi; davom ettiradi
+npm run corpus:compare      # BEPUL: kelishuv, low_quality, stt-compare.html (tinglash + baho)
+npm run corpus:analyze -- --ratings ~/Downloads/stt-ratings.csv   # PULLIK (LLM): mijoz tahlili
+```
+
+- **transcribe**: asl fayllar o'zgarmaydi, 16 kHz mono WAV nusxa `work/wav/` da;
+  600 s dan uzun fayl jimlikda bo'linadi; tugagan (model, fayl) qayta chaqirilmaydi.
+  Asl STT matni o'zgarishsiz saqlanadi; kirill — deterministik lotinga; telefon,
+  e-pochta, ID — `[RAQAM]`. LLM transkriptni hech qachon qayta yozmaydi.
+- **compare**: `stt-compare.html` ni brauzerda oching — har qo'ng'iroqdan ~60 s,
+  uchala transkript yonma-yon, variantlar aralashtirilgan va model nomi yashirin.
+  1–5 baho qo'yib CSV yuklab olasiz. "Kelishuv" aniqlik emas.
+- **analyze**: baho bo'lsa eng yuqori baholangan, bo'lmasa eng yuqori kelishuvli
+  transkript olinadi; LLM faqat yorliq qo'yadi (rollar, mijoz navbati toifasi),
+  sanoq va misollar koddan. Natija: `customer-style.json` (dvigatelga hali
+  ulanmagan) va `CORPUS-REPORT.md` — **tashqariga ulashiladigan yagona fayl**.
+
 ### Yozish usuli va kechikish
 
 **Yozish:** ovoz panelida almashtirgich — **"Bosib-bosib o'chirish"** (default:
