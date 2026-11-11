@@ -442,9 +442,21 @@ async function dbBlock(): Promise<void> {
 
   const demo = await import('../../../../harness/src/demo-env.js');
   await demo.ensureDemoRows();
+  // Alohida test foydalanuvchisi: demo foydalanuvchining Tarixiga test sessiyalari tushmasin.
+  const testUserId = randomUUID();
+  const superPool = mod.createPool(mod.superuserDatabaseUrl());
+  try {
+    await superPool.query('insert into app_user (id, business_id, email) values ($1, $2, $3)', [
+      testUserId,
+      demo.DEMO_BUSINESS_ID,
+      `voice-test-${testUserId.slice(0, 8)}@t.local`,
+    ]);
+  } finally {
+    await superPool.end();
+  }
   const ctx: TrainingContext = {
     businessId: demo.DEMO_BUSINESS_ID,
-    userId: demo.DEMO_USER_ID,
+    userId: testUserId,
     seatId: null,
   };
   const getBusinessProfile: GetBusinessProfile = async () => PROFILE;

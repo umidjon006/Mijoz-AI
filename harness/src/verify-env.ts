@@ -21,6 +21,7 @@
  *      yo'q, timeout toifasi.
  */
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +34,7 @@ import {
   checkAsync,
   createReport,
   section,
+  skip,
 } from '../../module/backend/src/training/testing/assert.js';
 import {
   envBool,
@@ -75,7 +77,7 @@ import {
 } from './voice/openai.js';
 import { rankStt, scoreSample, summarizeStt } from './voice/stt-compare.js';
 import { parseArchetypeList } from './demo-env.js';
-import { forbiddenHandoffEntries, HANDOFF_PATHSPECS } from './handoff.js';
+import { forbiddenHandoffEntries, handoffFiles } from './handoff.js';
 import {
   describeBusinessData,
   demoProfilePath,
@@ -1043,8 +1045,9 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   section('[9] harness/data: biznes profili va sotuv skripti');
 
-  check(report, 'repodagi business-profile.json yaroqli', () => {
-    const profile = loadBusinessProfileFile();
+  // Topshirish paketida haqiqiy profil yo'q — demo namuna tekshiriladi.
+  check(report, "repodagi business-profile.json (yo'q bo'lsa demo namuna) yaroqli", () => {
+    const profile = resolveBusinessData().profile;
     assert(profile.primaryOffers.length > 0, 'takliflar bor');
   });
 
@@ -1133,7 +1136,10 @@ async function main(): Promise<void> {
     assert(describeBusinessData(r).includes("DEMO MA'LUMOT"), 'start qatorida DEMO');
   });
 
-  check(report, "git: haqiqiy profil/skript ignore va kuzatilmaydi; namunalar kuzatiladi", () => {
+  const inGitRepo =
+    spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: join(harnessRoot, '..'), stdio: 'ignore' }).status === 0;
+  if (!inGitRepo) skip(report, 'git: haqiqiy profil/skript ignore', "git repo emas (topshirish paketi)");
+  else check(report, "git: haqiqiy profil/skript ignore va kuzatilmaydi; namunalar kuzatiladi", () => {
     const repo = join(harnessRoot, '..');
     const ignored = (path: string): boolean => spawnSync('git', ['check-ignore', '-q', path], { cwd: repo }).status === 0;
     const tracked = (path: string): boolean =>
@@ -1145,18 +1151,38 @@ async function main(): Promise<void> {
     assert(tracked('harness/data/sales-script.example.md'), 'skript namunasi');
   });
 
-  check(report, "handoff paketi: harness/data/** va .env taqiqlangan, .env.example mumkin", () => {
-    assert(HANDOFF_PATHSPECS.includes(':(exclude)harness/data/**'), 'pathspec');
+  check(report, "handoff paketi: harness/data/** (namunalardan tashqari) va .env taqiqlangan, .env.example mumkin", () => {
+    assertDeepEqual(handoffFiles(['README.md', 'harness/.env', 'harness/data/business-profile.demo.json']), ['README.md', 'harness/data/business-profile.demo.json'], 'handoffFiles');
     assertDeepEqual(
       forbiddenHandoffEntries([
         'module/backend/src/training/engine.ts',
+        'harness/data/',
         'harness/data/business-profile.demo.json',
+        'harness/data/sales-script.example.md',
+        'harness/data/business-profile.json',
+        'harness/data/sales-script.md',
         'harness/data/real-calls/a.mp3',
+        'harness/data/real-business/kurslar.md',
         'harness/.env',
         'harness/.env.example',
         'README.md',
+        'claude-code-prompt-step2.md',
+        'REPORT-FOR-REVIEW.md',
+        'llm-compare/customer-blind-compare.ts',
+        'tts-test/gemini-tts-test.ts',
+        'harness/src/llm-compare-helper.ts',
       ]),
-      ['harness/data/business-profile.demo.json', 'harness/data/real-calls/a.mp3', 'harness/.env'],
+      [
+        'harness/data/business-profile.json',
+        'harness/data/sales-script.md',
+        'harness/data/real-calls/a.mp3',
+        'harness/data/real-business/kurslar.md',
+        'harness/.env',
+        'claude-code-prompt-step2.md',
+        'REPORT-FOR-REVIEW.md',
+        'llm-compare/customer-blind-compare.ts',
+        'tts-test/gemini-tts-test.ts',
+      ],
       'taqiqlanganlar',
     );
   });
@@ -1181,7 +1207,9 @@ async function main(): Promise<void> {
   });
 
   await checkAsync(report, "profil: majburiy maydon yo'q -> maydon yo'li bilan xato", async () => {
-    const good = JSON.parse(await readFile(businessProfilePath, 'utf8')) as Record<string, unknown>;
+    const good = JSON.parse(
+      await readFile(existsSync(businessProfilePath) ? businessProfilePath : demoProfilePath, 'utf8'),
+    ) as Record<string, unknown>;
     const path = join(dir, 'missing.json');
     await writeFile(path, JSON.stringify({ ...good, primaryOffers: [], customerType: 'boshqa' }));
     expectDataError(() => loadBusinessProfileFile(path), 'primaryOffers', 'customerType');
@@ -1838,10 +1866,12 @@ async function main(): Promise<void> {
   await checkAsync(report, "stt/: git'ga faqat serve.py kiradi; server lokal STT'ni tanlaydi", async () => {
     const gi = await readFile(join(harnessRoot, '..', '.gitignore'), 'utf8');
     assert(/^stt\/\*$/m.test(gi) && /^!stt\/serve\.py$/m.test(gi), '.gitignore: stt/* va !stt/serve.py');
-    const ignored = spawnSync('git', ['check-ignore', '-q', '--no-index', 'stt/doniyor-model/weights/gigaam_s1.pt'], { cwd: join(harnessRoot, '..') });
-    assertEqual(ignored.status, 0, 'vaznlar ignore');
-    const served = spawnSync('git', ['check-ignore', '-q', '--no-index', 'stt/serve.py'], { cwd: join(harnessRoot, '..') });
-    assertEqual(served.status, 1, 'serve.py ignore EMAS');
+    if (inGitRepo) {
+      const ignored = spawnSync('git', ['check-ignore', '-q', '--no-index', 'stt/doniyor-model/weights/gigaam_s1.pt'], { cwd: join(harnessRoot, '..') });
+      assertEqual(ignored.status, 0, 'vaznlar ignore');
+      const served = spawnSync('git', ['check-ignore', '-q', '--no-index', 'stt/serve.py'], { cwd: join(harnessRoot, '..') });
+      assertEqual(served.status, 1, 'serve.py ignore EMAS');
+    }
     const server = await readFile(join(harnessRoot, 'src', 'server.ts'), 'utf8');
     assert(server.includes('resolveStt()') && server.includes('checkLocalStt('), 'server.ts');
     const serve = await readFile(join(harnessRoot, '..', 'stt', 'serve.py'), 'utf8').catch(() => '');
@@ -1850,7 +1880,7 @@ async function main(): Promise<void> {
       assert(serve.includes('weights_only=True'), 'weights_only=True');
     }
     assertDeepEqual(
-      forbiddenHandoffEntries(['stt/serve.py', 'stt/doniyor-model/weights/gigaam_s1.pt', 'stt/.venv/bin/python']),
+      forbiddenHandoffEntries(['stt/', 'stt/serve.py', 'stt/doniyor-model/weights/gigaam_s1.pt', 'stt/.venv/bin/python']),
       ['stt/doniyor-model/weights/gigaam_s1.pt', 'stt/.venv/bin/python'],
       'handoff: stt/ dan faqat serve.py',
     );

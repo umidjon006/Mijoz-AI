@@ -66,16 +66,21 @@ sotuv-trener/
 
 ## Lokal ishga tushirish
 
+Talablar: Node.js 22.9+ (`--env-file-if-exists` uchun; sinalgan: 24), npm 10+, PostgreSQL 16+ binary'lari (yoki Docker),
+Python 3.10+ va `ffmpeg` (lokal STT uchun).
+
 ```bash
-npm install
+npm install          # npm 11 "install-scripts ... esbuild" ogohlantirishi — zararsiz, ruxsat shart emas
 cp harness/.env.example harness/.env   # FAQAT GEMINI_API_KEY ni to'ldiring — boshqa kalit kerak emas
 
 # DB — ikki yo'ldan biri:
 npm run db:local:start   # DOCKERSIZ (tavsiya etiladi): tizimdagi PostgreSQL binary'lari
+                         # (u chiqargan .env qatorlari standart port 55433 da shart emas;
+                         #  boshqa port kerak bo'lsa .env da faqat POSTGRES_PORT ni o'zgartiring)
 npm run db:up            # yoki docker: postgres:18, 127.0.0.1:55433
 
 npm run db:init      # bootstrap.sql -> training.sql -> rls-training.sql -> grants.sql
-npm run verify       # hamma tekshiruv + frontend build (LLM kerak emas)
+npm run verify       # hamma tekshiruv + frontend build (LLM kerak emas; demo foydalanuvchi Tarixiga sessiya yozmaydi)
 npm run typecheck
 
 # Lokal STT (ovoz kirishi) — bir marta (model paketi: pastdagi "Lokal STT" bo'limi):
@@ -303,8 +308,12 @@ jigarrang **"DEMO MA'LUMOT"** belgisi turadi — demo ma'lumot hech qachon haqiq
 deb ko'rsatilmaydi.
 
 **Topshirish paketi:** `npm run handoff:pack` -> `dist/handoff-<commit>.tar.gz`
-(faqat commit qilingan fayllar; `harness/data/**` va `.env` hech qachon kirmaydi,
-arxiv ro'yxati qayta tekshiriladi).
+(faqat commit qilingan fayllar; `harness/data/**` dan faqat ikkita namuna —
+`business-profile.demo.json` va `sales-script.example.md` — kiradi, haqiqiy profil,
+skript, `real-calls/` va `.env` hech qachon kirmaydi; `stt/` dan faqat `serve.py`;
+ichki ish fayllari (`harness/src/handoff.ts` dagi `HANDOFF_INTERNAL`) paketga kirmaydi;
+arxiv ro'yxati qayta tekshiriladi). Haqiqiy profil alohida beriladi: uni
+`harness/data/business-profile.json` ga qo'ying (bo'lmasa demo namuna, "DEMO MA'LUMOT").
 
 `business-profile.json` shakli (namuna — `business-profile.demo.json` dan qisqartirilgan):
 

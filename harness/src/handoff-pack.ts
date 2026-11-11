@@ -16,7 +16,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { harnessRoot } from './env.js';
-import { forbiddenHandoffEntries, HANDOFF_PATHSPECS } from './handoff.js';
+import { forbiddenHandoffEntries, handoffFiles } from './handoff.js';
 
 function git(args: string[], cwd: string): string {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -34,7 +34,8 @@ function main(): void {
   const outDir = resolve(repoRoot, 'dist');
   mkdirSync(outDir, { recursive: true });
   const out = resolve(outDir, `handoff-${commit}.tar.gz`);
-  git(['archive', '--format=tar.gz', `--prefix=handoff-${commit}/`, '-o', out, 'HEAD', '--', ...HANDOFF_PATHSPECS], repoRoot);
+  const files = handoffFiles(git(['ls-tree', '-r', '--name-only', 'HEAD'], repoRoot).split('\n').filter(Boolean));
+  git(['archive', '--format=tar.gz', `--prefix=handoff-${commit}/`, '-o', out, 'HEAD', '--', ...files], repoRoot);
 
   const list = spawnSync('tar', ['-tzf', out], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (list.status !== 0) throw new Error("arxiv ro'yxatini o'qib bo'lmadi");
@@ -45,7 +46,7 @@ function main(): void {
     console.error(`TO'XTATILDI: taqiqlangan fayllar topildi (${forbidden.length}): ${forbidden.slice(0, 5).join(', ')}`);
     process.exit(1);
   }
-  console.log(`Tayyor: dist/handoff-${commit}.tar.gz — ${entries.length} ta yozuv; harness/data/** va .env yo'q.`);
+  console.log(`Tayyor: dist/handoff-${commit}.tar.gz — ${entries.length} ta yozuv; harness/data/** (2 namunadan tashqari) va .env yo'q.`);
 }
 
 main();

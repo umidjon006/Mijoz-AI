@@ -2,7 +2,7 @@
  * FAQAT HARNESS. `TtsPort` ning Gemini adapteri: gemini-3.8-flash-tts,
  * Interactions API (`POST /v1beta/interactions`, `stream: true`).
  *
- * So'rov shakli `tts-test/gemini-tts-test.ts` dagi ishlagan integratsiyadan:
+ * So'rov shakli avvalgi mustaqil TTS sinovida ishlagan integratsiyadan:
  *  - matn `input[0].content[0].text` da — SO'ZMA-SO'Z o'qiladi;
  *  - uslub (ohang, persona) `annotations: [{type:'speech_metadata', style}]` da —
  *    o'qilmaydi, faqat yo'nalish;

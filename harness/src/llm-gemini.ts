@@ -13,7 +13,7 @@
  *  - Usage: total_input_tokens, total_cached_tokens, total_output_tokens,
  *    total_thought_tokens. Thinking chiqish narxida -> `outputTokens` = chiqish + thinking.
  *  - `generation_config` har so'rovda qayta beriladi (`store: false`, stateless).
- * So'rov shakli `llm-compare/customer-blind-compare.ts` dagi ishlagan integratsiyadan.
+ * So'rov shakli avvalgi mustaqil solishtirish sinovida ishlagan integratsiyadan olingan.
  *
  * Xatolar `LlmCallError` bilan toifalanadi. Qayta urinish siyosati (adapter ichida):
  *  - 429 (rate limit) — server aytgan vaqtni kutib; kutish `maxWaitMs` dan uzun
