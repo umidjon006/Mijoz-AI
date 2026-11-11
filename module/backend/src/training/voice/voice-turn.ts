@@ -39,12 +39,13 @@ import {
   VOICE_REPEAT_LINE,
   type SttPort,
   type TtsPort,
+  type TtsSpeaker,
   type VoiceLang,
 } from './ports.js';
 import * as voiceRepo from './repo.js';
 import { normalizeForSpeech } from './speech-text.js';
 import { clampTone, DEFAULT_TONE, toneInstruction, type VoiceTone } from './tone.js';
-import { checkWav, parseWav } from './wav.js';
+import { checkWav, concatWav, parseWav } from './wav.js';
 import {
   AudioStreamRegistry,
   splitForParallelTts,
@@ -260,6 +261,23 @@ export function validateVoiceAudio(
 // ---------------------------------------------------------------------------
 // Xizmat
 // ---------------------------------------------------------------------------
+/** Persona'dan TTS uchun "kim gapiryapti" ishorasi (ovoz/uslub tanlash). */
+export function speakerOf(persona: {
+  gender?: 'male' | 'female' | undefined;
+  age: number;
+  role: string;
+  speakingStyle: string;
+  voice?: { profile: string; baseStyle: string } | undefined;
+}): TtsSpeaker {
+  return {
+    ...(persona.gender ? { gender: persona.gender } : {}),
+    age: persona.age,
+    role: persona.role,
+    speakingStyle: persona.speakingStyle,
+    ...(persona.voice ? { profile: persona.voice.profile, baseStyle: persona.voice.baseStyle } : {}),
+  };
+}
+
 export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
   const { engine, withTenant, stt, tts, models } = deps;
   const now = deps.now ?? ((): Date => new Date());
@@ -284,6 +302,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
     text: string,
     lang: VoiceLang,
     tone: VoiceTone,
+    speaker?: TtsSpeaker,
   ): Promise<{ audio: Buffer; mime: string; ms: number; chars: number }> {
     const speech = normalizeForSpeech(text, lang);
     const startedMs = Date.now();
@@ -294,6 +313,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
         tone,
         instructions: toneInstruction(tone),
         ...(models.voice ? { voice: models.voice } : {}),
+        ...(speaker ? { speaker } : {}),
       });
     try {
       // Oqimsiz TTS: gaplar PARALLEL sintez qilinadi (vaqt ≈ eng uzun gap,
@@ -303,9 +323,16 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       let audio: Buffer;
       let mime: string;
       const outs = parts.length > 1 ? await Promise.all(parts.map(request)) : [];
+      const wavJoined =
+        outs.length > 1 && outs.every((o) => o.mime === 'audio/wav') ? concatWav(outs.map((o) => o.audio)) : null;
       if (outs.length > 1 && outs.every((o) => o.mime === 'audio/mpeg')) {
         audio = Buffer.concat(outs.map((o) => o.audio));
         mime = 'audio/mpeg';
+      } else if (wavJoined) {
+        // WAV: PCM bo'laklari bitta sarlavha ostida qo'shiladi (avval bu
+        // bo'laklar tashlab yuborilib, matn QAYTA sintez qilinardi — ikki barobar narx).
+        audio = wavJoined;
+        mime = 'audio/wav';
       } else {
         // Bitta gap yoki MP3 emas (bo'laklarni qo'shib bo'lmaydi) — bitta so'rov.
         const out = await request(speech);
@@ -343,6 +370,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       /** STT matn qaytardi, lekin u rad etildi (masalan boshqa tilda). */
       sttRejected?: string;
     },
+    speaker?: TtsSpeaker,
   ): Promise<VoiceTurnResult> {
     const already = await voiceRepo.countRepeatTurns(tx, sessionId);
     if (already >= VOICE_MAX_REPEATS) {
@@ -352,7 +380,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       );
     }
 
-    const spoken = await speak(VOICE_REPEAT_LINE, lang, DEFAULT_TONE);
+    const spoken = await speak(VOICE_REPEAT_LINE, lang, DEFAULT_TONE, speaker);
     const cost = voiceCost(deps.cost, { audioSec: timing.durationSec, chars: spoken.chars });
     if (!cost.priced) warnOnceAboutCost();
 
@@ -410,8 +438,9 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
     state: TrainingState,
     lang: VoiceLang,
     timing: { usedSec: number; totalStartedMs: number },
+    speaker?: TtsSpeaker,
   ): Promise<VoiceTurnResult> {
-    const spoken = await speak(VOICE_BUDGET_LINE, lang, DEFAULT_TONE);
+    const spoken = await speak(VOICE_BUDGET_LINE, lang, DEFAULT_TONE, speaker);
     const cost = voiceCost(deps.cost, { audioSec: 0, chars: spoken.chars });
 
     const seq = await turnRepo.nextSeq(tx, sessionId);
@@ -565,10 +594,15 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       // --- Byudjet qo'riqchisi (sinov xarajatini cheklaydi) --------------
       const usedSec = await voiceRepo.usedVoiceSeconds(tx, input.sessionId);
       if (usedSec + durationSec > maxSeconds) {
-        return await endOnBudget(tx, ctx, input.sessionId, session.state, lang, {
-          usedSec,
-          totalStartedMs,
-        });
+        return await endOnBudget(
+          tx,
+          ctx,
+          input.sessionId,
+          session.state,
+          lang,
+          { usedSec, totalStartedMs },
+          speakerOf(session.persona),
+        );
       }
 
       // --- STT ----------------------------------------------------------
@@ -609,17 +643,21 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
 
       // --- Tanilmadi: "takrorlaysizmi" ----------------------------------
       if (sellerText.length < VOICE_MIN_TEXT_CHARS) {
-        return await askToRepeat(tx, ctx, input.sessionId, session.state, lang, {
-          sttMs,
-          durationSec,
-          totalStartedMs,
-          ...(sttRejected ? { sttRejected } : {}),
-        });
+        return await askToRepeat(
+          tx,
+          ctx,
+          input.sessionId,
+          session.state,
+          lang,
+          { sttMs, durationSec, totalStartedMs, ...(sttRejected ? { sttRejected } : {}) },
+          speakerOf(session.persona),
+        );
       }
 
       return await replyWithText(tx, ctx, {
         sessionId: input.sessionId,
         lang,
+        speaker: speakerOf(session.persona),
         sellerText,
         sttText: sellerText,
         sttMs,
@@ -642,6 +680,8 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
     input: {
       sessionId: string;
       lang: VoiceLang;
+      /** Persona'dan: TTS ovoz/uslubi. */
+      speaker?: TtsSpeaker;
       sellerText: string;
       sttText: string;
       sttMs: number;
@@ -652,7 +692,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       totalStartedMs: number;
     },
   ): Promise<VoiceTurnResult> {
-    const { sellerText, sttMs, lang, totalStartedMs } = input;
+    const { sellerText, sttMs, lang, totalStartedMs, speaker } = input;
     const durationSec = input.sttCostSec;
     // --- Motor (bitta LLM chaqiruvi) ----------------------------------
     const llmStartedMs = Date.now();
@@ -677,6 +717,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
         tone,
         instructions: toneInstruction(tone),
         ...(models.voice ? { voice: models.voice } : {}),
+        ...(speaker ? { speaker } : {}),
       });
       const sessionId = input.sessionId;
       audioStream = audioStreams.open({
@@ -698,7 +739,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       });
       spoken = { audio: Buffer.alloc(0), mime: stream.mime, ms: 0, chars: speech.length };
     } else {
-      spoken = await speak(turn.customerReply, lang, tone);
+      spoken = await speak(turn.customerReply, lang, tone, speaker);
     }
 
     // --- Telemetriya: IKKI navbatga ham `meta` ------------------------
@@ -877,6 +918,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
       return await replyWithText(tx, ctx, {
         sessionId: input.sessionId,
         lang,
+        speaker: speakerOf(session.persona),
         sellerText,
         sttText: entry.sttText,
         sttMs: entry.sttMs,
@@ -900,7 +942,7 @@ export function createVoiceService(deps: VoiceTurnDeps): VoiceService {
 
     const lang = session.persona.language as VoiceLang;
     const tone = clampTone(undefined, session.state, getArchetype(session.archetypeKey)).tone;
-    const spoken = await speak(first.text, lang, tone);
+    const spoken = await speak(first.text, lang, tone, speakerOf(session.persona));
     const cost = voiceCost(deps.cost, { audioSec: 0, chars: spoken.chars });
     if (!cost.priced) warnOnceAboutCost();
 

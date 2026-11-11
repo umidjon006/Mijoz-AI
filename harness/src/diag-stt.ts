@@ -15,7 +15,7 @@
  * va `.env` uchun tavsiya. Kalit chiqmaydi; audio hech qayerga yozilmaydi.
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import { envStr } from './env.js';
+import { envStr, missingKeyHint } from './env.js';
 
 import { readFile } from 'node:fs/promises';
 import { stdin as input, stdout as output } from 'node:process';
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   const keyEnv = envStr('OPENAI_VOICE_KEY_ENV') ?? 'OPENAI_API_KEY';
   const apiKey = envStr(keyEnv);
   if (!apiKey) {
-    console.error(`${keyEnv} bo'sh yoki yo'q — harness/.env ni to'ldiring.`);
+    console.error(missingKeyHint(keyEnv, 'src/diag-stt.ts'));
     process.exit(1);
   }
   const baseUrl = (envStr('OPENAI_BASE_URL') ?? DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');

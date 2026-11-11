@@ -219,16 +219,7 @@ export function createAnthropicTrainerLlm(options: AnthropicTrainerLlmOptions = 
 }
 
 /**
- * Juda sodda narxlash (USD, 1M token uchun). Faqat lokal baholash uchun —
- * asosiy repoda host o'z tariflarini beradi (`priceCall` porti).
+ * Narxlash endi `pricing.ts` da (barcha provayderlar, bitta joy).
+ * Eski import yo'llari buzilmasligi uchun shu yerdan qayta eksport qilinadi.
  */
-const PRICE_PER_MTOK: Record<string, { input: number; output: number }> = {
-  'claude-haiku-5-5': { input: 1, output: 5 },
-  'claude-sonnet-5-5': { input: 3, output: 15 },
-};
-
-export function priceCall(usage: TokenUsage): number {
-  const price = PRICE_PER_MTOK[usage.model ?? ''] ?? PRICE_PER_MTOK['claude-haiku-5-5'];
-  if (!price) return 0;
-  return (usage.inputTokens / 1_000_000) * price.input + (usage.outputTokens / 1_000_000) * price.output;
-}
+export { priceCall } from './pricing.js';

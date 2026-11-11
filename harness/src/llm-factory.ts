@@ -2,7 +2,17 @@
  * FAQAT HARNESS. Qaysi LLM ishlatilishini env bo'yicha hal qiladi.
  *
  * Env:
- *   TRAINER_PROVIDER    anthropic | openai-compatible   (default: anthropic)
+ *   TRAINER_PROVIDER    gemini | openai-compatible | anthropic   (default: gemini;
+ *                       harness/.env da gemini — kompaniya kaliti GEMINI_API_KEY)
+ *   TRAINER_THINKING_LEVEL          gemini: low | medium | high (default low; o'chirib bo'lmaydi)
+ *   TRAINER_SCORING_THINKING_LEVEL  gemini baholash uchun (default: TRAINER_THINKING_LEVEL)
+ *   GEMINI_BASE_URL     ixtiyoriy (default https://generativelanguage.googleapis.com/v1beta)
+ *   TRAINER_FALLBACK    off | openai (default off). `openai` — Gemini 429/5xx/timeout
+ *                       bilan yiqilsa OpenAI'ga o'tadi, FAQAT OPENAI_API_KEY bo'lsa
+ *                       (shaxsiy fayl). Har o'tish log'ga yoziladi.
+ *   TRAINER_FALLBACK_MODEL / _BASE_URL / _API_KEY_ENV / _REASONING_EFFORT / _JSON_MODE
+ *                       zaxira sozlamasi (default gpt-6-luna, api.openai.com/v1,
+ *                       OPENAI_API_KEY, none, schema)
  *   TRAINER_MODEL       mijoz navbati modeli
  *   TRAINER_SCORING_MODEL  baholash modeli (berilmasa TRAINER_MODEL)
  *   TRAINER_API_KEY_ENV kalit qaysi env o'zgaruvchisida (kalitning O'ZI emas)
@@ -24,11 +34,22 @@
  * qo'yiladi, yo skript tushunarli ogohlantirish bilan to'xtaydi.
  */
 // ENG BIRINCHI: `.env` ni yuklaydi (import tartibi qanday bo'lsa ham).
-import { envInt, envStr, harnessEnv, type EnvLoadResult } from './env.js';
+import { envInt, envStr, harnessEnv, PERSONAL_ENV_HINT_PATH, type EnvLoadResult } from './env.js';
 
 import type { TrainerLlm } from '../../module/backend/src/training/ports.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
+import type { LlmCallListener } from './bakeoff/types.js';
 import { createDemoLlm } from './demo-llm.js';
+import {
+  createGeminiLlm,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_THINKING_LEVEL,
+  GEMINI_BASE_URL,
+  THINKING_LEVELS,
+  withLlmFallback,
+  type NamedLlm,
+  type ThinkingLevel,
+} from './llm-gemini.js';
 import { createAnthropicTrainerLlm, DEFAULT_TRAINER_MODEL } from './llm-anthropic.js';
 import {
   createOpenAiCompatibleLlm,
@@ -37,7 +58,12 @@ import {
   type MaxTokensParamSetting,
 } from './llm-openai-compatible.js';
 
-export type TrainerProvider = 'anthropic' | 'openai-compatible';
+export type TrainerProvider = 'anthropic' | 'openai-compatible' | 'gemini';
+export const TRAINER_PROVIDERS: readonly TrainerProvider[] = ['gemini', 'openai-compatible', 'anthropic'];
+
+export const DEFAULT_FALLBACK_MODEL = 'gpt-6-luna';
+export const DEFAULT_FALLBACK_BASE_URL = 'https://api.openai.com/v1';
+export const DEFAULT_FALLBACK_KEY_ENV = 'OPENAI_API_KEY';
 
 export const DEFAULT_SCORING_MODEL = 'claude-sonnet-5-5';
 export const DEFAULT_TIMEOUT_MS = 60_000;
@@ -48,7 +74,11 @@ export const DEFAULT_JSON_MODE: JsonMode = 'object';
  * Kichik chegara: model "uzun gapirib ketsa" ham kechikish oshmaydi.
  * Persona (katta JSON) va boshqa bosqichlar — `maxTokens` (1024).
  */
-export const TURN_STAGE_MAX_TOKENS: Readonly<Record<string, number>> = { 'training.turn': 400 };
+export const TURN_STAGE_MAX_TOKENS: Readonly<Record<string, number>> = {
+  'training.turn': 400,
+  // Ssenariy qoralamasi (rahbar, "AI bilan to'ldirish") — to'liq JSON, ~1000 token.
+  'training.scenario_draft': 2500,
+};
 /** Baholash JSON'i katta (mezonlar + coaching) — 1024 token kesib qo'yardi. */
 export const SCORING_MAX_TOKENS = 4096;
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'] as const;
@@ -72,6 +102,23 @@ export interface ProviderConfig {
   timeoutMs: number;
   scoringTimeoutMs: number;
   maxTokensParam: MaxTokensParamSetting;
+  /** Faqat `gemini`: thinking_level. */
+  thinkingLevel: ThinkingLevel;
+  scoringThinkingLevel: ThinkingLevel;
+  /** Zaxira provayder (faqat `gemini` asosiy bo'lganda). */
+  fallback: FallbackConfig;
+}
+
+export interface FallbackConfig {
+  /** `TRAINER_FALLBACK=openai` qo'yilganmi. */
+  requested: boolean;
+  /** So'ralgan VA kaliti bor — ya'ni haqiqatan ishlaydi. */
+  available: boolean;
+  keyEnv: string;
+  baseUrl: string;
+  model: string;
+  reasoningEffort: ReasoningEffort | null;
+  jsonMode: JsonMode;
 }
 
 export class MissingLlmKeyError extends Error {
@@ -121,6 +168,35 @@ function parseEffort(name: string, env: NodeJS.ProcessEnv): ReasoningEffort | nu
   );
 }
 
+function parseThinking(name: string, fallback: ThinkingLevel, env: NodeJS.ProcessEnv): ThinkingLevel {
+  const raw = envStr(name, env)?.toLowerCase();
+  if (raw === undefined) return fallback;
+  if ((THINKING_LEVELS as readonly string[]).includes(raw)) return raw as ThinkingLevel;
+  throw new ProviderConfigError(
+    `${name} "${raw}" noto'g'ri — ${THINKING_LEVELS.join(' | ')} (gemini-3.8-flash'da fikrlashni o'chirib bo'lmaydi)`,
+  );
+}
+
+function parseFallback(env: NodeJS.ProcessEnv): FallbackConfig {
+  const raw = envStr('TRAINER_FALLBACK', env)?.toLowerCase() ?? 'off';
+  if (raw !== 'off' && raw !== 'openai') {
+    throw new ProviderConfigError(`TRAINER_FALLBACK "${raw}" noto'g'ri — off | openai`);
+  }
+  const keyEnv = envStr('TRAINER_FALLBACK_API_KEY_ENV', env) ?? DEFAULT_FALLBACK_KEY_ENV;
+  const jsonRaw = envStr('TRAINER_FALLBACK_JSON_MODE', env) ?? 'schema';
+  const jsonMode: JsonMode = jsonRaw === 'object' || jsonRaw === 'prompt' ? jsonRaw : 'schema';
+  const effortEnv = { ...env, TRAINER_REASONING_EFFORT: envStr('TRAINER_FALLBACK_REASONING_EFFORT', env) ?? 'none' };
+  return {
+    requested: raw === 'openai',
+    available: raw === 'openai' && Boolean(envStr(keyEnv, env)),
+    keyEnv,
+    baseUrl: envStr('TRAINER_FALLBACK_BASE_URL', env) ?? DEFAULT_FALLBACK_BASE_URL,
+    model: envStr('TRAINER_FALLBACK_MODEL', env) ?? DEFAULT_FALLBACK_MODEL,
+    reasoningEffort: parseEffort('TRAINER_REASONING_EFFORT', effortEnv),
+    jsonMode,
+  };
+}
+
 function parseTimeout(name: string, fallback: number, env: NodeJS.ProcessEnv): number {
   try {
     return envInt(name, fallback, { min: 1_000, max: 600_000, env });
@@ -131,17 +207,19 @@ function parseTimeout(name: string, fallback: number, env: NodeJS.ProcessEnv): n
 
 export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): ProviderConfig {
   const demoRequested = envStr('DEMO_LLM', env) === '1';
-  const raw = envStr('TRAINER_PROVIDER', env) ?? 'anthropic';
+  // Default — Gemini (kompaniya kaliti GEMINI_API_KEY bilan yetarli).
+  const raw = envStr('TRAINER_PROVIDER', env) ?? 'gemini';
 
-  if (raw !== 'anthropic' && raw !== 'openai-compatible') {
+  if (!(TRAINER_PROVIDERS as readonly string[]).includes(raw)) {
     throw new ProviderConfigError(
-      `TRAINER_PROVIDER "${raw}" noto'g'ri — faqat "anthropic" yoki "openai-compatible"`,
+      `TRAINER_PROVIDER "${raw}" noto'g'ri — ${TRAINER_PROVIDERS.join(' | ')}`,
     );
   }
-  const provider: TrainerProvider = raw;
+  const provider = raw as TrainerProvider;
 
-  const keyEnv =
-    envStr('TRAINER_API_KEY_ENV', env) ?? (provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : '');
+  const defaultKeyEnv =
+    provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : provider === 'gemini' ? 'GEMINI_API_KEY' : '';
+  const keyEnv = envStr('TRAINER_API_KEY_ENV', env) ?? defaultKeyEnv;
 
   if (provider === 'openai-compatible') {
     if (!envStr('TRAINER_BASE_URL', env)) {
@@ -162,15 +240,20 @@ export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): Pro
   }
 
   const model =
-    envStr('TRAINER_MODEL', env) ?? (provider === 'anthropic' ? DEFAULT_TRAINER_MODEL : '');
+    envStr('TRAINER_MODEL', env) ??
+    (provider === 'anthropic' ? DEFAULT_TRAINER_MODEL : provider === 'gemini' ? DEFAULT_GEMINI_MODEL : '');
   const scoringModel =
     envStr('TRAINER_SCORING_MODEL', env) ??
     (provider === 'anthropic' ? DEFAULT_SCORING_MODEL : model);
+  const thinkingLevel = parseThinking('TRAINER_THINKING_LEVEL', DEFAULT_THINKING_LEVEL, env);
 
   return {
     provider,
     keyEnv,
-    baseUrl: envStr('TRAINER_BASE_URL', env) ?? null,
+    baseUrl:
+      provider === 'gemini'
+        ? (envStr('GEMINI_BASE_URL', env) ?? GEMINI_BASE_URL)
+        : (envStr('TRAINER_BASE_URL', env) ?? null),
     model,
     scoringModel,
     demoRequested,
@@ -181,15 +264,20 @@ export function resolveProviderConfig(env: NodeJS.ProcessEnv = process.env): Pro
     timeoutMs: parseTimeout('TRAINER_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, env),
     scoringTimeoutMs: parseTimeout('TRAINER_SCORING_TIMEOUT_MS', DEFAULT_SCORING_TIMEOUT_MS, env),
     maxTokensParam: parseMaxTokensParam(env),
+    thinkingLevel,
+    scoringThinkingLevel: parseThinking('TRAINER_SCORING_THINKING_LEVEL', thinkingLevel, env),
+    fallback: parseFallback(env),
   };
 }
 
 export interface ResolvedLlm {
   llm: TrainerLlm;
-  /** Hisobot uchun: 'anthropic' | 'openai-compatible' | 'demo'. */
+  /** Hisobot uchun: 'gemini' | 'anthropic' | 'openai-compatible' | 'demo'. */
   provider: TrainerProvider | 'demo';
   model: string;
   isDemo: boolean;
+  /** Zaxira provayder (bo'lsa): "openai-compatible/gpt-6-luna". */
+  fallback?: string;
 }
 
 export interface CreateTrainerLlmOptions {
@@ -198,6 +286,8 @@ export interface CreateTrainerLlmOptions {
   /** Baholash uchun model (TRAINER_SCORING_MODEL) ishlatiladi. */
   scoring?: boolean;
   config?: ProviderConfig;
+  /** Har chaqiruv hodisasi (e2e/bake-off o'lchovlari uchun). */
+  onCall?: LlmCallListener;
 }
 
 /**
@@ -208,6 +298,7 @@ export function createTrainerLlm({
   profile,
   scoring = false,
   config = resolveProviderConfig(),
+  onCall,
 }: CreateTrainerLlmOptions): ResolvedLlm {
   if (config.demoRequested) {
     return { llm: createDemoLlm({ profile }), provider: 'demo', model: 'demo-llm', isDemo: true };
@@ -230,6 +321,56 @@ export function createTrainerLlm({
     };
   }
 
+  if (config.provider === 'gemini') {
+    const primary: NamedLlm = {
+      llm: createGeminiLlm({
+        apiKey,
+        model,
+        baseUrl: config.baseUrl ?? GEMINI_BASE_URL,
+        thinkingLevel: scoring ? config.scoringThinkingLevel : config.thinkingLevel,
+        ...(envStr('GEMINI_SAFETY')?.toLowerCase() === 'off' ? { safetySettings: [] } : {}),
+        timeoutMs,
+        ...(maxTokens ? { maxTokens } : {}),
+        ...(scoring ? {} : { stageMaxTokens: TURN_STAGE_MAX_TOKENS }),
+        ...(onCall ? { onCall } : {}),
+      }),
+      provider: 'gemini',
+      model,
+    };
+    const fb = config.fallback;
+    let fallback: NamedLlm | null = null;
+    if (fb.available) {
+      fallback = {
+        llm: createOpenAiCompatibleLlm({
+          apiKey: (process.env[fb.keyEnv] as string).trim(),
+          baseUrl: fb.baseUrl,
+          model: fb.model,
+          jsonMode: fb.jsonMode,
+          timeoutMs,
+          ...(maxTokens ? { maxTokens } : {}),
+          ...(scoring ? {} : { stageMaxTokens: TURN_STAGE_MAX_TOKENS }),
+          ...(fb.reasoningEffort ? { reasoningEffort: fb.reasoningEffort } : {}),
+          ...(onCall ? { onCall: (e) => onCall({ ...e, provider: 'openai-compatible' }) } : {}),
+        }),
+        provider: 'openai-compatible',
+        model: fb.model,
+      };
+    }
+    const llm =
+      fb.requested || fallback
+        ? withLlmFallback(primary, fallback, {
+            unavailableReason: `TRAINER_FALLBACK=openai, lekin ${fb.keyEnv} berilmagan — shaxsiy faylni ikkinchi --env-file bilan bering`,
+          })
+        : primary.llm;
+    return {
+      llm,
+      provider: 'gemini',
+      model,
+      isDemo: false,
+      ...(fallback ? { fallback: `${fallback.provider}/${fallback.model}` } : {}),
+    };
+  }
+
   const effort = scoring ? config.scoringReasoningEffort : config.reasoningEffort;
   return {
     llm: createOpenAiCompatibleLlm({
@@ -242,6 +383,7 @@ export function createTrainerLlm({
       ...(maxTokens ? { maxTokens } : {}),
       ...(scoring ? {} : { stageMaxTokens: TURN_STAGE_MAX_TOKENS }),
       ...(effort ? { reasoningEffort: effort } : {}),
+      ...(onCall ? { onCall: (e) => onCall({ ...e, provider: 'openai-compatible' }) } : {}),
     }),
     provider: 'openai-compatible',
     model,
@@ -283,9 +425,13 @@ export function printMissingKeyBanner(where: string, config: ProviderConfig): vo
       `${where}: provayder "${config.provider}", kalit "${config.keyEnv}" env'da kutilyapti,`,
       "lekin u bo'sh yoki yo'q.",
       '',
-      'Ikki yo\'ldan birini tanlang:',
-      `  1) harness/.env ga haqiqiy kalit qo'ying:  ${config.keyEnv}=...`,
-      '  2) yoki ataylab soxta rejimda ishlating:   DEMO_LLM=1',
+      'Yo\'llardan birini tanlang:',
+      `  1) kompaniya kaliti bo'lsa — harness/.env ga:  ${config.keyEnv}=...`,
+      `  2) shaxsiy kalit bo'lsa — ikkinchi --env-file bilan (repo'ga yozilmaydi):`,
+      `     npx tsx --env-file=.env --env-file=${PERSONAL_ENV_HINT_PATH} src/dev.ts`,
+      '  3) Gemini (kompaniya kaliti, default) — harness/.env da:',
+      '     TRAINER_PROVIDER=gemini  va  GEMINI_API_KEY=...',
+      '  4) yoki ataylab soxta rejimda ishlating:   DEMO_LLM=1',
       '',
       "Eslatma: avval kalit yo'q bo'lsa jim-jitlik bilan demo LLM ishlardi —",
       'endi bunday emas.',
@@ -312,6 +458,19 @@ export function startupLine(
     parts.push(`baholash=${config.scoringModel}`);
   }
   if (!config.demoRequested) {
+    if (config.provider === 'gemini') {
+      parts.push(`json=structured`);
+      parts.push(`thinking=${config.thinkingLevel}/${config.scoringThinkingLevel}`);
+      parts.push(
+        `zaxira=${
+          config.fallback.available
+            ? `${config.fallback.model} (${config.fallback.keyEnv})`
+            : config.fallback.requested
+              ? `YO'Q (${config.fallback.keyEnv} berilmagan)`
+              : "o'chiq"
+        }`,
+      );
+    }
     if (config.provider === 'openai-compatible') {
       parts.push(`json=${config.jsonMode}`);
       parts.push(`limit=${resolveMaxTokensParam(config.maxTokensParam, config.baseUrl ?? '')}`);
@@ -356,7 +515,23 @@ function shortPath(path: string): string {
  */
 export function latencyWarnings(config: ProviderConfig): string[] {
   const out: string[] = [];
-  if (config.demoRequested || config.provider !== 'openai-compatible') return out;
+  if (config.demoRequested) return out;
+  if (config.provider === 'gemini') {
+    if (config.thinkingLevel !== 'low') {
+      out.push(
+        `Diqqat: mijoz bosqichida thinking=${config.thinkingLevel} — har navbat sekinlashadi va qimmatlashadi. ` +
+          'Tavsiya: TRAINER_THINKING_LEVEL=low (gemini-3.8-flash\'da fikrlashni o\'chirib bo\'lmaydi).',
+      );
+    }
+    if (config.fallback.requested && !config.fallback.available) {
+      out.push(
+        `Zaxira: TRAINER_FALLBACK=openai, lekin ${config.fallback.keyEnv} yo'q — Gemini 429/503 bo'lsa navbat ` +
+          'aniq xato bilan tugaydi (zaxiraga o\'tilmaydi).',
+      );
+    }
+    return out;
+  }
+  if (config.provider !== 'openai-compatible') return out;
   if (config.reasoningEffort !== 'none' && config.reasoningEffort !== 'minimal') {
     out.push(
       `Diqqat: mijoz bosqichida reasoning ${config.reasoningEffort ?? "provayder default'i"} — ` +
@@ -371,5 +546,5 @@ export function latencyWarnings(config: ProviderConfig): string[] {
 export function describeLlm(resolved: ResolvedLlm): string {
   return resolved.isDemo
     ? 'DEMO (soxta javoblar)'
-    : `${resolved.provider} · ${resolved.model}`;
+    : `${resolved.provider} · ${resolved.model}${resolved.fallback ? ` (zaxira: ${resolved.fallback})` : ''}`;
 }

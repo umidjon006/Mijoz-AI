@@ -38,3 +38,19 @@ harness/data/real-business/
 # Haqiqiy biznes profili va skripti — LOKAL, commit qilinmaydi (namunalar: *.demo.json, *.example.md)
 harness/data/business-profile.json
 harness/data/sales-script.md
+
+# Mustaqil TTS sinovi natijalari
+tts_test_output/
+llm_compare_output/
+
+# Maxfiy env fayllar — HECH QACHON commit qilinmaydi. Faqat .env.example (nomlar, qiymatsiz) mumkin.
+harness/.env
+*.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Mahalliy STT modeli (katta binary fayllar, venv, natijalar) — HECH QACHON commit qilinmaydi.
+# Yagona istisno: stt/serve.py (kichik servis kodi; boshqa dasturchilarga kerak).
+stt/*
+!stt/serve.py

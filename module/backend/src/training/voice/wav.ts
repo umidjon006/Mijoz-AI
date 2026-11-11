@@ -125,3 +125,68 @@ export function checkWav(buffer: Buffer): WavCheckProblem | null {
 
   return null;
 }
+
+/** `data` chunk'ning boshlanishi va uzunligi (PCM baytlari). */
+function dataChunk(buffer: Buffer): { offset: number; bytes: number } {
+  let offset = 12;
+  while (offset + 8 <= buffer.length) {
+    const id = buffer.toString('ascii', offset, offset + 4);
+    const size = buffer.readUInt32LE(offset + 4);
+    const body = offset + 8;
+    if (id === 'data') {
+      return { offset: body, bytes: size > 0 && body + size <= buffer.length ? size : buffer.length - body };
+    }
+    offset = body + size + (size % 2);
+    if (size === 0) break;
+  }
+  throw new WavFormatError("data chunk yo'q");
+}
+
+/** PCM (format 1) uchun standart 44 baytli sarlavha. */
+export function wavHeader(
+  dataBytes: number,
+  { sampleRate, channels, bitsPerSample }: { sampleRate: number; channels: number; bitsPerSample: number },
+): Buffer {
+  const header = Buffer.alloc(44);
+  const blockAlign = channels * (bitsPerSample / 8);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(Math.min(36 + dataBytes, 0xffffffff), 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * blockAlign, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(Math.min(dataBytes, 0xffffffff), 40);
+  return header;
+}
+
+/**
+ * Bir xil formatdagi WAV'larni bitta faylga qo'shadi (PCM ketma-ket).
+ * Format farq qilsa yoki o'qib bo'lmasa — `null` (chaqiruvchi boshqa yo'lni tanlaydi).
+ */
+export function concatWav(parts: readonly Buffer[]): Buffer | null {
+  if (parts.length === 0) return null;
+  try {
+    const infos = parts.map(parseWav);
+    const first = infos[0] as WavInfo;
+    const same = infos.every(
+      (i) =>
+        i.sampleRate === first.sampleRate && i.channels === first.channels && i.bitsPerSample === first.bitsPerSample,
+    );
+    if (!same) return null;
+    const pcm = parts.map((p) => {
+      const { offset, bytes } = dataChunk(p);
+      return p.subarray(offset, offset + bytes);
+    });
+    const total = pcm.reduce((n, b) => n + b.length, 0);
+    return Buffer.concat([wavHeader(total, first), ...pcm]);
+  } catch (err) {
+    if (err instanceof WavFormatError) return null;
+    throw err;
+  }
+}

@@ -40,6 +40,25 @@ export const trainingStateSchema = z.object({
   flags: trainingFlagsSchema,
   /** Qaysi prompt versiyasi bilan o'ynalgani — keyinchalik A/B uchun. */
   promptVersion: z.string().min(1),
+  /**
+   * Faqat SSENARIY sessiyasida: jahl (0..100), joriy forma va oxirgi o'zgarish
+   * sababi. `trust`/`interest` — yuqoridagi umumiy maydonlar; `patience` = 100 - anger.
+   */
+  emotion: z
+    .object({
+      anger: score,
+      formality: z.enum(['siz', 'sen']),
+      reason: z.string().max(300).optional(),
+      /** Jahl tufayli go'shak haqida ogohlantirilganmi (keyingi yomon navbatda go'shak). */
+      warned: z.boolean().optional(),
+      /** Sotuvchining dolzarb savollari soni (yashirin sababni ochish uchun). */
+      goodQuestions: z.number().int().min(0).optional(),
+      /** Yashirin sabab aytilganmi. */
+      revealed: z.boolean().optional(),
+      /** Haqiqiy e'tiroz yechilganmi (qiyin ssenariylarda rozilik sharti). */
+      objectionAddressed: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 export type TrainingState = z.infer<typeof trainingStateSchema>;

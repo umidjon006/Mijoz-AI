@@ -11,6 +11,10 @@ export type TrainingErrorCode =
   | 'session_not_found' // sessiya yo'q (yoki boshqa tenant'ga tegishli)
   | 'session_forbidden' // sessiya boshqa foydalanuvchiga tegishli
   | 'session_not_active' // sessiya allaqachon tugagan
+  // --- ssenariy ---
+  | 'scenario_not_found' // ssenariy yo'q / faol emas (yoki id berilmagan)
+  | 'scenario_invalid' // ssenariy sxemaga mos emas
+  | 'seller_profile_required' // ssenariy uchun sotuvchi profili berilmagan
   // --- ovozli navbat ---
   | 'voice_unsupported_media' // mime yoki WAV formati kutilganidan boshqa
   | 'voice_audio_too_large' // yozuv hajm/davomiylik chegarasidan oshdi

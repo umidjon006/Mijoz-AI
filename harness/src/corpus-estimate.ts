@@ -12,6 +12,7 @@
 import './env.js';
 
 import { existsSync } from 'node:fs';
+import { envStr, missingKeyHint } from './env.js';
 
 import { listOpenAiModels } from './voice/openai.js';
 import { checkFfmpeg } from './corpus/audio.js';
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
 
   const target = openAiTarget();
   if (!target) {
-    console.log("OPENAI_API_KEY bo'sh — modellar ro'yxatini tekshirib bo'lmadi.");
+    console.log(`${missingKeyHint(envStr('OPENAI_VOICE_KEY_ENV') ?? 'OPENAI_API_KEY', 'src/corpus-estimate.ts')}\n(modellar ro'yxatini tekshirib bo'lmadi)`);
   } else {
     try {
       const available = new Set((await listOpenAiModels({ apiKey: target.apiKey, baseUrl: target.baseUrl })).map((m) => m.id));

@@ -12,7 +12,7 @@
     "withtenant:smoke": "tsx --env-file-if-exists=.env src/withTenant.ts",
     "verify:training": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training.ts",
     "verify:training:core": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-core.ts",
-    "verify": "npm run verify:env && npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:training:voice && npm run verify:corpus && npm run verify:training:bakeoff && npm run verify:frontend",
+    "verify": "npm run verify:env && npm run verify:training && npm run verify:training:core && npm run verify:training:scoring && npm run verify:training:scenarios && npm run verify:training:voice && npm run verify:corpus && npm run verify:training:bakeoff && npm run verify:frontend",
     "play": "tsx --env-file-if-exists=.env src/play.ts",
     "smoke:llm": "tsx --env-file-if-exists=.env src/smoke-llm.ts",
     "typecheck": "tsc --noEmit",
@@ -46,7 +46,15 @@
     "corpus:compare": "tsx --env-file-if-exists=.env src/corpus-compare.ts",
     "corpus:analyze": "tsx --env-file-if-exists=.env src/corpus-analyze.ts",
     "verify:corpus": "tsx --env-file-if-exists=.env src/verify-corpus.ts",
-    "handoff:pack": "tsx --env-file-if-exists=.env src/handoff-pack.ts"
+    "handoff:pack": "tsx --env-file-if-exists=.env src/handoff-pack.ts",
+    "e2e:gemini": "tsx --env-file-if-exists=.env src/e2e-gemini.ts",
+    "stt:setup": "tsx --env-file-if-exists=.env src/stt-setup.ts",
+    "stt:start": "tsx --env-file-if-exists=.env src/stt-start.ts",
+    "e2e:voice": "tsx --env-file-if-exists=.env src/e2e-voice.ts",
+    "scenarios:check": "tsx --env-file-if-exists=.env src/scenarios-check.ts",
+    "e2e:scenarios": "tsx --env-file-if-exists=.env src/e2e-scenarios.ts",
+    "verify:training:scenarios": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-scenarios.ts",
+    "e2e:builder": "tsx --env-file-if-exists=.env src/e2e-builder.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",

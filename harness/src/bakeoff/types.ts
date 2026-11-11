@@ -12,6 +12,10 @@ export interface LlmCallEvent {
   latencyMs: number;
   usage?: TokenUsage;
   error?: string;
+  /** Qaysi provayder javob berdi (zaxiraga o'tilgan bo'lsa — zaxiraniki). */
+  provider?: string;
+  /** ok | invalid_json | schema | http_503 | timeout ... (oxirgi urinish natijasi). */
+  outcome?: string;
 }
 
 export type LlmCallListener = (event: LlmCallEvent) => void;

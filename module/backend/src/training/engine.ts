@@ -58,15 +58,36 @@ import {
   recordGuardViolation,
   trainingStateSchema,
   turnResultSchema,
+  type EndEvaluation,
   type Readiness,
   type TrainingOutcome,
   type TrainingState,
   type TurnResult,
 } from './state.js';
 import { clampTone, type VoiceTone } from './voice/tone.js';
+import { scenarioPersonaConstraints } from './scenario/prompt.js';
+import { draftScenarioWithLlm, type DraftResult } from './scenario/draft.js';
+import * as scenarioRepo from './scenario/repo.js';
+import { runScenarioTurn, type ScenarioTurnMeta, type ScenarioTurnOutcome } from './scenario/scenario-turn.js';
+import {
+  contentFlag,
+  parseScenario,
+  scenarioArchetype,
+  scenarioVoiceStyle,
+  ScenarioValidationError,
+  sellerProfileSchema,
+  type ContentFlag,
+  type Scenario,
+  type SellerProfile,
+} from './scenario/schema.js';
 
 export interface StartSessionInput {
-  archetypeKey: string;
+  /** Arxetip rejimi uchun. Ssenariy berilsa — ssenariyning asosiy arxetipi ishlatiladi. */
+  archetypeKey?: string;
+  /** Ssenariy rejimi: `training_scenario.id`. */
+  scenarioId?: string;
+  /** Sotuvchi profili — ssenariy rejimida MAJBURIY (taxmin qilinmaydi). */
+  seller?: SellerProfile;
   direction?: PersonaDirection;
   language?: PersonaLanguage;
 }
@@ -78,6 +99,9 @@ export interface StartSessionResult {
   state: TrainingState;
   /** `inbound` bo'lsa mijoz birinchi gapiradi — shu matn 1-navbat sifatida yoziladi. */
   openingLine: string | null;
+  /** Ssenariy sessiyasi: id va kontent ogohlantirishi. */
+  scenarioId?: string;
+  content?: ContentFlag;
 }
 
 export interface TakeTurnInput {
@@ -106,6 +130,8 @@ export interface TakeTurnResult {
     tone: VoiceTone;
     /** Model taklifi holatga to'g'ri kelmagani uchun o'zgartirildimi. */
     toneClamped: boolean;
+    /** Ssenariy rejimi: emotsiya, forma, haqorat, tuzatishlar, xavfsizlik bloklari. */
+    scenario?: ScenarioTurnMeta;
   };
 }
 
@@ -120,10 +146,38 @@ export interface GetSessionResult {
   persona: PersonaCard;
   state: TrainingState;
   transcript: TranscriptTurn[];
+  scenarioId?: string;
+  content?: ContentFlag;
+}
+
+/** "Sinab ko'rish": saqlanmagan qoralama bilan bitta navbat (DB'ga yozilmaydi). */
+export interface TryScenarioTurnInput {
+  scenario: unknown;
+  seller: SellerProfile;
+  /** Oldingi javobdan qaytgan persona/holat (birinchi navbatda bo'lmaydi). */
+  persona?: unknown;
+  state?: unknown;
+  transcript: TranscriptTurn[];
+  sellerText: string;
+}
+
+export interface TryScenarioTurnResult {
+  customerReply: string;
+  persona: PersonaCard;
+  state: TrainingState;
+  ended: boolean;
+  endReason: string | null;
+  /** `inbound` ssenariyda birinchi chaqiruvda mijozning ochilish gapi. */
+  openingLine: string | null;
+  meta: ScenarioTurnMeta & { latencyMs: number; costUsd: number; tone: VoiceTone };
 }
 
 export interface TrainingEngine {
   startSession(ctx: TrainingContext, input: StartSessionInput): Promise<StartSessionResult>;
+  /** Rahbar: erkin matndan ssenariy taklifi (SAQLANMAYDI). */
+  draftScenario(ctx: TrainingContext, input: { text: string }): Promise<DraftResult>;
+  /** Rahbar: qoralamani saqlamasdan sinab ko'rish. */
+  tryScenarioTurn(ctx: TrainingContext, input: TryScenarioTurnInput): Promise<TryScenarioTurnResult>;
   takeTurn(ctx: TrainingContext, input: TakeTurnInput): Promise<TakeTurnResult>;
   endSession(ctx: TrainingContext, input: { sessionId: string; reason: string }): Promise<void>;
   getSession(ctx: TrainingContext, input: { sessionId: string }): Promise<GetSessionResult>;
@@ -152,6 +206,18 @@ function parseTurnJson(raw: unknown): TurnResult {
 
 /** LLM javobini o'qiydigan "sxema": avval tozalaydi, keyin tekshiradi. */
 const turnResultParser = { parse: parseTurnJson };
+
+/** Ssenariy sessiyasining boshlang'ich holati (emotsiya, sabr, hisoblagichlar). */
+export function scenarioInitialState(base: TrainingState, scenario: Scenario): TrainingState {
+  const b = scenario.emotion.baseline;
+  return {
+    ...base,
+    trust: b.trust,
+    interest: b.interest,
+    patience: b.patience,
+    emotion: { anger: b.anger, formality: 'siz', warned: false, goodQuestions: 0, revealed: false, objectionAddressed: false },
+  };
+}
 
 export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
   const { withTenant, getBusinessProfile, llm, priceCall } = deps;
@@ -183,9 +249,123 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
     return { row, persona, state };
   }
 
+  /** Ssenariy uchun persona: ism/yosh KOD tanlaydi, qolganini model (cheklovlar bilan). */
+  async function generateScenarioPersona(scenario: Scenario, profile: NonNullable<Awaited<ReturnType<typeof getBusinessProfile>>>): Promise<PersonaCard> {
+    const archetype = scenarioArchetype(scenario);
+    const picked = {
+      name: scenario.persona.name_pool[Math.floor(random() * scenario.persona.name_pool.length)] as string,
+      age: scenario.persona.age.min + Math.floor(random() * (scenario.persona.age.max - scenario.persona.age.min + 1)),
+    };
+    return await generatePersonaCard({
+      llm,
+      profile,
+      archetype,
+      direction: scenario.call_direction,
+      language: 'uz',
+      random,
+      ...(deps.logger ? { logger: deps.logger } : {}),
+      extraConstraints: scenarioPersonaConstraints(scenario, picked),
+      overrides: {
+        name: picked.name,
+        age: picked.age,
+        gender: scenario.persona.gender,
+        voice: { profile: scenario.voice.profile, baseStyle: scenarioVoiceStyle(scenario) },
+      },
+    });
+  }
+
   return {
+    async draftScenario(ctx, { text }) {
+      const trimmed = text.trim();
+      if (trimmed.length < 10) {
+        throw new TrainingError('scenario_invalid', "vaziyatni kamida bir-ikki gap bilan yozing (10+ belgi)");
+      }
+      const profile = await getBusinessProfile(ctx.businessId);
+      return await draftScenarioWithLlm({ llm, text: trimmed.slice(0, 2000), profile });
+    },
+
+    async tryScenarioTurn(ctx, input) {
+      let scenario: Scenario;
+      try {
+        scenario = parseScenario(input.scenario, 'qoralama');
+      } catch (err) {
+        if (err instanceof ScenarioValidationError) throw new TrainingError('scenario_invalid', err.message, err);
+        throw err;
+      }
+      const seller = sellerProfileSchema.parse(input.seller);
+      const profile = await getBusinessProfile(ctx.businessId);
+      if (!profile) throw new TrainingError('profile_missing', "biznes profili to'ldirilmagan");
+      const archetype = scenarioArchetype(scenario);
+      const persona = input.persona
+        ? personaCardSchema.parse(input.persona)
+        : await generateScenarioPersona(scenario, profile);
+      const state: TrainingState = input.state
+        ? trainingStateSchema.parse(input.state)
+        : scenarioInitialState(initState(archetype, persona), scenario);
+      const openingLine =
+        !input.persona && scenario.call_direction === 'inbound' ? persona.openingLine : null;
+      const transcript = [...input.transcript];
+      if (openingLine && transcript.length === 0) transcript.push({ speaker: 'customer', text: openingLine });
+      const startedMs = Date.now();
+      const out = await runScenarioTurn({
+        llm,
+        scenario,
+        seller,
+        persona,
+        archetype,
+        state,
+        readiness: computeReadiness(state, persona, archetype),
+        user: buildTurnUserPrompt({ transcript: transcript.slice(-TRANSCRIPT_WINDOW), sellerText: input.sellerText.trim() }),
+        priceCall,
+        logger: deps.logger,
+        turnIndex: transcript.length,
+      });
+      const agreed =
+        (out.result.intent === 'agrees' || out.result.intent === 'agrees_next_step') &&
+        !isGuardViolation({ ...out.state, patience: 100 }, out.result, archetype, persona);
+      const endReason = out.meta.hangup
+        ? out.meta.hangup === 'anger'
+          ? 'customer_hung_up_angry'
+          : 'hangup_condition_met'
+        : agreed
+          ? 'agreed'
+          : null;
+      return {
+        customerReply: out.result.reply,
+        persona,
+        state: out.state,
+        ended: endReason !== null,
+        endReason,
+        openingLine,
+        meta: { ...out.meta, latencyMs: Date.now() - startedMs, costUsd: out.costUsd, tone: out.tone },
+      };
+    },
+
     async startSession(ctx, input) {
-      const archetype = archetypeOf(input.archetypeKey);
+      let scenario: Scenario | null = null;
+      let seller: SellerProfile | null = null;
+      if (input.scenarioId) {
+        if (!input.seller) {
+          throw new TrainingError(
+            'seller_profile_required',
+            "ssenariy uchun sotuvchi profili (ism, jins, yosh) majburiy — taxmin qilinmaydi",
+          );
+        }
+        seller = sellerProfileSchema.parse(input.seller);
+        const id = input.scenarioId;
+        try {
+          scenario = await withTenant(ctx.businessId, (tx) => scenarioRepo.getScenario(tx, id));
+        } catch (err) {
+          if (err instanceof ScenarioValidationError) {
+            throw new TrainingError('scenario_invalid', err.message, err);
+          }
+          throw err;
+        }
+        if (!scenario) throw new TrainingError('scenario_not_found', `ssenariy topilmadi: ${id}`);
+      } else if (!input.archetypeKey) {
+        throw new TrainingError('scenario_not_found', 'archetypeKey yoki scenarioId kerak');
+      }
+      const archetype = scenario ? scenarioArchetype(scenario) : archetypeOf(input.archetypeKey as string);
       const archetypeKey = archetype.key as ArchetypeKey;
 
       const profile = await getBusinessProfile(ctx.businessId);
@@ -196,18 +376,21 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         );
       }
 
-      const direction = resolveDirection(profile, random, input.direction);
-      const persona = await generatePersonaCard({
-        llm,
-        profile,
-        archetype,
-        direction,
-        language: input.language ?? 'uz',
-        random,
-        ...(deps.logger ? { logger: deps.logger } : {}),
-      });
+      const direction = scenario ? scenario.call_direction : resolveDirection(profile, random, input.direction);
+      const persona = scenario
+        ? await generateScenarioPersona(scenario, profile)
+        : await generatePersonaCard({
+            llm,
+            profile,
+            archetype,
+            direction,
+            language: input.language ?? 'uz',
+            random,
+            ...(deps.logger ? { logger: deps.logger } : {}),
+          });
 
-      const state = initState(archetype, persona);
+      const base = initState(archetype, persona);
+      const state: TrainingState = scenario ? scenarioInitialState(base, scenario) : base;
       const startedAt = now();
 
       const sessionId = await withTenant(ctx.businessId, async (tx) => {
@@ -219,6 +402,8 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
           persona,
           state,
           startedAt,
+          ...(scenario ? { scenario } : {}),
+          ...(seller ? { sellerProfile: seller } : {}),
         });
 
         // `inbound`: mijoz o'zi qo'ng'iroq qilgan — birinchi gap uning gapi.
@@ -242,6 +427,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         persona,
         state,
         openingLine: direction === 'inbound' ? persona.openingLine : null,
+        ...(scenario ? { scenarioId: scenario.id, content: contentFlag(scenario) } : {}),
       };
     },
 
@@ -253,7 +439,8 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
 
       return await withTenant(ctx.businessId, async (tx) => {
         const { row, persona, state } = await loadActiveSession(tx, ctx, input.sessionId);
-        const archetype = archetypeOf(row.archetypeKey);
+        const sessionScenario = row.scenario ? parseScenario(row.scenario, `session:${row.id}`) : null;
+        const archetype = sessionScenario ? scenarioArchetype(sessionScenario) : archetypeOf(row.archetypeKey);
 
         const transcript = await repo.getRecentTurns(tx, row.id, TRANSCRIPT_WINDOW);
         const sellerSeq = await repo.nextSeq(tx, row.id);
@@ -277,101 +464,143 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         let guardRetried = false;
         let guardViolated = false;
 
-        const call = async (correction?: string): Promise<TurnResult> => {
-          const req: TrainerLlmRequest<TurnResult> = {
-            stage: 'training.turn',
-            system: buildTurnSystemPrompt({
-              persona,
-              archetype,
-              state,
-              readiness,
-              ...(correction ? { correction } : {}),
-            }),
-            user,
-            schema: turnResultParser,
-            outputSchema: turnResultSchema,
-          };
-          const out = await callLlm(llm, req);
-          if (out.usage) {
-            usage = out.usage;
-            costUsd += priceOf(out.usage, priceCall);
-          }
-          return out.value;
-        };
-
-        // 1-urinish. Sxemaga tushmasa yoki guard buzilsa — bitta tuzatish urinishi.
+        const scenario = sessionScenario;
+        const sellerProfile = row.sellerProfile ? sellerProfileSchema.parse(row.sellerProfile) : null;
+        let scenarioTurn: ScenarioTurnOutcome | null = null;
         let result: TurnResult;
         let applied: TrainingState;
-        try {
-          result = await call();
-        } catch (err) {
-          // Timeout / HTTP xato — shakl muammosi emas: tuzatuvchi qayta so'rov yo'q.
-          if (!isCorrectableLlmError(err)) {
-            throw trainingErrorFromLlm('llm_invalid_output', 'mijoz navbati olinmadi', err);
-          }
-          guardRetried = true;
-          const detail = describeLlmError(err);
-          try {
-            result = await call(
-              `Your previous answer did not match the required JSON shape: ${detail}. Return valid JSON with all required fields.`,
-            );
-          } catch (err2) {
-            if (!isCorrectableLlmError(err2)) {
-              throw trainingErrorFromLlm('llm_invalid_output', 'mijoz navbati olinmadi', err2);
+
+        if (scenario && sellerProfile) {
+          // Ssenariy rejimi: emotsiya, forma, murojaat, kontent chegaralari (scenario/*).
+          scenarioTurn = await runScenarioTurn({
+            llm,
+            scenario,
+            seller: sellerProfile,
+            persona,
+            archetype,
+            state,
+            readiness,
+            user,
+            priceCall,
+            logger: deps.logger,
+            sessionId: row.id,
+            turnIndex: row.turnCount,
+          });
+          result = scenarioTurn.result;
+          applied = scenarioTurn.state;
+          usage = scenarioTurn.usage;
+          costUsd += scenarioTurn.costUsd;
+          guardRetried = scenarioTurn.meta.corrections.length > 0;
+        } else {
+          const archetypeTurn = async (): Promise<{ result: TurnResult; applied: TrainingState }> => {
+            const call = async (correction?: string): Promise<TurnResult> => {
+              const req: TrainerLlmRequest<TurnResult> = {
+                stage: 'training.turn',
+                system: buildTurnSystemPrompt({
+                  persona,
+                  archetype,
+                  state,
+                  readiness,
+                  ...(correction ? { correction } : {}),
+                }),
+                user,
+                schema: turnResultParser,
+                outputSchema: turnResultSchema,
+              };
+              const out = await callLlm(llm, req);
+              if (out.usage) {
+                usage = out.usage;
+                costUsd += priceOf(out.usage, priceCall);
+              }
+              return out.value;
+            };
+
+            // 1-urinish. Sxemaga tushmasa yoki guard buzilsa — bitta tuzatish urinishi.
+            let result: TurnResult;
+            let applied: TrainingState;
+            try {
+              result = await call();
+            } catch (err) {
+              // Timeout / HTTP xato — shakl muammosi emas: tuzatuvchi qayta so'rov yo'q.
+              if (!isCorrectableLlmError(err)) {
+                throw trainingErrorFromLlm('llm_invalid_output', 'mijoz navbati olinmadi', err);
+              }
+              guardRetried = true;
+              const detail = describeLlmError(err);
+              try {
+                result = await call(
+                  `Your previous answer did not match the required JSON shape: ${detail}. Return valid JSON with all required fields.`,
+                );
+              } catch (err2) {
+                if (!isCorrectableLlmError(err2)) {
+                  throw trainingErrorFromLlm('llm_invalid_output', 'mijoz navbati olinmadi', err2);
+                }
+                throw new TrainingError(
+                  'llm_invalid_output',
+                  `model javobi sxemaga tushmadi (qayta urinishdan keyin ham): ${describeLlmError(err2)}`,
+                  err2,
+                );
+              }
             }
-            throw new TrainingError(
-              'llm_invalid_output',
-              `model javobi sxemaga tushmadi (qayta urinishdan keyin ham): ${describeLlmError(err2)}`,
-              err2,
-            );
-          }
-        }
-        applied = applyTurnResult(state, result, persona, archetype);
+            applied = applyTurnResult(state, result, persona, archetype);
 
-        if (!guardRetried && isGuardViolation(applied, result, archetype, persona)) {
-          guardRetried = true;
-          const blockers = computeReadiness(applied, persona, archetype).blockers;
-          try {
-            const retryResult = await call(
-              [
-                `You returned intent "${result.intent}", but that is not allowed right now.`,
-                blockers.length > 0 ? `Reasons: ${blockers.join('; ')}` : '',
-                'Stay in character, do NOT agree and do NOT end the call. Continue the conversation: raise your next concern or ask what you still need to know.',
-              ]
-                .filter((line) => line.length > 0)
-                .join(' '),
-            );
-            result = retryResult;
-            applied = applyTurnResult(state, retryResult, persona, archetype);
-          } catch {
-            // Tuzatish urinishi muvaffaqiyatsiz — birinchi javob bilan davom etamiz.
-          }
-        }
+            if (!guardRetried && isGuardViolation(applied, result, archetype, persona)) {
+              guardRetried = true;
+              const blockers = computeReadiness(applied, persona, archetype).blockers;
+              try {
+                const retryResult = await call(
+                  [
+                    `You returned intent "${result.intent}", but that is not allowed right now.`,
+                    blockers.length > 0 ? `Reasons: ${blockers.join('; ')}` : '',
+                    'Stay in character, do NOT agree and do NOT end the call. Continue the conversation: raise your next concern or ask what you still need to know.',
+                  ]
+                    .filter((line) => line.length > 0)
+                    .join(' '),
+                );
+                result = retryResult;
+                applied = applyTurnResult(state, retryResult, persona, archetype);
+              } catch {
+                // Tuzatish urinishi muvaffaqiyatsiz — birinchi javob bilan davom etamiz.
+              }
+            }
 
-        // Til (uz): sotuvchi HECH QACHON lotin bo'lmagan javob ko'rmaydi.
-        //  - o'zbek kirill -> kodda lotinga o'giriladi (LLM'siz);
-        //  - begona til -> bitta tuzatish urinishi; yana begona bo'lsa javob
-        //    neytral gapga almashtiriladi (holat o'zgarishlari saqlanadi) va logga yoziladi.
-        if (persona.language === 'uz') {
-          const badWords = nonLatinWords(result.reply);
-          const first = result;
-          const guarded = await guardCustomerReply(first, () =>
-            call(scriptCorrectionNote(findScriptViolations([{ field: 'reply', text: first.reply }]))),
-          );
-          result = guarded.result;
-          if (guarded.outcome === 'regenerated') {
-            applied = applyTurnResult(state, guarded.stateSource, persona, archetype);
-          }
-          if (guarded.outcome === 'fallback') {
-            deps.logger?.warn(
-              { sessionId: input.sessionId, words: badWords },
-              `mijoz javobi begona tilda qoldi — neytral gap bilan almashtirildi: ${badWords.join(', ')}`,
-            );
-          }
+            // Til (uz): sotuvchi HECH QACHON lotin bo'lmagan javob ko'rmaydi.
+            //  - o'zbek kirill -> kodda lotinga o'giriladi (LLM'siz);
+            //  - begona til -> bitta tuzatish urinishi; yana begona bo'lsa javob
+            //    neytral gapga almashtiriladi (holat o'zgarishlari saqlanadi) va logga yoziladi.
+            if (persona.language === 'uz') {
+              const badWords = nonLatinWords(result.reply);
+              const first = result;
+              const guarded = await guardCustomerReply(first, () =>
+                call(scriptCorrectionNote(findScriptViolations([{ field: 'reply', text: first.reply }]))),
+              );
+              result = guarded.result;
+              if (guarded.outcome === 'regenerated') {
+                applied = applyTurnResult(state, guarded.stateSource, persona, archetype);
+              }
+              if (guarded.outcome === 'fallback') {
+                deps.logger?.warn(
+                  { sessionId: input.sessionId, words: badWords },
+                  `mijoz javobi begona tilda qoldi — neytral gap bilan almashtirildi: ${badWords.join(', ')}`,
+                );
+              }
+            }
+            return { result, applied };
+          };
+          ({ result, applied } = await archetypeTurn());
         }
 
         // Hali ham buzayotgan bo'lsa: matnni olamiz, natijani O'ZGARTIRMAYMIZ.
-        if (isGuardViolation(applied, result, archetype, persona)) {
+        const scenarioHangup = scenarioTurn?.meta.hangup ?? null;
+        // Ssenariy: sabr (patience) mag'lubiyat sababi emas — go'shak faqat jahl/shart bo'yicha.
+        const guardState = scenarioTurn ? { ...applied, patience: 100 } : applied;
+        const violation = scenarioTurn
+          ? !scenarioHangup &&
+            (result.intent === 'refuses' ||
+              result.intent === 'ends_call' ||
+              isGuardViolation(guardState, result, archetype, persona))
+          : isGuardViolation(applied, result, archetype, persona);
+        if (violation) {
           guardViolated = true;
           applied = recordGuardViolation(applied);
           result = { ...result, intent: 'continue' };
@@ -382,10 +611,18 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
 
         // Ohang: model TAKLIF qiladi, kod holatga moslaydi (matnli rejimda
         // ham yoziladi — keyin ovozga o'tilganda tarix mos bo'lsin).
-        const toneDecision = clampTone(result.tone, applied, archetype);
+        const toneDecision = scenarioTurn
+          ? { tone: scenarioTurn.tone, clamped: false }
+          : clampTone(result.tone, applied, archetype);
 
-        const end = evaluateEnd({
-          state: applied,
+        const end: EndEvaluation = scenarioHangup
+          ? {
+              ended: true,
+              outcome: 'lost',
+              reason: scenarioHangup === 'anger' ? 'customer_hung_up_angry' : 'hangup_condition_met',
+            }
+          : evaluateEnd({
+          state: guardState,
           result,
           turnCount: sellerTurnCount,
           archetype,
@@ -408,6 +645,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
               ...(usage ? { usage } : {}),
               ...(guardViolated ? { guardViolated: true } : {}),
               ...(toneDecision.clamped ? { toneClamped: true } : {}),
+              ...(scenarioTurn ? { scenario: scenarioTurn.meta } : {}),
             },
           },
           createdAt: finishedAt,
@@ -441,6 +679,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
             intent: result.intent,
             tone: toneDecision.tone,
             toneClamped: toneDecision.clamped,
+            ...(scenarioTurn ? { scenario: scenarioTurn.meta } : {}),
           },
         };
       });
@@ -479,6 +718,9 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
           persona: personaCardSchema.parse(row.personaCard),
           state: trainingStateSchema.parse(row.state),
           transcript,
+          ...(row.scenario && row.scenarioId
+            ? { scenarioId: row.scenarioId, content: contentFlag(parseScenario(row.scenario)) }
+            : {}),
         };
       });
     },

@@ -14,7 +14,7 @@
  * Audio `harness/benchmark/out/openai-tts/` ga tinglash uchun yoziladi.
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import { envStr } from './env.js';
+import { envStr, missingKeyHint } from './env.js';
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
@@ -134,9 +134,7 @@ async function main(): Promise<void> {
   const baseUrl = (envStr('OPENAI_BASE_URL') ?? DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
 
   if (!apiKey) {
-    console.error(
-      `\n${keyEnv} bo'sh yoki yo'q. harness/.env ga qo'ying (kalit hech qayerda chop etilmaydi).\n`,
-    );
+    console.error(`\n${missingKeyHint(keyEnv, 'src/diag-voice.ts')}\n`);
     process.exit(1);
   }
 

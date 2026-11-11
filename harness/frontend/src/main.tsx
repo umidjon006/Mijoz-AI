@@ -13,9 +13,23 @@ import { createTrainingApi, type ApiRequestInit } from '../../../module/frontend
 import '../../../module/frontend/src/styles.css';
 
 /** Soxta auth: header'lar bilan dev foydalanuvchi (faqat lokal). */
+const DEV_USERS = {
+  manager: '22222222-2222-2222-2222-222222222222',
+  seller: '33333333-3333-3333-3333-333333333333',
+} as const;
+type DevRole = keyof typeof DEV_USERS;
+
+function loadRole(): DevRole {
+  try {
+    return window.localStorage.getItem('harness-role') === 'seller' ? 'seller' : 'manager';
+  } catch {
+    return 'manager';
+  }
+}
+
 const DEV_HEADERS: Record<string, string> = {
   'x-business-id': '11111111-1111-1111-1111-111111111111',
-  'x-user-id': '22222222-2222-2222-2222-222222222222',
+  'x-user-id': DEV_USERS[loadRole()],
 };
 
 async function request<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
@@ -170,7 +184,24 @@ function Shell(): JSX.Element {
             padding: '6px 12px',
           }}
         >
-          <b>Lokal harness</b>
+          <b>Lokal harness</b>{' '}
+          <label>
+            · kim:{' '}
+            <select
+              value={loadRole()}
+              onChange={(e) => {
+                try {
+                  window.localStorage.setItem('harness-role', e.target.value);
+                } catch {
+                  // xotira yopiq
+                }
+                window.location.reload();
+              }}
+            >
+              <option value="manager">Rahbar</option>
+              <option value="seller">Sotuvchi</option>
+            </select>
+          </label>
           {info ? (
             <>
               {' '}

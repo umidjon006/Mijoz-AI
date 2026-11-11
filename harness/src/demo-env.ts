@@ -25,6 +25,21 @@ const profilesPath = resolve(
 /** Barqaror demo id'lar — har ishga tushirishda bir xil. */
 export const DEMO_BUSINESS_ID = '11111111-1111-1111-1111-111111111111';
 export const DEMO_USER_ID = '22222222-2222-2222-2222-222222222222';
+/** Ikkinchi demo foydalanuvchi — ODDIY SOTUVCHI (rahbar emas). */
+export const DEMO_SELLER_USER_ID = '33333333-3333-3333-3333-333333333333';
+
+/**
+ * Rahbar (ssenariy yaratadi/tahrirlaydi/arxivlaydi) foydalanuvchi id'lari.
+ * `HARNESS_MANAGER_USER_IDS` (vergul bilan) — bo'sh bo'lsa DEMO_USER_ID rahbar,
+ * DEMO_SELLER_USER_ID esa sotuvchi. Sotuvchi faqat mashq qiladi.
+ */
+export function managerUserIds(raw = process.env.HARNESS_MANAGER_USER_IDS): Set<string> {
+  const list = (raw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return new Set(list.length > 0 ? list : [DEMO_USER_ID]);
+}
 
 export const DEMO_CONTEXT: TrainingContext = {
   businessId: DEMO_BUSINESS_ID,
@@ -64,6 +79,11 @@ export async function ensureDemoRows(): Promise<void> {
       `insert into app_user (id, business_id, email) values ($1, $2, 'demo@local')
          on conflict (id) do nothing`,
       [DEMO_USER_ID, DEMO_BUSINESS_ID],
+    );
+    await client.query(
+      `insert into app_user (id, business_id, email) values ($1, $2, 'seller@local')
+         on conflict (id) do nothing`,
+      [DEMO_SELLER_USER_ID, DEMO_BUSINESS_ID],
     );
   } finally {
     await client.end();

@@ -21,7 +21,8 @@ import { registerTrainingRoutes } from '../../module/backend/src/training/routes
 import { createTrainingEngine } from '../../module/backend/src/training/engine.js';
 import type { GetBusinessProfile, TrainingContext } from '../../module/backend/src/training/ports.js';
 import { createScoringService } from '../../module/backend/src/training/scoring/scoring.js';
-import { DEMO_BUSINESS_ID, DEMO_USER_ID, ensureDemoRows, parseArchetypeList } from './demo-env.js';
+import { DEMO_BUSINESS_ID, DEMO_USER_ID, ensureDemoRows, managerUserIds, parseArchetypeList } from './demo-env.js';
+import { TrainingForbiddenError } from '../../module/backend/src/training/routes.js';
 import { BusinessDataError, describeBusinessData, resolveBusinessData } from './business-data.js';
 import {
   createTrainerLlm,
@@ -41,13 +42,13 @@ import {
   describeVoiceCostRates,
   type VoiceService,
 } from '../../module/backend/src/training/voice/voice-turn.js';
-import {
-  createOpenAiStt,
-  createOpenAiTts,
-  missingVoiceConfig,
-  OpenAiVoiceConfigError,
-  openAiVoiceConfigFromEnv,
-} from './voice/openai.js';
+import { OpenAiVoiceConfigError, openAiVoiceConfigFromEnv } from './voice/openai.js';
+import { checkLocalStt } from './voice/local-stt.js';
+import { resolveStt } from './voice/stt-select.js';
+import { resolveTts } from './voice/tts-select.js';
+import { loadVoiceProfiles, PROFILE_KEYS } from './voice/gemini-tts.js';
+import { z } from 'zod';
+import { syncScenarios } from './scenarios.js';
 
 // Bo'sh qiymat = default (avval bo'sh HARNESS_PORT port 0 ga aylanardi).
 const PORT = envInt('HARNESS_PORT', 5180, { min: 1, max: 65535 });
@@ -63,6 +64,8 @@ async function main(): Promise<void> {
 
   const pool = createPool(appDatabaseUrl());
   const withTenant = createWithTenant(pool);
+  // Ssenariy fayllari (harness/scenarios/*.json) -> DB; yaroqsizlari aniq xabar bilan rad etiladi.
+  console.log(await syncScenarios(withTenant, DEMO_BUSINESS_ID));
   const getBusinessProfile: GetBusinessProfile = async () => profile;
 
   // Kalit yo'q bo'lsa JIM demo'ga o'tilmaydi: yo DEMO_LLM=1, yo to'xtash.
@@ -114,45 +117,60 @@ async function main(): Promise<void> {
   // Model nomlari env'dan keladi (`npm run diag:voice` tavsiya qiladi).
   // To'liq bo'lmasa ovoz route'lari UMUMAN ro'yxatga olinmaydi va UI buni
   // `_harness` dan bilib, matnli rejimda qolaveradi.
-  const voiceConfig = openAiVoiceConfigFromEnv();
+  // STT (default lokal Doniyor modeli) va TTS (default Gemini) ALOHIDA tanlanadi.
+  const sttChoice = resolveStt();
+  const ttsChoice = resolveTts();
   let voice: VoiceService | undefined;
-  if (voiceConfig) {
+  if (sttChoice.ok && ttsChoice.ok) {
+    const stt = sttChoice.value;
+    const tts = ttsChoice.value;
     const rates = {
-      sttPerMinuteUsd: envNum('OPENAI_STT_PRICE_PER_MIN'),
-      ttsPerMillionCharsUsd: envNum('OPENAI_TTS_PRICE_PER_1M_CHARS'),
+      // Lokal STT — bepul; OpenAI STT — tarif env'dan.
+      sttPerMinuteUsd: stt.paid ? envNum('OPENAI_STT_PRICE_PER_MIN') : 0,
+      // Gemini TTS token bo'yicha narxlanadi — narx har [tts] log qatorida (pricing.ts).
+      ttsPerMillionCharsUsd: tts.provider === 'openai' ? envNum('OPENAI_TTS_PRICE_PER_1M_CHARS') : undefined,
     };
     voice = createVoiceService({
       engine,
       withTenant,
-      stt: createOpenAiStt(voiceConfig),
-      tts: createOpenAiTts(voiceConfig),
+      stt: stt.stt,
+      tts: tts.tts,
       models: {
-        stt: voiceConfig.sttModel,
-        tts: voiceConfig.ttsModel,
-        voice: voiceConfig.ttsVoice,
+        stt: stt.model,
+        tts: tts.model,
+        // Gemini: ovoz persona'dan tanlanadi — umumiy ovoz nomi berilmaydi.
+        voice: tts.provider === 'openai' ? openAiVoiceConfigFromEnv()?.ttsVoice : undefined,
       },
       getBusinessProfile,
       cost: rates,
       maxMinutesPerSession: envInt('VOICE_MAX_MINUTES_PER_SESSION', 10, { min: 1, max: 600 }),
       logger: app.log,
     });
+    console.log(`Ovoz: ${stt.describe} · ${tts.describe}`);
+    if (stt.paid || tts.provider === 'openai') console.log(describeVoiceCostRates(rates));
+    if (stt.url) {
+      // Startda tekshiramiz: servis ishlamasa — aniq eslatma (ovozli navbat ham shu xabar bilan xato beradi).
+      try {
+        const h = await checkLocalStt(stt.url);
+        console.log(`STT servisi: tayyor (${h.model}, qurilma=${h.device})`);
+      } catch (err) {
+        console.warn(`\n[STT] ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+  } else if (!ttsChoice.ok) {
+    console.log(`Ovoz: O'CHIRILGAN — TTS: ${ttsChoice.reason} (yetishmayotgan env: ${ttsChoice.missing.join(', ')})`);
+  } else if (!sttChoice.ok) {
     console.log(
-      `Ovoz: stt=${voiceConfig.sttModel}` +
-        ` · stt-til=${voiceConfig.sttLanguageMode ?? 'omit'}` +
-        ` · tts=${voiceConfig.ttsModel}${voiceConfig.ttsVoice ? ` (${voiceConfig.ttsVoice})` : ''}` +
-        ` · host=${new URL(voiceConfig.baseUrl).host} · kalit ${voiceConfig.keyEnv}=o'rnatilgan`,
-    );
-    console.log(describeVoiceCostRates(rates));
-  } else {
-    console.log(
-      `Ovoz: O'CHIRILGAN — yetishmayotgan env: ${missingVoiceConfig().join(', ')}` +
-        ' (aniqlash: npm run diag:voice)',
+      `Ovoz: O'CHIRILGAN — STT: ${sttChoice.reason} (yetishmayotgan env: ${sttChoice.missing.join(', ')}). ` +
+        `TTS tayyor: ${ttsChoice.value.describe}. Matnli rejim ishlaydi.`,
     );
   }
 
   // Default YOQILGAN: bo'sh HARNESS_AUTH avval auth'ni o'chirib, UI 401 olardi.
   // O'chirish faqat aniq HARNESS_AUTH=0 bilan.
   const fakeAuth = envBool('HARNESS_AUTH', true);
+  const managers = managerUserIds();
+  console.log(`Rahbar(lar): ${[...managers].join(', ')} (HARNESS_MANAGER_USER_IDS; qolganlar — sotuvchi)`);
   // Rahbariyatga ko'rsatish rejimi (bo'sh = o'chiq).
   const presentation = envBool('DEMO_PRESENTATION', false);
   // UI'da ko'rsatiladigan mijoz turlari (bo'sh = to'rttalasi).
@@ -175,10 +193,14 @@ async function main(): Promise<void> {
         seatId: null,
       };
     },
-    authorize: (_ctx, permission) => {
+    authorize: (ctx, permission) => {
       if (permission === 'training:view:all') {
         // Lokal rejimda rahbar huquqi faqat header bilan beriladi.
         return;
+      }
+      // Ssenariy yaratish/tahrirlash — faqat rahbar (HARNESS_MANAGER_USER_IDS).
+      if (permission === 'training:scenario:manage' && !managers.has(ctx.userId)) {
+        throw new TrainingForbiddenError(permission);
       }
     },
     ...(voice ? { voice } : {}),
@@ -206,13 +228,61 @@ async function main(): Promise<void> {
     isDemo: turnLlm.isDemo,
     // UI shundan bilib ovoz boshqaruvini ko'rsatadi (yoki ko'rsatmaydi).
     voice: voice
-      ? { enabled: true, sttModel: voiceConfig?.sttModel, ttsModel: voiceConfig?.ttsModel }
-      : { enabled: false, missing: missingVoiceConfig() },
+      ? {
+          enabled: true,
+          sttModel: sttChoice.ok ? sttChoice.value.model : undefined,
+          ttsModel: ttsChoice.ok ? ttsChoice.value.model : undefined,
+        }
+      : {
+          enabled: false,
+          missing: [...(sttChoice.ok ? [] : sttChoice.missing), ...(ttsChoice.ok ? [] : ttsChoice.missing)],
+        },
     debug: !presentation,
     /** `DEMO_PRESENTATION=1`: STT tekshiruvi default, debug/provayder paneli yo'q, do'stona xatolar. */
     presentation,
     archetypes: archetypes ?? null,
   }));
+
+  // --- Ssenariy builder: ovoz profillari va namuna (FAQAT rahbar; harness'ga xos) ---
+  const isManager = (req: { headers: Record<string, unknown> }): boolean =>
+    managers.has(String(req.headers['x-user-id'] ?? DEMO_USER_ID));
+  app.get('/api/v1/training/_harness/voices', async (req, reply) => {
+    if (!isManager(req)) return reply.code(403).send({ error: 'forbidden', message: 'Faqat rahbar uchun.' });
+    if (!ttsChoice.ok || ttsChoice.value.provider !== 'gemini') return { enabled: false, profiles: [] };
+    const profiles = loadVoiceProfiles(envStr('GEMINI_TTS_VOICES_FILE') ?? undefined);
+    return {
+      enabled: true,
+      profiles: PROFILE_KEYS.map((key) => ({ key, voice: profiles.profiles[key].voice })),
+    };
+  });
+  app.post('/api/v1/training/_harness/voice-sample', async (req, reply) => {
+    if (!isManager(req)) return reply.code(403).send({ error: 'forbidden', message: 'Faqat rahbar uchun.' });
+    if (!ttsChoice.ok) return reply.code(409).send({ error: 'tts_disabled', message: "Ovoz (TTS) o'chiq." });
+    const body = z
+      .object({
+        profile: z.string().max(40),
+        gender: z.enum(['male', 'female']),
+        age: z.number().int().min(6).max(95),
+        baseStyle: z.string().max(300).optional(),
+        text: z.string().trim().min(2).max(200).optional(),
+      })
+      .parse(req.body ?? {});
+    const out = await ttsChoice.value.tts.synthesize({
+      text: body.text ?? "Assalomu alaykum. Ha, eshitaman, qanday masala bo'yicha qo'ng'iroq qildingiz?",
+      lang: 'uz',
+      tone: 'calm',
+      instructions: 'Neutral, even pace, normal volume.',
+      speaker: {
+        gender: body.gender,
+        age: body.age,
+        role: 'mijoz',
+        speakingStyle: 'tabiiy',
+        profile: body.profile,
+        ...(body.baseStyle ? { baseStyle: body.baseStyle } : {}),
+      },
+    });
+    return { mime: out.mime, audioBase64: out.audio.toString('base64') };
+  });
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
   console.log(`\nHarness backend: http://127.0.0.1:${PORT}`);

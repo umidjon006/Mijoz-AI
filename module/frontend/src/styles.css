@@ -544,3 +544,49 @@
 @media (prefers-reduced-motion: reduce) {
   .mq-btn.mq-recording { animation: none; }
 }
+
+/* --- Ssenariy yaratish (rahbar) --------------------------------------------- */
+.mq-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 16px;
+}
+.mq-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.mq-field input:not([type='checkbox']):not([type='range']),
+.mq-field select,
+.mq-field textarea {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--mq-line);
+  background: transparent;
+  color: inherit;
+}
+.mq-field-error {
+  color: #b3261e;
+  font-size: 13px;
+}
+.mq-chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--mq-line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.mq-chip-on {
+  background: var(--mq-accent);
+  border-color: var(--mq-accent);
+  color: #fff;
+}
+.mq-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

@@ -16,7 +16,9 @@ export function forbiddenHandoffEntries(entries: readonly string[]): string[] {
     return (
       /(^|\/)harness\/data(\/|$)/.test(path) ||
       /(^|\/)\.env$/.test(path) ||
-      /(^|\/)real-(calls|business)(\/|$)/.test(path)
+      /(^|\/)real-(calls|business)(\/|$)/.test(path) ||
+      // Lokal STT: model vaznlari/venv hech qachon; faqat stt/serve.py mumkin.
+      (/(^|\/)stt\//.test(path) && !/(^|\/)stt\/serve\.py$/.test(path))
     );
   });
 }

@@ -35,10 +35,27 @@ import type {
 import type { WithTenant } from './ports.js';
 import { VOICE_AUDIO, VOICE_LIMITS } from './voice/ports.js';
 import type { VoiceService } from './voice/voice-turn.js';
+import * as scenarioRepo from './scenario/repo.js';
+import { ScenarioValidationError, sellerProfileSchema, validateScenario } from './scenario/schema.js';
 
-export type TrainingPermission = 'training:use' | 'training:view:all';
+export type TrainingPermission = 'training:use' | 'training:view:all' | 'training:scenario:manage';
 
-export const TRAINING_PERMISSIONS: TrainingPermission[] = ['training:use', 'training:view:all'];
+export const TRAINING_PERMISSIONS: TrainingPermission[] = [
+  'training:use',
+  'training:view:all',
+  // Rahbar: ssenariy yaratish/tahrirlash/arxivlash (sotuvchi faqat o'ynaydi).
+  'training:scenario:manage',
+];
+
+/** `authorize` ruxsat bermasa shu xatoni tashlasa — 403 (401 emas). */
+export class TrainingForbiddenError extends Error {
+  readonly permission: TrainingPermission;
+  constructor(permission: TrainingPermission, message = "bu amal uchun ruxsat yo'q") {
+    super(message);
+    this.name = 'TrainingForbiddenError';
+    this.permission = permission;
+  }
+}
 
 /** `code` -> HTTP status. DIQQAT: boshqa tenant sessiyasi uchun 404 (403 EMAS). */
 const STATUS_BY_CODE: Record<TrainingErrorCode, number> = {
@@ -50,6 +67,9 @@ const STATUS_BY_CODE: Record<TrainingErrorCode, number> = {
   session_not_found: 404,
   session_forbidden: 404,
   session_not_active: 409,
+  scenario_not_found: 404,
+  scenario_invalid: 422,
+  seller_profile_required: 400,
   // Ovoz: format/hajm xatosi — mijoz tomonning xatosi, qayta urinish mantiqsiz.
   voice_unsupported_media: 415,
   voice_audio_too_large: 413,
@@ -87,6 +107,9 @@ export function errorStage(code: TrainingErrorCode | 'internal_error'): ErrorSta
     case 'session_not_found':
     case 'session_forbidden':
     case 'session_not_active':
+    case 'scenario_not_found':
+    case 'scenario_invalid':
+    case 'seller_profile_required':
     case 'voice_turn_in_progress':
     case 'voice_budget_exhausted':
     case 'voice_review_expired':
@@ -135,11 +158,21 @@ export interface TrainingRoutesDeps {
 // ---------------------------------------------------------------------------
 // Yordamchilar
 // ---------------------------------------------------------------------------
-const startSessionBody = z.object({
-  archetypeKey: z.enum(ARCHETYPE_KEYS),
-  direction: z.enum(['inbound', 'outbound']).optional(),
-  language: z.enum(['uz', 'ru', 'mixed']).optional(),
-});
+const startSessionBody = z
+  .object({
+    archetypeKey: z.enum(ARCHETYPE_KEYS).optional(),
+    /** Ssenariy rejimi (`GET /scenarios`). Berilsa `seller` MAJBURIY. */
+    scenarioId: z.string().regex(/^[a-z][a-z0-9_]{2,60}$/).optional(),
+    /** Sotuvchi profili: ism, jins, yosh — formadan; ovozdan/ismdan taxmin qilinmaydi. */
+    seller: sellerProfileSchema.optional(),
+    direction: z.enum(['inbound', 'outbound']).optional(),
+    language: z.enum(['uz', 'ru', 'mixed']).optional(),
+  })
+  .refine((b) => b.archetypeKey || b.scenarioId, { message: 'archetypeKey yoki scenarioId kerak' })
+  .refine((b) => !b.scenarioId || b.seller, {
+    message: "ssenariy uchun sotuvchi profili (seller: name, gender, age) majburiy",
+    path: ['seller'],
+  });
 
 const turnBody = z.object({ text: z.string().min(1).max(4000) });
 const voiceReplyBody = z.object({
@@ -246,6 +279,16 @@ export async function registerTrainingRoutes(
       ctx = await deps.getContext(req);
       await authorize(ctx, permission);
     } catch (err) {
+      if (err instanceof TrainingForbiddenError) {
+        return reply.code(403).send({
+          error: 'forbidden',
+          stage: 'session',
+          message:
+            permission === 'training:scenario:manage'
+              ? 'Bu amal faqat rahbar (sotuv bo\'limi boshlig\'i) uchun.'
+              : err.message,
+        });
+      }
       deps.logger?.warn({ err }, 'training: auth rad etildi');
       return reply.code(401).send({ error: 'unauthorized' });
     }
@@ -259,6 +302,17 @@ export async function registerTrainingRoutes(
     } catch (err) {
       if (err instanceof z.ZodError) {
         return reply.code(400).send({ error: 'validation_failed', issues: err.issues });
+      }
+      if (err instanceof ScenarioValidationError) {
+        return reply.code(422).send({ error: 'scenario_invalid', stage: 'session', message: err.message, issues: err.issues });
+      }
+      if (err instanceof scenarioRepo.ScenarioExistsError) {
+        return reply.code(409).send({ error: 'scenario_exists', stage: 'session', message: err.message });
+      }
+      if (isTrainingError(err) && err.code === 'scenario_invalid' && err.details instanceof ScenarioValidationError) {
+        return reply
+          .code(422)
+          .send({ error: 'scenario_invalid', stage: 'session', message: err.details.message, issues: err.details.issues });
       }
       if (isTrainingError(err)) {
         const status = STATUS_BY_CODE[err.code];
@@ -307,11 +361,139 @@ export async function registerTrainingRoutes(
     })),
   );
 
+  // --- Kim: rahbarmi (ssenariy yaratish sahifasini ko'rsatish uchun) ----------
+  app.get(`${prefix}/me`, async (req, reply) =>
+    guard(req, reply, 'training:use', async (ctx) => {
+      let canManageScenarios = true;
+      try {
+        await authorize(ctx, 'training:scenario:manage');
+      } catch {
+        canManageScenarios = false;
+      }
+      return { userId: ctx.userId, canManageScenarios };
+    }),
+  );
+
+  // --- Ssenariy yaratish (FAQAT rahbar) ---------------------------------------
+  const scenarioIdParams = z.object({ id: z.string().regex(/^[a-z][a-z0-9_]{2,60}$/) });
+  const scenarioBody = z.object({ scenario: z.record(z.unknown()) });
+
+  app.get(`${prefix}/scenarios/manage`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => ({
+      scenarios: await deps.withTenant(ctx.businessId, (tx) => scenarioRepo.listAllScenarios(tx)),
+    })),
+  );
+
+  app.get(`${prefix}/scenarios/:id`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const { id } = scenarioIdParams.parse(req.params);
+      const rec = await deps.withTenant(ctx.businessId, (tx) => scenarioRepo.getScenarioRecord(tx, id));
+      if (!rec) throw new TrainingError('scenario_not_found', `ssenariy topilmadi: ${id}`);
+      return rec;
+    }),
+  );
+
+  /** Formani saqlamasdan tekshirish (jonli xatolar va ogohlantirishlar). */
+  app.post(`${prefix}/scenarios/validate`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async () => {
+      const { scenario } = scenarioBody.parse(req.body ?? {});
+      const v = validateScenario(scenario, 'forma');
+      return v.ok ? { ok: true, warnings: v.warnings, issues: [] } : { ok: false, warnings: [], issues: v.issues };
+    }),
+  );
+
+  app.post(`${prefix}/scenarios`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const { scenario } = scenarioBody.parse(req.body ?? {});
+      const saved = await deps.withTenant(ctx.businessId, async (tx) => {
+        const id =
+          typeof scenario.id === 'string' && scenario.id
+            ? scenario.id
+            : await scenarioRepo.freeScenarioId(tx, String(scenario.title_uz ?? 'ssenariy'));
+        return await scenarioRepo.createScenario(tx, ctx.businessId, { ...scenario, id });
+      });
+      const v = validateScenario(saved);
+      return reply.code(201).send({ scenario: saved, warnings: v.ok ? v.warnings : [] });
+    }),
+  );
+
+  app.put(`${prefix}/scenarios/:id`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const { id } = scenarioIdParams.parse(req.params);
+      const { scenario } = scenarioBody.parse(req.body ?? {});
+      const saved = await deps.withTenant(ctx.businessId, (tx) => scenarioRepo.updateScenario(tx, id, scenario));
+      if (!saved) throw new TrainingError('scenario_not_found', `ssenariy topilmadi: ${id}`);
+      const v = validateScenario(saved);
+      return { scenario: saved, warnings: v.ok ? v.warnings : [] };
+    }),
+  );
+
+  app.post(`${prefix}/scenarios/:id/duplicate`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const { id } = scenarioIdParams.parse(req.params);
+      const copy = await deps.withTenant(ctx.businessId, (tx) => scenarioRepo.duplicateScenario(tx, ctx.businessId, id));
+      if (!copy) throw new TrainingError('scenario_not_found', `ssenariy topilmadi: ${id}`);
+      return reply.code(201).send({ scenario: copy });
+    }),
+  );
+
+  app.post(`${prefix}/scenarios/:id/archive`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const { id } = scenarioIdParams.parse(req.params);
+      const { archived } = z.object({ archived: z.boolean().default(true) }).parse(req.body ?? {});
+      const ok = await deps.withTenant(ctx.businessId, (tx) => scenarioRepo.setScenarioActive(tx, id, !archived));
+      if (!ok) throw new TrainingError('scenario_not_found', `ssenariy topilmadi: ${id}`);
+      return { id, archived };
+    }),
+  );
+
+  /** "AI bilan to'ldirish": erkin matn -> to'liq taklif (SAQLANMAYDI). */
+  app.post(`${prefix}/scenarios/ai-draft`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const { text } = z.object({ text: z.string().max(2000) }).parse(req.body ?? {});
+      const d = await deps.engine.draftScenario(ctx, { text });
+      return { ok: d.ok, scenario: d.scenario ?? d.raw, warnings: d.warnings, issues: d.issues, attempts: d.attempts };
+    }),
+  );
+
+  /** "Sinab ko'rish": saqlanmagan qoralama bilan navbat (holat klientda saqlanadi). */
+  app.post(`${prefix}/scenarios/try`, async (req, reply) =>
+    guard(req, reply, 'training:scenario:manage', async (ctx) => {
+      const body = z
+        .object({
+          scenario: z.record(z.unknown()),
+          seller: sellerProfileSchema,
+          persona: z.unknown().optional(),
+          state: z.unknown().optional(),
+          transcript: z.array(z.object({ speaker: z.enum(['seller', 'customer']), text: z.string().max(2000) })).max(20),
+          sellerText: z.string().trim().min(1).max(2000),
+        })
+        .parse(req.body ?? {});
+      return await deps.engine.tryScenarioTurn(ctx, {
+        scenario: body.scenario,
+        seller: body.seller,
+        ...(body.persona !== undefined ? { persona: body.persona } : {}),
+        ...(body.state !== undefined ? { state: body.state } : {}),
+        transcript: body.transcript,
+        sellerText: body.sellerText,
+      });
+    }),
+  );
+
+  // Ssenariylar ro'yxati (faqat faollari) + kontent ogohlantirishi (UI boshlashdan oldin ko'rsatadi).
+  app.get(`${prefix}/scenarios`, async (req, reply) =>
+    guard(req, reply, 'training:use', async (ctx) => ({
+      scenarios: await deps.withTenant(ctx.businessId, (tx) => scenarioRepo.listScenarios(tx)),
+    })),
+  );
+
   app.post(`${prefix}/sessions`, async (req, reply) =>
     guard(req, reply, 'training:use', async (ctx) => {
       const body = startSessionBody.parse(req.body ?? {});
       const started = await deps.engine.startSession(ctx, {
-        archetypeKey: body.archetypeKey,
+        ...(body.archetypeKey ? { archetypeKey: body.archetypeKey } : {}),
+        ...(body.scenarioId ? { scenarioId: body.scenarioId } : {}),
+        ...(body.seller ? { seller: body.seller } : {}),
         ...(body.direction ? { direction: body.direction } : {}),
         ...(body.language ? { language: body.language } : {}),
       });
@@ -327,6 +509,7 @@ export async function registerTrainingRoutes(
         // Yashirin ma'lumot YUBORILMAYDI.
         persona: personaSummary(started.persona, started.openingLine),
         openingLine: started.openingLine,
+        ...(started.scenarioId ? { scenarioId: started.scenarioId, content: started.content } : {}),
       };
     }),
   );
@@ -364,6 +547,7 @@ export async function registerTrainingRoutes(
         persona: personaSummary(session.persona, null),
         // 7-qoida: yashirin kartalar FAQAT sessiya tugagach.
         revealed: ended ? revealPersona(session.persona, metrics) : null,
+        ...(session.scenarioId ? { scenarioId: session.scenarioId, content: session.content } : {}),
         ...(allowDebug ? { debug: { state: session.state } } : {}),
       };
     }),
@@ -392,6 +576,9 @@ export async function registerTrainingRoutes(
                 latencyMs: result.meta.latencyMs,
                 guardRetried: result.meta.guardRetried,
                 guardViolated: result.meta.guardViolated,
+                ...(result.meta.scenario ? { scenario: result.meta.scenario } : {}),
+                ...(result.meta.usage ? { usage: result.meta.usage } : {}),
+                costUsd: result.meta.costUsd,
               },
             }
           : {}),

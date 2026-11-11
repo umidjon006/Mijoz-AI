@@ -9,12 +9,15 @@
 import { sql } from 'drizzle-orm';
 import {
   bigserial,
+  boolean,
   check,
   index,
   integer,
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -30,6 +33,7 @@ import type {
 } from '../../training/scoring/scoring-types.js';
 import type { SessionMetrics } from '../../training/scoring/metrics.js';
 import type { TrainingState } from '../../training/state.js';
+import type { Scenario, SellerProfile } from '../../training/scenario/schema.js';
 // INTEGRATSIYA: `host-tables.js` o'rniga asosiy repodagi sxemalarni import qiling.
 import { appUser, business, seat } from './host-tables.js';
 
@@ -66,6 +70,11 @@ export const trainingSession = pgTable(
     costUsd: numeric('cost_usd', { precision: 12, scale: 6 }).notNull().default('0'),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp('ended_at', { withTimezone: true }),
+    /** Ssenariy sessiyasi: id va boshlanish paytidagi NUSXA (keyingi tahrir ta'sir qilmaydi). */
+    scenarioId: text('scenario_id'),
+    scenario: jsonb('scenario').$type<Scenario>(),
+    /** Sotuvchi profili (ism, jins, yosh) — sessiya boshida beriladi, taxmin qilinmaydi. */
+    sellerProfile: jsonb('seller_profile').$type<SellerProfile>(),
   },
   (table) => [
     index('training_session_business_user_started_idx').on(
@@ -82,6 +91,30 @@ export const trainingSession = pgTable(
       'training_session_outcome_check',
       sql.raw(`outcome is null or outcome in ('won', 'lost', 'timeout')`),
     ),
+  ],
+);
+
+/** Tenant ssenariylari (`module/integration/training-scenarios.sql`). */
+export const trainingScenario = pgTable(
+  'training_scenario',
+  {
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => business.id, { onDelete: 'cascade' }),
+    id: text('id').notNull(),
+    version: integer('version').notNull().default(1),
+    title: text('title').notNull(),
+    difficulty: smallint('difficulty').notNull(),
+    insultLevel: smallint('insult_level').notNull(),
+    data: jsonb('data').$type<Scenario>().notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.businessId, table.id] }),
+    check('training_scenario_difficulty_check', sql.raw('difficulty between 1 and 5')),
+    check('training_scenario_insult_level_check', sql.raw('insult_level between 0 and 2')),
   ],
 );
 

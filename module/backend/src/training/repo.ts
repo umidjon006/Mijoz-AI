@@ -10,6 +10,7 @@ import type { PersonaCard } from './persona.js';
 import type { TrainingTx } from './ports.js';
 import type { TranscriptTurn } from './prompts.js';
 import type { TrainingState } from './state.js';
+import type { Scenario, SellerProfile } from './scenario/schema.js';
 
 export type TrainingSessionRow = typeof trainingSession.$inferSelect;
 
@@ -21,6 +22,9 @@ export interface InsertSessionInput {
   persona: PersonaCard;
   state: TrainingState;
   startedAt: Date;
+  /** Ssenariy sessiyasi (bo'lsa): id, nusxa, sotuvchi profili. */
+  scenario?: Scenario;
+  sellerProfile?: SellerProfile;
 }
 
 export async function insertSession(
@@ -39,6 +43,8 @@ export async function insertSession(
       status: 'active',
       turnCount: 0,
       startedAt: input.startedAt,
+      ...(input.scenario ? { scenarioId: input.scenario.id, scenario: input.scenario } : {}),
+      ...(input.sellerProfile ? { sellerProfile: input.sellerProfile } : {}),
     })
     .returning();
 

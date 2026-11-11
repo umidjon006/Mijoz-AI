@@ -20,6 +20,12 @@
  * UMUMAN qo'yilmaydi. Aks holda `process.env.HARNESS_PORT ?? 5180` kabi joylar
  * bo'sh satrni "qiymat bor" deb qabul qilib, port/model bo'sh bo'lib qolardi.
  *
+ * SHAXSIY kalitlar (masalan OPENAI_API_KEY) `harness/.env` da SAQLANMAYDI —
+ * ular repo'dan tashqaridagi alohida faylda. Kerak bo'lsa ikkinchi
+ * `--env-file` bilan beriladi (Node ularni shu modulDAN OLDIN qo'yadi, bu
+ * modul esa allaqachon bor nomlarga tegmaydi):
+ *   npx tsx --env-file=.env --env-file=$HOME/.config/sales-copilot-personal.env src/dev.ts
+ *
  * MUHIM: bu modul hech qachon qiymat chop etmaydi — faqat NOMLARNI qaytaradi.
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -193,6 +199,21 @@ export function envBool(name: string, fallback: boolean, env: NodeJS.ProcessEnv 
   if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
   if (['0', 'false', 'no', 'off'].includes(raw)) return false;
   throw new Error(`${name}="${raw}" noto'g'ri: 1 yoki 0 kutiladi`);
+}
+
+/** Shaxsiy kalitlar fayli (repo'dan tashqarida). Faqat yo'l — fayl o'qilmaydi. */
+export const PERSONAL_ENV_HINT_PATH = '$HOME/.config/sales-copilot-personal.env';
+
+/**
+ * Kalit yo'q bo'lganda ko'rsatiladigan tushunarli matn: qayerga qo'yish kerak.
+ * Faqat NOM ishlatiladi, qiymat hech qachon.
+ */
+export function missingKeyHint(keyName: string, script = 'src/<skript>.ts'): string {
+  return (
+    `${keyName} bo'sh yoki yo'q. Kompaniya kalitlari harness/.env da; ` +
+    `shaxsiy kalit bo'lsa ikkinchi --env-file bilan bering:\n` +
+    `  npx tsx --env-file=.env --env-file=${PERSONAL_ENV_HINT_PATH} ${script}`
+  );
 }
 
 /** Faqat testlar uchun: keshni tozalaydi. */

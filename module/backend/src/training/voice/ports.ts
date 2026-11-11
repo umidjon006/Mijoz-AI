@@ -71,11 +71,27 @@ export interface SttPort {
   transcribeShort(req: SttRequest): Promise<SttResult>;
 }
 
+/**
+ * Kim gapiryapti — persona'dan. Provayder ovoz va uslubni shundan tanlaydi
+ * (masalan erkak/ayol, yosh). IXTIYORIY: qo'llamaydigan adapter e'tiborsiz qoldiradi.
+ */
+export interface TtsSpeaker {
+  gender?: 'male' | 'female' | undefined;
+  age?: number | undefined;
+  role?: string | undefined;
+  speakingStyle?: string | undefined;
+  /** Ssenariy: ovoz profili kaliti ("female_elder" ...) yoki "auto". */
+  profile?: string | undefined;
+  /** Ssenariy: asosiy gapirish uslubi (har navbat emotsiya ohangi ustiga qo'shiladi). */
+  baseStyle?: string | undefined;
+}
+
 export interface TtsRequest extends TtsToneHint {
   text: string;
   lang: VoiceLang;
   /** Provayderdagi ovoz nomi (masalan Azure'da `uz-UZ-...Neural`). */
   voice?: string;
+  speaker?: TtsSpeaker;
 }
 
 export interface TtsResult {

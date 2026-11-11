@@ -68,7 +68,7 @@ sotuv-trener/
 
 ```bash
 npm install
-cp harness/.env.example harness/.env   # kalitlarni to'ldiring (pastga qarang)
+cp harness/.env.example harness/.env   # FAQAT GEMINI_API_KEY ni to'ldiring — boshqa kalit kerak emas
 
 # DB — ikki yo'ldan biri:
 npm run db:local:start   # DOCKERSIZ (tavsiya etiladi): tizimdagi PostgreSQL binary'lari
@@ -77,7 +77,127 @@ npm run db:up            # yoki docker: postgres:18, 127.0.0.1:55433
 npm run db:init      # bootstrap.sql -> training.sql -> rls-training.sql -> grants.sql
 npm run verify       # hamma tekshiruv + frontend build (LLM kerak emas)
 npm run typecheck
+
+# Lokal STT (ovoz kirishi) — bir marta (model paketi: pastdagi "Lokal STT" bo'limi):
+cd harness
+npm run stt:setup              # GPU'siz: CPU-only torch (~1.2 GB venv)
+npm run stt:setup -- --cuda    # NVIDIA GPU bo'lsa (~4.9 GB venv)
+npm run dev                    # backend + UI + lokal STT (o'zi ishga tushiradi)
 ```
+
+**Yangi dasturchi uchun yagona kalit — `GEMINI_API_KEY`** (kompaniya kaliti).
+U bilan "miya" (mijoz LLM: `gemini-3.8-flash`, Interactions API) va ovoz
+chiqishi (TTS: `gemini-3.8-flash-tts`) ishlaydi. Bo'sh `TRAINER_PROVIDER` = `gemini`.
+
+Env fayllar: kompaniya kalitlari faqat `harness/.env` da (git'ga kirmaydi). Shaxsiy kalitlar
+(masalan `OPENAI_API_KEY`) repo'dan tashqarida saqlanadi va ikkinchi `--env-file` bilan beriladi:
+
+```bash
+npm run dev                                                    # oddiy: faqat harness/.env (Gemini)
+cd harness && npx tsx --env-file=.env \
+  --env-file=$HOME/.config/sales-copilot-personal.env src/dev.ts   # + shaxsiy OpenAI zaxirasi
+```
+
+Shaxsiy fayl berilsa va `TRAINER_FALLBACK=openai` bo'lsa, Gemini 429/503/timeout
+bilan (qayta urinishlardan keyin ham) yiqilganda OpenAI/Luna'ga o'tiladi — har
+o'tish log'da: `[llm] FALLBACK gemini/... -> openai-compatible/gpt-6-luna`.
+Kalit yo'q bo'lsa o'tilmaydi va aniq xabar chiqadi. Luna'ni ASOSIY qilish uchun
+shaxsiy faylga `.env.example` dagi "Shaxsiy Luna'ni ASOSIY qilish" qatorlarini yozing.
+
+Gemini end-to-end sinovi (haqiqiy prompt + DB + TTS; WAV — `tts_test_output/e2e_gemini/`):
+
+```bash
+cd harness && npm run e2e:gemini                  # 2 sessiya × 6 navbat
+npm run e2e:gemini -- --sessions 1 --no-tts       # faqat matn
+```
+
+Har chaqiruv log qatori: `[llm] provider=gemini stage=... model=... latency=...ms
+tokens=kirish/chiqish reasoning=thinking cost=$...` va `[tts] provider=gemini ...
+voice=... first_chunk=...ms tokens=... cost=$...`. Narxlar bitta joyda —
+`harness/src/pricing.ts` (Gemini narxi 2027-01-01 dan ikki barobar: shu faylni yangilang).
+
+Ovoz (TTS) persona'ga qarab tanlanadi: jins + yosh -> `harness/tts-voices.json`
+dagi profil (ovoz id va uslub). Uslub `speech_metadata.style` ga ketadi (o'qilmaydi),
+matn esa so'zma-so'z o'qiladi.
+
+### Lokal STT (Doniyor modeli) — ovoz kirishi, default
+
+Ovoz kirishi (sotuvchi nutqi -> matn) default'da **lokal** ishlaydi: Doniyor'ning
+o'zbek GigaAM modeli (`gigaam_s1.pt` + tinish belgisi modeli), `stt/serve.py`
+servisi orqali. Kalit kerak emas, narx $0, audio kompyuterdan chiqmaydi
+(servis faqat `127.0.0.1:5190` da tinglaydi).
+
+**1. Model paketini oling (qo'lda, avtomatik yuklanmaydi).** Paket (~3 GB vazn)
+Doniyor'ning Google Drive'dagi `package` papkasida — havolani Doniyor'dan so'rang.
+Drive uni bir nechta zip qilib beradi (`package-…-1-001.zip`, `-002`, `-003`):
+hammasini **bitta** papkaga oching — `stt/doniyor-model/`:
+
+```
+stt/doniyor-model/
+  base_model/      config.json, modeling_gigaam.py, pytorch_model.bin (~883 MB)
+  punct_model/     model.safetensors (~1.1 GB), tokenizer fayllari
+  weights/gigaam_s1.pt   (~883 MB)  — faqat shu vazn kerak
+  gigaam_local.py
+```
+
+`weights/gigaam_v1.pt` va `gigaam_v5.pt` kerak emas (o'chirsangiz ~1.7 GB tejaladi).
+`stt/` git'ga KIRMAYDI (`stt/*` ignore) — yagona istisno `stt/serve.py`.
+
+**2. Muhit (bir marta):** `cd harness && npm run stt:setup` — `stt/.venv` yaratadi va
+faqat kerakli paketlarni o'rnatadi (torch 2.11.0 CPU-only, transformers 5.18.0,
+hydra-core, sentencepiece, soundfile, numpy). NVIDIA GPU bo'lsa: `npm run stt:setup -- --cuda`.
+pyannote (diarizatsiya) o'rnatilmaydi. Python 3.10+ va `ffmpeg` kerak.
+
+**3. Ishga tushirish:** `npm run dev` servisni o'zi ishga tushiradi (tayyor bo'lsa) yoki
+aniq eslatma chiqaradi. Alohida: `npm run stt:start` (`STT_DEVICE=cpu|cuda|auto`).
+Servis ishlamasa ovozli navbat **zaxirasiz, aniq xato** beradi va buyruqni aytadi.
+
+Matn: paketning tinish belgisi bosqichi raqam, kirill harflari va belgilarni o'chiradi,
+shuning uchun servis tinish belgisini faqat xom matnda bunday belgi **bo'lmasa**
+qo'llaydi; aks holda miyaga xom matn boradi. Javob: `{text, raw, punctuated, duration_s, stt_ms}`.
+
+OpenAI STT — ixtiyoriy muqobil: `STT_PROVIDER=openai` + shaxsiy `OPENAI_API_KEY` fayli.
+
+Kechikish sinovi (haqiqiy 10 s klip -> STT -> Gemini miya -> Gemini TTS 1-bo'lak):
+`cd harness && npm run e2e:voice -- --runs 5`.
+
+### Mijoz ssenariylari (Part 1: asos)
+
+Arxetiplardan tashqari mijozni **ssenariy** bilan sozlash mumkin: kim (jins, yosh, rol,
+ismlar ro'yxati, tarix), nima yashiradi, qachon rozi bo'ladi / go'shakni qo'yadi, emotsiya
+(jahl/ishonch/qiziqish, volatillik, nima ko'taradi/tushiradi), qanchalik qo'pol gapira oladi
+va qanday ovozda. Fayllar: `harness/scenarios/*.json` (server startda tekshiradi va DB'ga —
+`training_scenario` — yozadi; yaroqsizi aniq xabar bilan rad etiladi).
+
+- Sxema: `module/backend/src/training/scenario/schema.ts` (zod), JSON Schema —
+  `npm run scenarios:check` (`harness/scenarios/scenario.schema.json` ni ham yozadi).
+- Migratsiya: `module/integration/training-scenarios.sql` (`npm run db:init` qo'llaydi).
+- Tahrirlanadigan so'z ro'yxatlari (murojaat shakllari, oq ro'yxat haqoratlar, bloklist,
+  chegaralar): `module/backend/src/training/scenario/content-rules.ts`.
+- Sessiya boshida **sotuvchi profili** (ism, jins, yosh) majburiy — formadan; ovozdan yoki
+  ismdan taxmin qilinmaydi. Mijoz murojaati shunga qarab ("qizim/singlim" yoki "o'g'lim/uka"),
+  noto'g'ri jinsdagi murojaat kodda tekshiriladi.
+- Kontent: so'kinish, millat/din/jins/tana/oila/nogironlik haqida haqorat, tahdid, jinsiy
+  mazmun — HAR DOIM taqiq. `insult_level` <= 2 (har qanday ssenariy); bola/o'smir — 0.
+  Qattiq ssenariy oldidan UI ogohlantiradi; mashqni istalgan payt "Tugatish" bilan to'xtatish mumkin.
+- Sinov: `cd harness && npm run e2e:scenarios` (Gemini, 8 navbatlik yaxshi/yomon sotuvchi).
+
+**Part 2 — emotsiya boshqaruvi va Ssenariy yaratish (rahbar uchun).**
+- Emotsiya: boshlang'ich jahl/ishonch/qiziqish/sabr, xususiyatlar (ko'pi bilan 4: jahldor,
+  shoshqaloq, ishonchsiz, kinoyali, injiq, charchagan, ikkilanuvchi, gapni_boluvchi,
+  kam_gapiradigan, iliq; zid juftliklar rad etiladi yoki ogohlantiriladi), o'zgaruvchanlik
+  (slow/medium/fast: navbatiga ko'pi bilan 8/12/20), `may_hang_up`. Jahl tufayli go'shakdan
+  OLDIN mijoz bir marta ochiq ogohlantiradi. Yashirin sabab faqat yetarli dolzarb savoldan
+  (qiyinlik 1-2: 1, 3: 2, 4-5: 3) va ishonch >= 50 dan keyin; qiyinlik >= 3 da rozilik uchun
+  haqiqiy e'tiroz yechilgan bo'lishi shart. Hamma qoidalar — `scenario/content-rules.ts`.
+- Rollar: rahbar / sotuvchi (`HARNESS_MANAGER_USER_IDS`; ruxsat `training:scenario:manage`).
+  Faqat rahbar ssenariy yaratadi, tahrirlaydi, nusxalaydi, arxivlaydi; sotuvchi faqat o'ynaydi.
+- "Ssenariy yaratish" sahifasi (navigatsiyada, faqat rahbarga): Mijoz / Vaziyat / Emotsiya /
+  Til / Ovoz bo'limlari, "AI bilan to'ldirish" (taklif saqlanmaydi), "Sinab ko'rish"
+  (saqlamasdan 3 navbatgacha), "Saqlash". Xatolar o'zbekcha, server bitta sxema bilan tekshiradi.
+- API: `GET /me`, `GET /scenarios/manage`, `GET|PUT /scenarios/:id`, `POST /scenarios`,
+  `POST /scenarios/validate|ai-draft|try`, `POST /scenarios/:id/duplicate|archive`.
+- Sinov: `cd harness && npm run e2e:builder` (server o'zi ishga tushadi).
 
 ### DB: dockersiz lokal klaster
 
@@ -268,7 +388,7 @@ To'liq tozalash: `npm run db:reset` (volume bilan birga o'chiradi), keyin
 ### LLM provayderi va kalitlar
 
 Qaysi model ishlatilishi `harness/.env` dagi uchta o'zgaruvchi bilan hal
-qilinadi: **`TRAINER_PROVIDER`** (`anthropic` | `openai-compatible`),
+qilinadi: **`TRAINER_PROVIDER`** (`gemini` — default | `openai-compatible` | `anthropic`),
 **`TRAINER_API_KEY_ENV`** (kalit qaysi env o'zgaruvchisida — kalitning o'zi
 emas, NOMI) va **`TRAINER_MODEL`**. Baholash uchun alohida
 `TRAINER_SCORING_MODEL` (berilmasa `TRAINER_MODEL`).
@@ -347,7 +467,15 @@ tushunarli banner chiqarib to'xtaydi. Soxta rejim faqat ataylab
 `DEMO_LLM=1` qo'yilganda ishlaydi — unda terminalda ham, UI'da ham qizil
 **DEMO AI** ogohlantirishi ko'rinadi.
 
-Anthropic (default):
+Gemini (default, kompaniya kaliti) — faqat kalit yetarli, qolgani default:
+
+```bash
+# harness/.env
+GEMINI_API_KEY=...
+# ixtiyoriy: TRAINER_THINKING_LEVEL=low  TRAINER_SCORING_THINKING_LEVEL=medium  TRAINER_FALLBACK=openai
+```
+
+Anthropic:
 
 ```bash
 # harness/.env

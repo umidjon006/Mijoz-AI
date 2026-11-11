@@ -10,7 +10,7 @@
  */
 
 export interface ApiRequestInit {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT';
   body?: unknown;
   signal?: AbortSignal;
   /**
@@ -43,11 +43,80 @@ export interface PersonaSummary {
   openingLine: string | null;
 }
 
+/** Ssenariy uchun kontent ogohlantirishi (boshlashdan oldin ko'rsatiladi). */
+export interface ContentFlag {
+  harsh: boolean;
+  insultLevel: number;
+  sarcasm: number;
+  allowSen: boolean;
+  warning: string | null;
+}
+
+export interface ScenarioInfo {
+  id: string;
+  title: string;
+  description: string;
+  difficulty: number;
+  callDirection: 'inbound' | 'outbound';
+  relationship: string;
+  content: ContentFlag;
+  version: number;
+}
+
+/** Sotuvchi profili — formadan (ovozdan yoki ismdan TAXMIN QILINMAYDI). */
+export interface SellerProfile {
+  name: string;
+  gender: 'male' | 'female';
+  age: number;
+}
+
+// --- Ssenariy yaratish (rahbar) ----------------------------------------------
+/** Ssenariy JSON (schema.ts bilan bir xil shakl; forma uni to'liq yuboradi). */
+export type ScenarioDraft = Record<string, unknown>;
+
+export interface ScenarioIssue {
+  path: string;
+  field: string;
+  message: string;
+}
+
+export interface ScenarioCheck {
+  ok: boolean;
+  warnings: string[];
+  issues: ScenarioIssue[];
+}
+
+export interface ManagedScenario extends ScenarioInfo {
+  isActive: boolean;
+}
+
+export interface TryTurnResponse {
+  customerReply: string;
+  persona: unknown;
+  state: { trust: number; interest: number; patience: number; emotion?: { anger: number; formality: string } };
+  ended: boolean;
+  endReason: string | null;
+  openingLine: string | null;
+  meta: {
+    latencyMs: number;
+    costUsd: number;
+    tone: string;
+    corrections: string[];
+    warnedNow: boolean;
+    revealedNow: boolean;
+    hangup: string | null;
+    mistakes: string[];
+    insult: { text: string } | null;
+  };
+}
+
 export interface StartSessionResponse {
   sessionId: string;
   archetype: { key: string; title: string; difficulty: number; maxTurns: number };
   persona: PersonaSummary;
   openingLine: string | null;
+  scenarioId?: string;
+  content?: ContentFlag;
 }
 
 export interface TranscriptTurn {
@@ -84,6 +153,8 @@ export interface SessionDetail {
   transcript: TranscriptTurn[];
   persona: PersonaSummary;
   revealed: RevealedPersona | null;
+  scenarioId?: string;
+  content?: ContentFlag;
   debug?: unknown;
 }
 
@@ -294,8 +365,33 @@ export interface StatsResponse {
 
 export interface TrainingApi {
   listArchetypes(): Promise<ArchetypeInfo[]>;
+  /** Joriy foydalanuvchi rahbarmi (ssenariy yaratish sahifasi). */
+  me(): Promise<{ userId: string; canManageScenarios: boolean }>;
+  listManagedScenarios(): Promise<ManagedScenario[]>;
+  getScenario(id: string): Promise<{ scenario: ScenarioDraft; version: number; isActive: boolean }>;
+  validateScenario(scenario: ScenarioDraft): Promise<ScenarioCheck>;
+  createScenario(scenario: ScenarioDraft): Promise<{ scenario: ScenarioDraft; warnings: string[] }>;
+  updateScenario(id: string, scenario: ScenarioDraft): Promise<{ scenario: ScenarioDraft; warnings: string[] }>;
+  duplicateScenario(id: string): Promise<{ scenario: ScenarioDraft }>;
+  archiveScenario(id: string, archived: boolean): Promise<void>;
+  aiDraftScenario(text: string): Promise<ScenarioCheck & { scenario: ScenarioDraft | null }>;
+  tryScenario(input: {
+    scenario: ScenarioDraft;
+    seller: SellerProfile;
+    persona?: unknown;
+    state?: unknown;
+    transcript: TranscriptTurn[];
+    sellerText: string;
+  }): Promise<TryTurnResponse>;
+  /** Harness'ga xos (bo'lmasa bo'sh): ovoz profillari va namuna. */
+  voiceProfiles(): Promise<Array<{ key: string; voice: string }>>;
+  voiceSample(input: { profile: string; gender: 'male' | 'female'; age: number; baseStyle?: string }): Promise<{ mime: string; audioBase64: string }>;
+  /** Faol ssenariylar (eski backend'da bo'lmasa — bo'sh ro'yxat). */
+  listScenarios(): Promise<ScenarioInfo[]>;
   startSession(input: {
-    archetypeKey: string;
+    archetypeKey?: string;
+    scenarioId?: string;
+    seller?: SellerProfile;
     direction?: 'inbound' | 'outbound';
   }): Promise<StartSessionResponse>;
   getSession(sessionId: string): Promise<SessionDetail>;
@@ -322,6 +418,61 @@ export function createTrainingApi(request: ApiRequest, prefix = '/api/v1/trainin
     async listArchetypes() {
       const res = await request<{ archetypes: ArchetypeInfo[] }>(`${prefix}/archetypes`);
       return res.archetypes;
+    },
+    me() {
+      return request<{ userId: string; canManageScenarios: boolean }>(`${prefix}/me`).catch(() => ({
+        userId: '',
+        canManageScenarios: false,
+      }));
+    },
+    async listManagedScenarios() {
+      const res = await request<{ scenarios: ManagedScenario[] }>(`${prefix}/scenarios/manage`);
+      return res.scenarios;
+    },
+    getScenario(id) {
+      return request(`${prefix}/scenarios/${id}`);
+    },
+    validateScenario(scenario) {
+      return request<ScenarioCheck>(`${prefix}/scenarios/validate`, { method: 'POST', body: { scenario } });
+    },
+    createScenario(scenario) {
+      return request(`${prefix}/scenarios`, { method: 'POST', body: { scenario } });
+    },
+    updateScenario(id, scenario) {
+      return request(`${prefix}/scenarios/${id}`, { method: 'PUT', body: { scenario } });
+    },
+    duplicateScenario(id) {
+      return request(`${prefix}/scenarios/${id}/duplicate`, { method: 'POST', body: {} });
+    },
+    async archiveScenario(id, archived) {
+      await request(`${prefix}/scenarios/${id}/archive`, { method: 'POST', body: { archived } });
+    },
+    aiDraftScenario(text) {
+      return request(`${prefix}/scenarios/ai-draft`, { method: 'POST', body: { text } });
+    },
+    tryScenario(input) {
+      return request<TryTurnResponse>(`${prefix}/scenarios/try`, { method: 'POST', body: input });
+    },
+    async voiceProfiles() {
+      try {
+        const res = await request<{ enabled: boolean; profiles: Array<{ key: string; voice: string }> }>(
+          `${prefix}/_harness/voices`,
+        );
+        return res.enabled ? res.profiles : [];
+      } catch {
+        return [];
+      }
+    },
+    voiceSample(input) {
+      return request(`${prefix}/_harness/voice-sample`, { method: 'POST', body: input });
+    },
+    async listScenarios() {
+      try {
+        const res = await request<{ scenarios: ScenarioInfo[] }>(`${prefix}/scenarios`);
+        return res.scenarios;
+      } catch {
+        return [];
+      }
     },
     startSession(input) {
       return request<StartSessionResponse>(`${prefix}/sessions`, {

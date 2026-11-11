@@ -15,6 +15,7 @@
 import './env.js';
 
 import { existsSync } from 'node:fs';
+import { envStr, missingKeyHint } from './env.js';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
   }
   const target = openAiTarget();
   if (!target) {
-    console.error("OPENAI_API_KEY bo'sh — harness/.env ni to'ldiring.");
+    console.error(missingKeyHint(envStr('OPENAI_VOICE_KEY_ENV') ?? 'OPENAI_API_KEY', 'src/corpus-transcribe.ts'));
     process.exit(1);
   }
 

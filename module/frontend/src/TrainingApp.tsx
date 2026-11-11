@@ -10,13 +10,14 @@
  * Router kutubxonasi ATAYLAB ishlatilmagan — modul host ilovaning
  * router'iga bog'lanib qolmasligi uchun.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { mashq } from './lugat/mashq.js';
 import type { TrainingApi } from './lib/api.js';
 import { PresentationContext } from './lib/presentation.js';
 import { MashqPage } from './pages/MashqPage.js';
 import { NatijaPage } from './pages/NatijaPage.js';
+import { ScenarioBuilderPage } from './pages/ScenarioBuilderPage.js';
 import { SessionPage } from './pages/SessionPage.js';
 import { TarixPage } from './pages/TarixPage.js';
 
@@ -24,7 +25,8 @@ export type TrainingView =
   | { name: 'home' }
   | { name: 'session'; sessionId: string }
   | { name: 'result'; sessionId: string }
-  | { name: 'history' };
+  | { name: 'history' }
+  | { name: 'builder' };
 
 export interface TrainingAppProps {
   api: TrainingApi;
@@ -98,6 +100,18 @@ export function TrainingApp({
     }
   }
 
+  // Rahbar bo'lsa — "Ssenariy yaratish" sahifasi ko'rinadi (server tekshiradi).
+  const [canManage, setCanManage] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void api.me().then((m) => {
+      if (!cancelled) setCanManage(m.canManageScenarios);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
   return (
     <PresentationContext.Provider value={presentation}>
       <div className="mq-root">
@@ -117,6 +131,15 @@ export function TrainingApp({
             >
               {mashq.navHistory}
             </button>
+            {canManage && !presentation ? (
+              <button
+                type="button"
+                onClick={() => setView({ name: 'builder' })}
+                aria-current={view.name === 'builder' ? 'page' : undefined}
+              >
+                Ssenariy yaratish
+              </button>
+            ) : null}
             {presentation ? (
               <button
                 type="button"
@@ -173,6 +196,8 @@ export function TrainingApp({
               onOpenResult={(sessionId) => setView({ name: 'result', sessionId })}
             />
           ) : null}
+
+          {view.name === 'builder' && canManage ? <ScenarioBuilderPage api={api} /> : null}
 
           {pendingArchetype && view.name === 'result' ? (
             <p className="mq-muted mq-small">{mashq.starting}</p>

@@ -23,6 +23,9 @@ export const VOICE_TONES = [
   'angry',
   'sarcastic',
   'bored',
+  // Ssenariy rejimi (emotsiyadan kod tanlaydi): charchagan, iliq.
+  'tired',
+  'warm',
 ] as const;
 
 export type VoiceTone = (typeof VOICE_TONES)[number];
@@ -110,6 +113,7 @@ export function clampTone(
 
     case 'friendly':
     case 'interested':
+    case 'warm':
       if (state.trust < TONE_LIMITS.warmTrust) {
         return deny(`${suggested}: ishonch ${state.trust} < ${TONE_LIMITS.warmTrust}`);
       }
@@ -117,8 +121,9 @@ export function clampTone(
       return { tone: suggested, clamped: false };
 
     case 'bored':
-      if (state.interest < TONE_LIMITS.lowInterest) return { tone: 'bored', clamped: false };
-      return deny(`bored: qiziqish ${state.interest} >= ${TONE_LIMITS.lowInterest}`);
+    case 'tired':
+      if (state.interest < TONE_LIMITS.lowInterest) return { tone: suggested, clamped: false };
+      return deny(`${suggested}: qiziqish ${state.interest} >= ${TONE_LIMITS.lowInterest}`);
 
     case 'calm':
     case 'hesitant':
@@ -142,9 +147,12 @@ const TONE_INSTRUCTION: Record<VoiceTone, string> = {
     'Uncertain and a little slower, with small pauses, as if weighing the words while speaking.',
   irritated:
     'Clipped and curt, slightly faster and flatter, low patience audible. Not shouting.',
-  angry: 'Hard and tense, louder, short sharp phrases, clearly displeased. Still not shouting.',
+  angry:
+    'Raised voice and a faster pace, hard and tense, short sharp phrases, clearly angry. Loud but not screaming.',
   sarcastic: 'Dry and flat with a slight drawl, faint mocking edge, unimpressed.',
   bored: 'Flat, low energy, slower, trailing off — barely engaged.',
+  tired: 'Tired and worn out, slow and heavy, sighing between phrases, low energy.',
+  warm: 'Warm, soft and friendly, relaxed pace, a gentle smile in the voice, trusting.',
 };
 
 export function toneInstruction(tone: VoiceTone): string {

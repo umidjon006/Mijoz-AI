@@ -1,0 +1,50 @@
+{
+  "_izoh": "Gemini TTS ovoz profillari. Mijoz persona'sidan (jins + yosh) yoki ssenariydagi voice.profile dan tanlanadi. 'voice' — Gemini ovoz katalogidagi id (GET /v1beta/voices). 'style' — gapirish yo'nalishi; {age}, {role}, {speakingStyle} persona'dan qo'yiladi. Yosh: child < 13, teen 13-17, young 18-29, adult 30-54, elder 55+. Katalogda 20 yoshdan kichik ovoz YO'Q — bola/o'smir uchun eng yosh (20-22) ovozlar + uslub. Keksa: katalogdagi 65 yoshli ovozlar; muqobil 'Grandparent' ovozlari: en-za-assistant-5 (ayol, 73), ar-eg-assistant-8 (erkak, 73), ja-jp-assistant-6 (ayol, 74), fr-ca-assistant-3 (ayol, 86).",
+  "readingRule": "Read the text EXACTLY as written, word for word, in natural colloquial Uzbek (Latin script). Do not translate, add, skip, repeat or change any word. Uzbek pronunciation, no foreign accent.",
+  "profiles": {
+    "male_child": {
+      "voice": "en-us-commercial-9",
+      "style": "A {age}-year-old Uzbek boy ({role}). Childlike, higher and lighter voice, simple words, a little shy. Speaking manner: {speakingStyle}."
+    },
+    "female_child": {
+      "voice": "en-us-training-11",
+      "style": "A {age}-year-old Uzbek girl ({role}). Childlike, high and light voice, simple words. Speaking manner: {speakingStyle}."
+    },
+    "male_teen": {
+      "voice": "en-us-commercial-9",
+      "style": "A {age}-year-old Uzbek teenage boy ({role}). Youthful, slightly unsure, casual. Speaking manner: {speakingStyle}."
+    },
+    "female_teen": {
+      "voice": "en-us-training-11",
+      "style": "A {age}-year-old Uzbek teenage girl ({role}). Youthful, quick, casual. Speaking manner: {speakingStyle}."
+    },
+    "male_young": {
+      "voice": "en-us-cruz",
+      "style": "A {age}-year-old young Uzbek man ({role}). Lively, informal, a bit quick. Speaking manner: {speakingStyle}."
+    },
+    "male_adult": {
+      "voice": "en-us-cruz",
+      "style": "A {age}-year-old Uzbek man, a father ({role}). Practical and calm, careful with money. Speaking manner: {speakingStyle}."
+    },
+    "male_elder": {
+      "voice": "en-us-storyteller-12",
+      "style": "A {age}-year-old elderly Uzbek man ({role}). Slow, deliberate, slightly hoarse older voice, respectful but skeptical. Speaking manner: {speakingStyle}."
+    },
+    "female_young": {
+      "voice": "en-us-fola",
+      "style": "A {age}-year-old young Uzbek woman ({role}). Friendly, a little quick. Speaking manner: {speakingStyle}."
+    },
+    "female_adult": {
+      "voice": "en-us-fola",
+      "style": "A {age}-year-old Uzbek woman, a mother ({role}). Soft but cautious, thinks about family budget. Speaking manner: {speakingStyle}."
+    },
+    "female_elder": {
+      "voice": "en-us-advisor-1",
+      "style": "A {age}-year-old elderly Uzbek grandmother ({role}). Slow, soft, slightly shaky older voice, pauses, asks again. Speaking manner: {speakingStyle}."
+    },
+    "default": {
+      "voice": "en-us-cruz",
+      "style": "An Uzbek customer on a phone call ({role}). Natural colloquial speech. Speaking manner: {speakingStyle}."
+    }
+  }
+}

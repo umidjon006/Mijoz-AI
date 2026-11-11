@@ -14,6 +14,8 @@ import { createConnection } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { localSttReadiness, localSttSelected, localSttUrl, serviceEnv, sttServeScript, venvPython } from './stt-local.js';
+import { checkLocalStt, LOCAL_STT_START_COMMAND } from './voice/local-stt.js';
 import {
   printDemoBanner,
   printMissingKeyBanner,
@@ -25,15 +27,21 @@ import {
 const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const children: ChildProcess[] = [];
 
-function run(name: string, command: string, args: string[]): void {
+function run(
+  name: string,
+  command: string,
+  args: string[],
+  opts: { env?: NodeJS.ProcessEnv; critical?: boolean } = {},
+): void {
   const child = spawn(command, args, {
     cwd: harnessRoot,
     stdio: ['ignore', 'inherit', 'inherit'],
-    env: process.env,
+    env: opts.env ?? process.env,
   });
   child.on('exit', (code) => {
     console.log(`[${name}] tugadi (kod ${code ?? 0})`);
-    stop();
+    // STT to'xtasa — backend/UI ishlayveradi (matnli rejim); ovozli navbat aniq xato beradi.
+    if (opts.critical !== false) stop();
   });
   children.push(child);
 }
@@ -107,6 +115,37 @@ process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 
 await ensureDatabase();
+
+// ---------------------------------------------------------------------------
+// Lokal STT (default ovoz kirishi): ishlayotgan bo'lsa — tegmaymiz; tayyor
+// bo'lsa (venv + model) — o'zimiz ishga tushiramiz; bo'lmasa — aniq eslatma.
+// ---------------------------------------------------------------------------
+if (localSttSelected()) {
+  const url = localSttUrl();
+  try {
+    const h = await checkLocalStt(url, 1_000);
+    console.log(`\n[STT] lokal servis allaqachon ishlayapti: ${url} (${h.device})`);
+  } catch {
+    const { ready, problems } = localSttReadiness();
+    if (ready) {
+      console.log(`\n[STT] lokal servis ishga tushirilmoqda: ${url} (model yuklanishi ~5–10 s)`);
+      run('stt', venvPython(), [sttServeScript], { env: serviceEnv(), critical: false });
+      // Backend startdagi tekshiruvi yolg'on "ishlamayapti" demasligi uchun tayyor bo'lishini kutamiz.
+      const deadline = Date.now() + 60_000;
+      let up = false;
+      while (!up && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1_000));
+        up = await checkLocalStt(url, 1_000).then(() => true, () => false);
+      }
+      console.log(up ? '[STT] tayyor.' : `[STT] 60 s ichida tayyor bo'lmadi — logni ko'ring yoki: ${LOCAL_STT_START_COMMAND}`);
+    } else {
+      console.warn(
+        `\n[STT] Lokal STT tayyor emas — ovozli mashq ishlamaydi (matnli rejim ishlaydi):\n- ${problems.join('\n- ')}\n` +
+          `Tayyor bo'lgach: ${LOCAL_STT_START_COMMAND}\n`,
+      );
+    }
+  }
+}
 
 run('backend', 'npm', ['run', 'serve']);
 run('frontend', 'npm', ['run', 'ui:dev']);

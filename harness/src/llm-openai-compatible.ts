@@ -526,6 +526,7 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
         );
         log?.(
           formatLlmCallLog({
+            provider: 'openai-compatible',
             stage: req.stage,
             model,
             latencyMs: raw.latencyMs,
@@ -551,6 +552,7 @@ export function createOpenAiCompatibleLlm(options: OpenAiCompatibleOptions): Tra
         const detail = err instanceof Error ? err.message : String(err);
         log?.(
           formatLlmCallLog({
+            provider: 'openai-compatible',
             stage: req.stage,
             model,
             latencyMs: Date.now() - attemptStarted,

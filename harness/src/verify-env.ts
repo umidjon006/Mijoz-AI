@@ -98,6 +98,38 @@ import {
   startupLine,
 } from './llm-factory.js';
 import type { BusinessProfile } from '../../module/backend/src/training/profile-schema.js';
+import {
+  buildInteractionBody,
+  createGeminiLlm,
+  DEFAULT_SAFETY_SETTINGS,
+  GeminiHttpError,
+  interactionUsage,
+  isFallbackWorthy,
+  parseRetryDelayMs,
+  withLlmFallback,
+  withRetry,
+} from './llm-gemini.js';
+import { LLM_PRICES, priceCall, priceGeminiTts } from './pricing.js';
+import {
+  buildStyle,
+  buildTtsBody,
+  genderOf,
+  loadVoiceProfiles,
+  parseVoiceProfiles,
+  pickProfile,
+  withTtsFallback,
+} from './voice/gemini-tts.js';
+import { concatWav, parseWav, wavHeader } from '../../module/backend/src/training/voice/wav.js';
+import { speakerOf } from '../../module/backend/src/training/voice/voice-turn.js';
+import {
+  assertLoopbackUrl,
+  createLocalStt,
+  DEFAULT_LOCAL_STT_URL,
+  LocalSttError,
+  LocalSttUnavailableError,
+} from './voice/local-stt.js';
+import { resolveStt } from './voice/stt-select.js';
+import { localSttSelected, REQUIRED_MODEL_FILES, serviceEnv } from './stt-local.js';
 
 /** Testlarda hech qachon haqiqiy kalit ishlatilmaydi. */
 const FAKE_KEY = 'sk-fake-TEST-0000000000-not-a-real-key';
@@ -269,8 +301,16 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   section('[3] provayder aniqlash');
 
-  check(report, 'default: anthropic + ANTHROPIC_API_KEY', () => {
-    const config = resolveProviderConfig({ ANTHROPIC_API_KEY: FAKE_KEY });
+  check(report, "default (TRAINER_PROVIDER bo'sh): gemini + GEMINI_API_KEY", () => {
+    const config = resolveProviderConfig({ GEMINI_API_KEY: 'AQ.fake-test-key-not-real-000000000000' });
+    assertEqual(config.provider, 'gemini', 'provider');
+    assertEqual(config.keyEnv, 'GEMINI_API_KEY', 'keyEnv');
+    assertEqual(config.model, 'gemini-3.8-flash', 'default model');
+    assert(config.hasKey, 'kalit bor');
+  });
+
+  check(report, 'anthropic: ANTHROPIC_API_KEY va default modellar', () => {
+    const config = resolveProviderConfig({ TRAINER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: FAKE_KEY });
     assertEqual(config.provider, 'anthropic', 'provider');
     assertEqual(config.keyEnv, 'ANTHROPIC_API_KEY', 'keyEnv');
     assertEqual(config.model, 'claude-haiku-5-5', 'default model');
@@ -360,7 +400,7 @@ async function main(): Promise<void> {
   }
 
   check(report, "kalit bo'sh bo'lsa hasKey=false", () => {
-    const config = resolveProviderConfig({ ANTHROPIC_API_KEY: '   ' });
+    const config = resolveProviderConfig({ TRAINER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '   ' });
     assert(!config.hasKey, "bo'sh satr kalit emas");
   });
 
@@ -372,7 +412,7 @@ async function main(): Promise<void> {
   check(report, "noto'g'ri TRAINER_PROVIDER → ProviderConfigError", () => {
     let caught: unknown;
     try {
-      resolveProviderConfig({ TRAINER_PROVIDER: 'gemini' });
+      resolveProviderConfig({ TRAINER_PROVIDER: 'gemini-openai' });
     } catch (err) {
       caught = err;
     }
@@ -417,8 +457,8 @@ async function main(): Promise<void> {
     assert(caught instanceof MissingLlmKeyError, 'MissingLlmKeyError');
     assertEqual(
       (caught as MissingLlmKeyError).config.keyEnv,
-      'ANTHROPIC_API_KEY',
-      'qaysi env kutilgani aytiladi',
+      'GEMINI_API_KEY',
+      'qaysi env kutilgani aytiladi (default gemini)',
     );
   });
 
@@ -522,6 +562,13 @@ async function main(): Promise<void> {
     'corpus-analyze',
     'verify-corpus',
     'handoff-pack',
+    'e2e-gemini',
+    'e2e-voice',
+    'stt-setup',
+    'stt-start',
+    'e2e-scenarios',
+    'e2e-builder',
+    'scenarios-check',
   ];
 
   for (const name of entryPoints) {
@@ -1419,7 +1466,394 @@ async function main(): Promise<void> {
     assertEqual(latencyWarnings(resolveProviderConfig({ ...geminiBase, TRAINER_REASONING_EFFORT: 'none' })).length, 0, 'none — jim');
     assertEqual(latencyWarnings(resolveProviderConfig({ ...geminiBase, TRAINER_REASONING_EFFORT: 'low' })).length, 1, 'low — ogohlantirish');
     assertEqual(latencyWarnings(resolveProviderConfig(geminiBase)).length, 1, "bo'sh (provayder default'i) — ogohlantirish");
-    assertEqual(latencyWarnings(resolveProviderConfig({ ANTHROPIC_API_KEY: FAKE_KEY })).length, 0, 'anthropic — tegishli emas');
+    assertEqual(latencyWarnings(resolveProviderConfig({ TRAINER_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: FAKE_KEY })).length, 0, 'anthropic — tegishli emas');
+  });
+
+
+  // -------------------------------------------------------------------------
+  section('[13] Gemini: provayder, Interactions so\'rovi, retry, zaxira, TTS (soxta fetch)');
+
+  const gem = { TRAINER_PROVIDER: 'gemini', GEMINI_API_KEY: 'AQ.fake-test-key-not-real-000000000000' };
+
+  check(report, "gemini: default kalit/model/thinking, zaxira faqat OpenAI kaliti bo'lsa", () => {
+    const c = resolveProviderConfig(gem);
+    assertEqual(c.provider, 'gemini', 'provider');
+    assertEqual(c.keyEnv, 'GEMINI_API_KEY', 'keyEnv');
+    assertEqual(c.model, 'gemini-3.8-flash', 'model');
+    assertEqual(c.thinkingLevel, 'low', 'thinking default low');
+    assert(c.hasKey, 'kalit bor');
+    assert(!c.fallback.requested && !c.fallback.available, "default: zaxira o'chiq");
+    const req = resolveProviderConfig({ ...gem, TRAINER_FALLBACK: 'openai' });
+    assert(req.fallback.requested && !req.fallback.available, "so'ralgan, lekin kalit yo'q");
+    assertEqual(latencyWarnings(req).length, 1, "kalitsiz zaxira haqida ogohlantirish");
+    const ok = resolveProviderConfig({ ...gem, TRAINER_FALLBACK: 'openai', OPENAI_API_KEY: FAKE_KEY });
+    assert(ok.fallback.available, 'kalit bilan — ishlaydi');
+    assertEqual(ok.fallback.model, 'gpt-6-luna', 'zaxira modeli');
+    let caught: unknown;
+    try {
+      resolveProviderConfig({ ...gem, TRAINER_THINKING_LEVEL: 'none' });
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof ProviderConfigError, "thinking=none rad etiladi (o'chirib bo'lmaydi)");
+    const line = startupLine(ok);
+    assert(line.includes('thinking=low') && line.includes('zaxira=gpt-6-luna'), line);
+    assert(!line.includes('AQ.fake') && !line.includes(FAKE_KEY), 'kalit chiqmaydi');
+  });
+
+  check(report, "Interactions tanasi: system_instruction, thinking_level, JSON schema (type-array null)", () => {
+    const body = buildInteractionBody(
+      { system: 'S', user: 'U', outputSchema: personaCardSchema },
+      { model: 'gemini-3.8-flash', thinkingLevel: 'low', maxOutputTokens: 1000, structuredOutput: true },
+    );
+    assertEqual(body.store, false, 'store');
+    assert(String(body.system_instruction).startsWith('S'), 'system');
+    assertDeepEqual(body.input, [{ type: 'user_input', content: [{ type: 'text', text: 'U' }] }], 'input');
+    assertDeepEqual(body.generation_config, { thinking_level: 'low', max_output_tokens: 1000 }, 'generation_config');
+    const rf = body.response_format as { type: string; mime_type: string; schema: { properties: Record<string, { type: unknown }> } };
+    assertEqual(rf.type, 'text', 'response_format.type');
+    assertEqual(rf.mime_type, 'application/json', 'mime');
+    assertDeepEqual(rf.schema.properties.hiddenNeed?.type, ['string', 'null'], 'nullable -> type massivi');
+    assert('gender' in rf.schema.properties, 'gender maydoni sxemada');
+  });
+
+  check(report, 'usage: thinking chiqishga qo\'shiladi; narx pricing.ts dan', () => {
+    const u = interactionUsage({ total_input_tokens: 1000, total_output_tokens: 100, total_thought_tokens: 50 }, 'gemini-3.8-flash');
+    assertEqual(u.outputTokens, 150, 'chiqish + thinking');
+    assertEqual(u.reasoningTokens, 50, 'thinking alohida');
+    const cost = priceCall(u);
+    const expected = (1000 * 0.75 + 150 * 3.75) / 1e6;
+    assert(Math.abs(cost - expected) < 1e-12, `narx ${cost} != ${expected}`);
+    assertEqual(LLM_PRICES['gemini-3.8-flash']?.output, 3.75, 'tarif');
+    assert(Math.abs(priceGeminiTts(40, 200) - (40 * 0.5 + 200 * 9) / 1e6) < 1e-12, 'TTS narxi');
+    assertEqual(priceCall({ inputTokens: 10, outputTokens: 10, model: "noma'lum" }), 0, "noma'lum model — 0");
+  });
+
+  check(report, '429 kutish vaqti va vaqtinchalik xato toifasi', () => {
+    assertEqual(parseRetryDelayMs('Please retry in 37s or upgrade'), 37_000, 'retry in 37s');
+    assertEqual(parseRetryDelayMs('retry in 1m2.5s'), 62_500, '1m2.5s');
+    assertEqual(parseRetryDelayMs('{"retryDelay": "12s"}'), 12_000, 'RetryInfo');
+    assert(isFallbackWorthy(new GeminiHttpError(503, 'high demand', undefined, false)), '503');
+    assert(isFallbackWorthy(new GeminiHttpError(429, 'rate', 1000, false)), '429');
+    assert(!isFallbackWorthy(new GeminiHttpError(400, 'bad', undefined, false)), "400 — zaxira yo'q");
+    assert(!isFallbackWorthy(new LlmCallError('schema', 'x')), "schema — zaxira yo'q");
+  });
+
+  await checkAsync(report, '503 -> backoff -> muvaffaqiyat; uzun 429 kutilmaydi', async () => {
+    const waits: number[] = [];
+    const lines: string[] = [];
+    let n = 0;
+    const out = await withRetry(
+      't',
+      { maxAttempts: 3, baseDelayMs: 100, maxWaitMs: 1000 },
+      async () => {
+        n += 1;
+        if (n < 3) throw new GeminiHttpError(503, 'high demand', undefined, false);
+        return 'ok';
+      },
+      { log: (l) => lines.push(l), sleep: async (ms) => void waits.push(ms) },
+    );
+    assertEqual(out.value, 'ok', 'natija');
+    assertEqual(out.attempts, 3, 'urinishlar');
+    assertDeepEqual(waits, [100, 200], 'eksponensial');
+    assert(lines.every((l) => l.includes('HTTP 503')), 'har kutish log\'da');
+    let caught: unknown;
+    try {
+      await withRetry('t', { maxAttempts: 3, baseDelayMs: 100, maxWaitMs: 1000 }, async () => {
+        throw new GeminiHttpError(429, 'rate', 37_000, false);
+      }, { sleep: async () => undefined });
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof GeminiHttpError && caught.status === 429, "37 s 429 — darhol tashqariga (zaxira uchun)");
+  });
+
+  await checkAsync(report, 'Gemini adapter: soxta fetch — JSON, usage, log, kalit yashirin', async () => {
+    const realFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    const headers: Array<Record<string, string>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      headers.push(init.headers as Record<string, string>);
+      return new Response(
+        JSON.stringify({
+          status: 'completed',
+          steps: [{ type: 'thought' }, { type: 'model_output', content: [{ type: 'text', text: '{"a":1}' }] }],
+          usage: { total_input_tokens: 10, total_output_tokens: 5, total_thought_tokens: 3 },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const lines: string[] = [];
+    const llm = createGeminiLlm({ apiKey: 'AQ.fake-key-123456789012345678901234', fetchImpl, log: (l) => lines.push(l) });
+    const out = await llm.completeJsonWithUsage?.({ stage: 's', system: 'S', user: 'U', schema: z.object({ a: z.number() }) });
+    globalThis.fetch = realFetch;
+    assertDeepEqual(out?.value, { a: 1 }, 'qiymat');
+    assertEqual(out?.usage.outputTokens, 8, 'chiqish+thinking');
+    assertEqual(headers[0]?.['x-goog-api-key'], 'AQ.fake-key-123456789012345678901234', 'kalit header\'da');
+    assert(lines[0]?.includes('provider=gemini') && lines[0].includes('cost=$'), `log: ${lines[0]}`);
+    assert(!lines.join('\n').includes('AQ.fake-key'), 'log kalitsiz');
+  });
+
+  await checkAsync(report, "zaxira: 503 -> OpenAI (log bilan); zaxira yo'q -> aniq log; 400 -> zaxirasiz", async () => {
+    const lines: string[] = [];
+    const failing = { completeJson: async () => { throw new GeminiHttpError(503, 'high demand', undefined, false); } };
+    const ok = { completeJson: async <T,>() => ({ from: 'luna' }) as T };
+    const llm = withLlmFallback(
+      { llm: failing, provider: 'gemini', model: 'gemini-3.8-flash' },
+      { llm: ok, provider: 'openai-compatible', model: 'gpt-6-luna' },
+      { log: (l) => lines.push(l) },
+    );
+    const v = await llm.completeJson({ stage: 'training.turn', system: '', user: '', schema: { parse: (x: unknown) => x } });
+    assertDeepEqual(v, { from: 'luna' }, 'zaxira javobi');
+    assert(lines.some((l) => l.includes('FALLBACK gemini/gemini-3.8-flash -> openai-compatible/gpt-6-luna') && l.includes('http_503')), lines.join('|'));
+
+    const lines2: string[] = [];
+    const none = withLlmFallback({ llm: failing, provider: 'gemini', model: 'g' }, null, { log: (l) => lines2.push(l), unavailableReason: 'OPENAI_API_KEY berilmagan' });
+    let caught: unknown;
+    try {
+      await none.completeJson({ stage: 's', system: '', user: '', schema: { parse: (x: unknown) => x } });
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof GeminiHttpError, 'asl xato');
+    assert(lines2.some((l) => l.includes("zaxira provayder YO'Q") && l.includes('OPENAI_API_KEY')), lines2.join('|'));
+
+    let fbCalled = false;
+    const bad = withLlmFallback(
+      { llm: { completeJson: async () => { throw new GeminiHttpError(400, 'bad', undefined, false); } }, provider: 'gemini', model: 'g' },
+      { llm: { completeJson: async <T,>() => { fbCalled = true; return {} as T; } }, provider: 'o', model: 'l' },
+      { log: null },
+    );
+    try {
+      await bad.completeJson({ stage: 's', system: '', user: '', schema: { parse: (x: unknown) => x } });
+    } catch {
+      // kutilgan
+    }
+    assert(!fbCalled, "400 sozlama xatosi zaxira bilan yashirilmaydi");
+  });
+
+  check(report, "createTrainerLlm: gemini + kalitsiz zaxira -> provider=gemini, zaxira yo'q", () => {
+    const saved = { ...process.env };
+    process.env.GEMINI_API_KEY = 'AQ.fake-key-123456789012345678901234';
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const r = createTrainerLlm({ profile: fakeProfile, config: resolveProviderConfig({ ...gem, TRAINER_FALLBACK: 'openai' }) });
+      assertEqual(r.provider, 'gemini', 'provider');
+      assertEqual(r.fallback, undefined, "zaxira yo'q");
+      process.env.OPENAI_API_KEY = FAKE_KEY;
+      const r2 = createTrainerLlm({
+        profile: fakeProfile,
+        config: resolveProviderConfig({ ...gem, TRAINER_FALLBACK: 'openai', OPENAI_API_KEY: FAKE_KEY }),
+      });
+      assertEqual(r2.fallback, 'openai-compatible/gpt-6-luna', 'zaxira bor');
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
+  });
+
+  check(report, "TTS (ssenariy): bola/o'smir/keksa profillar, ssenariy profili ustun, asosiy uslub", () => {
+    assertEqual(pickProfile({ gender: 'female', age: 10 }), 'female_child', 'bola');
+    assertEqual(pickProfile({ gender: 'male', age: 15 }), 'male_teen', "o'smir");
+    assertEqual(pickProfile({ gender: 'female', age: 70 }), 'female_elder', 'buvi');
+    assertEqual(pickProfile({ gender: 'male', age: 40, profile: 'male_elder' }), 'male_elder', 'ssenariy profili ustun');
+    assertEqual(pickProfile({ gender: 'male', age: 40, profile: 'auto' }), 'male_adult', 'auto -> yosh/jins');
+    assertEqual(pickProfile({ gender: 'male', age: 40, profile: 'robot_voice' }), 'male_adult', "noma'lum profil e'tiborsiz");
+    const profiles = loadVoiceProfiles();
+    const style = buildStyle(profiles, 'female_elder', {
+      text: 'x', lang: 'uz', instructions: 'Raised voice and a faster pace',
+      speaker: { gender: 'female', age: 70, role: 'buvi', speakingStyle: 'sekin', baseStyle: 'A slow, kind elderly grandmother' },
+    });
+    assert(style.includes('A slow, kind elderly grandmother') && style.includes('Raised voice'), style);
+    const body = buildInteractionBody(
+      { system: 'S', user: 'U' },
+      { model: 'gemini-3.8-flash', thinkingLevel: 'low', maxOutputTokens: 100, structuredOutput: false, safetySettings: DEFAULT_SAFETY_SETTINGS },
+    );
+    assertDeepEqual(
+      body.safety_settings,
+      [
+        { type: 'harassment', threshold: 'block_only_high' },
+        { type: 'hate_speech', threshold: 'block_medium_and_above' },
+        { type: 'sexually_explicit', threshold: 'block_medium_and_above' },
+        { type: 'dangerous_content', threshold: 'block_medium_and_above' },
+      ],
+      'safety_settings (yuqori daraja)',
+    );
+    const none = buildInteractionBody({ system: 'S', user: 'U' }, { model: 'm', thinkingLevel: 'low', maxOutputTokens: 1, structuredOutput: false, safetySettings: [] });
+    assert(!('safety_settings' in none), "GEMINI_SAFETY=off -> yuborilmaydi");
+  });
+
+  check(report, 'TTS: persona -> ovoz profili (jins + yosh; rol matnidan taxmin)', () => {
+    assertEqual(pickProfile({ gender: 'male', age: 45 }), 'male_adult', 'ota 45');
+    assertEqual(pickProfile({ gender: 'female', age: 35 }), 'female_adult', 'ona 35');
+    assertEqual(pickProfile({ gender: 'male', age: 22 }), 'male_young', 'yosh');
+    assertEqual(pickProfile({ gender: 'female', age: 60 }), 'female_elder', 'keksa');
+    assertEqual(genderOf({ role: "ikki farzandning onasi" }), 'female', "rol: onasi");
+    assertEqual(genderOf({ role: 'Oila otasi, haydovchi emas' }), 'male', 'rol: otasi');
+    assertEqual(pickProfile({ role: 'mijoz' }), 'default', "noma'lum -> default");
+    const card = { name: 'A', age: 40, gender: 'female' as const, role: 'ona', speakingStyle: 'yumshoq' };
+    assertDeepEqual(speakerOf(card), { gender: 'female', age: 40, role: 'ona', speakingStyle: 'yumshoq' }, 'speakerOf');
+  });
+
+  check(report, "TTS: uslub speech_metadata.style da, matn so'zma-so'z; profillar fayli to'liq", () => {
+    const profiles = loadVoiceProfiles();
+    const style = buildStyle(profiles, 'female_adult', {
+      text: 'Salom', lang: 'uz', instructions: 'Uncertain and slower.',
+      speaker: { gender: 'female', age: 38, role: 'ona', speakingStyle: 'yumshoq' },
+    });
+    assert(style.includes('38') && style.includes('ona') && style.includes('yumshoq'), style);
+    assert(style.includes('Uncertain and slower.'), 'ohang');
+    assert(/word for word/i.test(style), "so'zma-so'z qoidasi");
+    const body = buildTtsBody({ model: 'gemini-3.8-flash-tts', text: "To'qqiz yuz ming", style, voice: 'en-us-fola' });
+    const item = (body.input as Array<{ content: Array<{ text: string; annotations: Array<{ type: string; style: string }> }> }>)[0]?.content[0];
+    assertEqual(item?.text, "To'qqiz yuz ming", "matn o'zgarmaydi");
+    assertEqual(item?.annotations[0]?.type, 'speech_metadata', 'annotation turi');
+    assertEqual(item?.annotations[0]?.style, style, 'uslub to\'g\'ri maydonda');
+    assertDeepEqual(body.generation_config, { speech_config: [{ voice: 'en-us-fola' }] }, 'ovoz');
+    let caught: unknown;
+    try {
+      parseVoiceProfiles({ profiles: { male_adult: { voice: 'x', style: 'y' } } });
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof Error && caught.message.includes('male_child'), "yetishmagan profil aytiladi");
+  });
+
+  await checkAsync(report, "TTS zaxira: 503 -> OpenAI (log); oqimda format mos bo'lmasa — aniq log", async () => {
+    const lines: string[] = [];
+    const fail503 = async () => { throw new GeminiHttpError(503, 'high demand', undefined, false); };
+    const okAudio = { audio: Buffer.from('x'), mime: 'audio/wav', latencyMs: 1 };
+    const port = withTtsFallback(
+      { tts: { synthesize: fail503 }, provider: 'gemini', model: 'gemini-3.8-flash-tts' },
+      { tts: { synthesize: async () => okAudio }, provider: 'openai', model: 'tts-x' },
+      { log: (l) => lines.push(l) },
+    );
+    const r = await port.synthesize({ text: 'a', lang: 'uz' });
+    assertEqual(r, okAudio, 'zaxira natijasi');
+    assert(lines.some((l) => l.includes('[tts] FALLBACK gemini/gemini-3.8-flash-tts -> openai/tts-x')), lines.join('|'));
+
+    const lines2: string[] = [];
+    // eslint-disable-next-line require-yield
+    async function* broken(): AsyncGenerator<Uint8Array> { throw new GeminiHttpError(429, 'rate', 37_000, false); }
+    const streamPort = withTtsFallback(
+      { tts: { synthesize: fail503, synthesizeStream: () => ({ mime: 'audio/wav', chunks: broken() }) }, provider: 'gemini', model: 'g' },
+      { tts: { synthesize: fail503, synthesizeStream: () => ({ mime: 'audio/mpeg', chunks: broken() }) }, provider: 'openai', model: 'o' },
+      { log: (l) => lines2.push(l) },
+    );
+    let caught: unknown;
+    try {
+      for await (const _ of streamPort.synthesizeStream!({ text: 'a', lang: 'uz' }).chunks) void _;
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof GeminiHttpError, 'asl xato');
+    assert(lines2.some((l) => l.includes('oqim formati mos emas') && l.includes('OPENAI_TTS_FORMAT=wav')), lines2.join('|'));
+  });
+
+  check(report, "WAV: bo'laklar bitta sarlavha ostida qo'shiladi (qayta sintez yo'q)", () => {
+    const fmt = { sampleRate: 24_000, channels: 1, bitsPerSample: 16 };
+    const a = Buffer.concat([wavHeader(4, fmt), Buffer.from([1, 0, 2, 0])]);
+    const b = Buffer.concat([wavHeader(2, fmt), Buffer.from([3, 0])]);
+    const joined = concatWav([a, b]);
+    assert(joined !== null, 'birlashdi');
+    const info = parseWav(joined as Buffer);
+    assertEqual(info.dataBytes, 6, 'PCM yig\'indisi');
+    assertEqual(info.sampleRate, 24_000, 'format');
+    const other = Buffer.concat([wavHeader(2, { ...fmt, sampleRate: 16_000 }), Buffer.from([3, 0])]);
+    assertEqual(concatWav([a, other]), null, 'format farqi -> null');
+  });
+
+  // -------------------------------------------------------------------------
+  section('[14] Lokal STT (local-doniyor): tanlash, adapter, aniq xatolar (soxta fetch)');
+
+  check(report, "STT_PROVIDER: default local-doniyor (kalitsiz); openai — faqat kalit bilan", () => {
+    const d = resolveStt({});
+    assert(d.ok, 'default tanlandi');
+    if (d.ok) {
+      assertEqual(d.value.provider, 'local-doniyor', 'provider');
+      assertEqual(d.value.url, DEFAULT_LOCAL_STT_URL, 'url');
+      assertEqual(d.value.paid, false, 'bepul');
+    }
+    const o = resolveStt({ STT_PROVIDER: 'openai' });
+    assert(!o.ok && o.reason.includes('OPENAI_API_KEY'), "kalitsiz openai — aniq sabab");
+    const o2 = resolveStt({ STT_PROVIDER: 'openai', OPENAI_API_KEY: FAKE_KEY, OPENAI_STT_MODEL: 'm', OPENAI_TTS_MODEL: 't' });
+    assert(o2.ok && o2.value.provider === 'openai' && o2.value.paid, 'kalit bilan — openai');
+    const bad = resolveStt({ STT_PROVIDER: 'whisper' });
+    assert(!bad.ok && bad.reason.includes('local-doniyor'), "noto'g'ri qiymat");
+    const remote = resolveStt({ STT_LOCAL_URL: 'http://10.0.0.5:5190' });
+    assert(!remote.ok && remote.reason.includes('127.0.0.1'), 'tashqi manzil rad etiladi');
+    assert(localSttSelected({}) && !localSttSelected({ STT_PROVIDER: 'openai' }), 'localSttSelected');
+    assertEqual(serviceEnv({ STT_LOCAL_URL: 'http://127.0.0.1:6001' }).STT_PORT, '6001', 'port URL\'dan');
+    assertEqual(serviceEnv({}).STT_DEVICE, 'auto', 'qurilma default auto');
+  });
+
+  check(report, 'faqat loopback manzil', () => {
+    assertLoopbackUrl('http://127.0.0.1:5190');
+    assertLoopbackUrl('http://localhost:5190');
+    let caught: unknown;
+    try {
+      assertLoopbackUrl('http://0.0.0.0:5190');
+    } catch (err) {
+      caught = err;
+    }
+    assert(caught instanceof LocalSttError, '0.0.0.0 rad etiladi');
+  });
+
+  await checkAsync(report, "adapter: xavfsiz matn qaytadi, audio tanada; servis yo'q -> buyruqli xato", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: Array<{ url: string; bytes: number }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      seen.push({ url, bytes: (init.body as Uint8Array).byteLength });
+      return new Response(
+        JSON.stringify({ text: 'narxi 690 ming', raw: 'narxi 690 ming', punctuated: false, stripped_chars: ['0', '6', '9'], duration_s: 1, stt_ms: 50, model: 'gigaam-s1', device: 'cpu' }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const lines: string[] = [];
+    try {
+      const r = await createLocalStt({ log: (l) => lines.push(l) }).transcribeShort({ audio: Buffer.from([1, 2, 3]), mime: 'audio/wav', lang: 'uz' });
+      assertEqual(r.text, 'narxi 690 ming', "xom matn o'zgarmaydi (raqam saqlanadi)");
+      assertEqual(seen[0]?.url, 'http://127.0.0.1:5190/transcribe', 'endpoint');
+      assertEqual(seen[0]?.bytes, 3, 'audio baytlari');
+      assert(lines[0]?.includes('provider=local-doniyor') && lines[0].includes("punct=yo'q"), lines[0] ?? '');
+      globalThis.fetch = (async () => {
+        throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED 127.0.0.1:5190') });
+      }) as unknown as typeof fetch;
+      let caught: unknown;
+      try {
+        await createLocalStt({ log: null }).transcribeShort({ audio: Buffer.from([1]), mime: 'audio/wav', lang: 'uz' });
+      } catch (err) {
+        caught = err;
+      }
+      assert(caught instanceof LocalSttUnavailableError, 'LocalSttUnavailableError');
+      const msg = (caught as Error).message;
+      assert(msg.includes('npm run stt:start') && msg.includes('ECONNREFUSED'), msg);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  await checkAsync(report, "stt/: git'ga faqat serve.py kiradi; server lokal STT'ni tanlaydi", async () => {
+    const gi = await readFile(join(harnessRoot, '..', '.gitignore'), 'utf8');
+    assert(/^stt\/\*$/m.test(gi) && /^!stt\/serve\.py$/m.test(gi), '.gitignore: stt/* va !stt/serve.py');
+    const ignored = spawnSync('git', ['check-ignore', '-q', '--no-index', 'stt/doniyor-model/weights/gigaam_s1.pt'], { cwd: join(harnessRoot, '..') });
+    assertEqual(ignored.status, 0, 'vaznlar ignore');
+    const served = spawnSync('git', ['check-ignore', '-q', '--no-index', 'stt/serve.py'], { cwd: join(harnessRoot, '..') });
+    assertEqual(served.status, 1, 'serve.py ignore EMAS');
+    const server = await readFile(join(harnessRoot, 'src', 'server.ts'), 'utf8');
+    assert(server.includes('resolveStt()') && server.includes('checkLocalStt('), 'server.ts');
+    const serve = await readFile(join(harnessRoot, '..', 'stt', 'serve.py'), 'utf8').catch(() => '');
+    if (serve) {
+      assert(serve.includes('HOST = "127.0.0.1"') && !serve.includes('0.0.0.0"'), 'serve.py faqat 127.0.0.1');
+      assert(serve.includes('weights_only=True'), 'weights_only=True');
+    }
+    assertDeepEqual(
+      forbiddenHandoffEntries(['stt/serve.py', 'stt/doniyor-model/weights/gigaam_s1.pt', 'stt/.venv/bin/python']),
+      ['stt/doniyor-model/weights/gigaam_s1.pt', 'stt/.venv/bin/python'],
+      'handoff: stt/ dan faqat serve.py',
+    );
+    assert(REQUIRED_MODEL_FILES.includes('weights/gigaam_s1.pt') && !REQUIRED_MODEL_FILES.some((f) => /v1|v5/.test(f)), "v1/v5 kerak emas");
   });
 
   console.log(

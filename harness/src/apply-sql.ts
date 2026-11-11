@@ -27,6 +27,7 @@ const projectRoot = resolve(harnessRoot, '..');
 const files = [
   resolve(harnessRoot, 'db/bootstrap.sql'),
   resolve(projectRoot, 'module/integration/training.sql'),
+  resolve(projectRoot, 'module/integration/training-scenarios.sql'),
   resolve(projectRoot, 'module/integration/rls-training.sql'),
   resolve(harnessRoot, 'db/grants.sql'),
 ];

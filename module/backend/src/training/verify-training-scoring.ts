@@ -1992,7 +1992,7 @@ function verifyNoPriceMode(): void {
   });
 
   check(report, "mijoz prompti: narxni so'raydi, lekin o'zi aytmaydi/tasdiqlamaydi", () => {
-    assertEqual(PROMPT_VERSION, 'training-v5', 'versiya');
+    assertEqual(PROMPT_VERSION, 'training-v7', 'versiya');
     const system = TURN_STATIC_PREFIX;
     assert(system.includes('Ask about price and terms the way a real customer does'), "so'rash qoidasi");
     assert(system.includes('Never state, guess or "confirm" a price'), 'aytmaslik qoidasi');

@@ -11,8 +11,11 @@
  */
 import type { TokenUsage } from '../../module/backend/src/training/ports.js';
 import { envBool } from './env.js';
+import { priceCall } from './pricing.js';
 
 export interface LlmCallLog {
+  /** gemini | openai-compatible | anthropic — qaysi provayder ishlatildi. */
+  provider?: string;
   stage: string;
   model: string;
   latencyMs: number;
@@ -28,13 +31,17 @@ export interface LlmCallLog {
 export type LlmLogSink = (line: string) => void;
 
 export function formatLlmCallLog(entry: LlmCallLog): string {
+  const cost = entry.usage ? priceCall({ ...entry.usage, model: entry.usage.model ?? entry.model }) : 0;
   const parts = [
+    ...(entry.provider ? [`provider=${entry.provider}`] : []),
     `stage=${entry.stage}`,
     `model=${entry.model}`,
     `latency=${entry.latencyMs}ms`,
     entry.usage ? `tokens=${entry.usage.inputTokens}/${entry.usage.outputTokens}` : 'tokens=-',
     ...(entry.usage?.reasoningTokens ? [`reasoning=${entry.usage.reasoningTokens}`] : []),
     ...(entry.usage?.cachedInputTokens ? [`cached=${entry.usage.cachedInputTokens}`] : []),
+    // Taxminiy narx (pricing.ts); narxi noma'lum model uchun ko'rsatilmaydi.
+    ...(cost > 0 ? [`cost=$${cost.toFixed(6)}`] : []),
     `outcome=${entry.outcome}`,
   ];
   if (entry.attempt && entry.attempt > 1) parts.push(`attempt=${entry.attempt}`);

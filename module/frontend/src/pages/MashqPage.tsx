@@ -6,6 +6,8 @@ import { errorText } from '../lib/api-error.js';
 import { usePresentation } from '../lib/presentation.js';
 import type {
   ArchetypeInfo,
+  ScenarioInfo,
+  SellerProfile,
   SessionListItem,
   StatsResponse,
   TrainingApi,
@@ -22,6 +24,37 @@ export interface MashqPageProps {
   onOpenHistory: () => void;
 }
 
+const SELLER_KEY = 'mq-seller-profile';
+
+/** Saqlangan profil (faqat qulaylik uchun; brauzer xotirasi bo'lmasa ham ishlaydi). */
+function loadSeller(): Partial<SellerProfile> {
+  try {
+    const raw = window.localStorage.getItem(SELLER_KEY);
+    return raw ? (JSON.parse(raw) as Partial<SellerProfile>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSeller(p: SellerProfile): void {
+  try {
+    window.localStorage.setItem(SELLER_KEY, JSON.stringify(p));
+  } catch {
+    // brauzer xotirasi yopiq — muhim emas
+  }
+}
+
+function validSeller(p: Partial<SellerProfile>): p is SellerProfile {
+  return (
+    typeof p.name === 'string' &&
+    p.name.trim().length >= 2 &&
+    (p.gender === 'male' || p.gender === 'female') &&
+    typeof p.age === 'number' &&
+    p.age >= 16 &&
+    p.age <= 80
+  );
+}
+
 export function MashqPage({
   api,
   callDirection = 'mixed',
@@ -34,6 +67,11 @@ export function MashqPage({
   const [sessions, setSessions] = useState<SessionListItem[] | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
+  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
+  // Jins oldindan TANLANMAYDI — sotuvchi o'zi belgilaydi.
+  const [seller, setSeller] = useState<Partial<SellerProfile>>(() => loadSeller());
+  const [ack, setAck] = useState(false);
   const [direction, setDirection] = useState<'auto' | 'inbound' | 'outbound'>('auto');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,13 +80,15 @@ export function MashqPage({
     let cancelled = false;
     void (async () => {
       try {
-        const [list, recent, myStats] = await Promise.all([
+        const [list, recent, myStats, scenarioList] = await Promise.all([
           api.listArchetypes(),
           api.listSessions(),
           api.myStats(),
+          api.listScenarios(),
         ]);
         if (cancelled) return;
         setArchetypes(list);
+        setScenarios(scenarioList);
         setSessions(recent);
         setStats(myStats);
         setSelected((current) => current ?? list[0]?.key ?? null);
@@ -61,16 +101,27 @@ export function MashqPage({
     };
   }, [api]);
 
+  const scenario = scenarios.find((s) => s.id === selectedScenario) ?? null;
+  const needsAck = Boolean(scenario?.content.harsh);
+  const canStart = scenario ? validSeller(seller) && (!needsAck || ack) : Boolean(selected);
+
   async function start(): Promise<void> {
-    if (!selected) return;
+    if (scenario && !validSeller(seller)) {
+      setError(mashq.sellerRequired);
+      return;
+    }
+    if (!scenario && !selected) return;
     setStarting(true);
     setError(null);
     try {
-      const started = await api.startSession({
-        archetypeKey: selected,
-        ...(direction === 'auto' ? {} : { direction }),
-      });
-      onStarted(started.sessionId, selected);
+      const started = scenario
+        ? await api.startSession({ scenarioId: scenario.id, seller: seller as SellerProfile })
+        : await api.startSession({
+            archetypeKey: selected as string,
+            ...(direction === 'auto' ? {} : { direction }),
+          });
+      if (scenario) saveSeller(seller as SellerProfile);
+      onStarted(started.sessionId, scenario ? undefined : (selected as string));
     } catch (err) {
       setError(errorText(err, presentation));
     } finally {
@@ -98,8 +149,11 @@ export function MashqPage({
               type="button"
               key={archetype.key}
               className="mq-card"
-              aria-pressed={selected === archetype.key}
-              onClick={() => setSelected(archetype.key)}
+              aria-pressed={!selectedScenario && selected === archetype.key}
+              onClick={() => {
+                setSelected(archetype.key);
+                setSelectedScenario(null);
+              }}
             >
               <span className="mq-card-title">{archetype.title}</span>
               <DifficultyDots level={archetype.difficulty} />
@@ -112,8 +166,90 @@ export function MashqPage({
         </div>
       )}
 
+      {scenarios.length > 0 ? (
+        <>
+          <h2 className="mq-h2" style={{ marginTop: 24 }}>{mashq.scenariosTitle}</h2>
+          <div className="mq-cards">
+            {scenarios.map((sc) => (
+              <button
+                type="button"
+                key={sc.id}
+                className="mq-card"
+                aria-pressed={selectedScenario === sc.id}
+                onClick={() => {
+                  setSelectedScenario(sc.id);
+                  setAck(false);
+                }}
+              >
+                <span className="mq-card-title">{sc.title}</span>
+                <DifficultyDots level={sc.difficulty} />
+                <span className="mq-card-desc">{sc.description}</span>
+                {sc.content.harsh ? <span className="mq-muted mq-small">⚠ {mashq.harshBadge}</span> : null}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {scenario ? (
+        <div className="mq-panel" style={{ marginTop: 16 }}>
+          <h2 className="mq-h2">{mashq.sellerTitle}</h2>
+          <p className="mq-small mq-muted">{mashq.sellerHint}</p>
+          <div className="mq-btn-row">
+            <label className="mq-small">
+              {mashq.sellerName}{' '}
+              <input
+                value={seller.name ?? ''}
+                maxLength={60}
+                onChange={(e) => setSeller({ ...seller, name: e.target.value })}
+              />
+            </label>
+            <fieldset className="mq-small" style={{ border: 0, padding: 0, margin: 0 }}>
+              <legend className="mq-small">{mashq.sellerGender}</legend>
+              <label>
+                <input
+                  type="radio"
+                  name="seller-gender"
+                  checked={seller.gender === 'female'}
+                  onChange={() => setSeller({ ...seller, gender: 'female' })}
+                />{' '}
+                {mashq.sellerFemale}
+              </label>{' '}
+              <label>
+                <input
+                  type="radio"
+                  name="seller-gender"
+                  checked={seller.gender === 'male'}
+                  onChange={() => setSeller({ ...seller, gender: 'male' })}
+                />{' '}
+                {mashq.sellerMale}
+              </label>
+            </fieldset>
+            <label className="mq-small">
+              {mashq.sellerAge}{' '}
+              <input
+                type="number"
+                min={16}
+                max={80}
+                style={{ width: 70 }}
+                value={seller.age ?? ''}
+                onChange={(e) => setSeller({ ...seller, age: e.target.value ? Number(e.target.value) : undefined })}
+              />
+            </label>
+          </div>
+          {scenario.content.harsh && scenario.content.warning ? (
+            <Notice kind="warn">
+              {scenario.content.warning}{' '}
+              <label className="mq-small">
+                <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> {mashq.contentAck}
+              </label>
+            </Notice>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="mq-btn-row" style={{ marginTop: 16 }}>
-        {callDirection === 'mixed' ? (
+        {callDirection === 'mixed' && !scenario ? (
           <label className="mq-small">
             {mashq.directionLabel}{' '}
             <select
@@ -132,7 +268,7 @@ export function MashqPage({
         <button
           type="button"
           className="mq-btn mq-btn-primary"
-          disabled={!selected || starting}
+          disabled={!canStart || starting}
           onClick={() => void start()}
         >
           {starting ? mashq.starting : mashq.startPractice}

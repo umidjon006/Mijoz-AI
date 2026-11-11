@@ -25,7 +25,7 @@
  * Kalit HECH QACHON chiqmaydi (faqat env NOMI); provayder xabarlari ham tozalanadi.
  */
 // ENG BIRINCHI: harness/.env ni yuklaydi (yo'l harness papkasiga nisbatan).
-import { envInt } from './env.js';
+import { envInt, missingKeyHint } from './env.js';
 
 import { z } from 'zod';
 
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   if (!config.hasKey) {
-    console.error(`\n${config.keyEnv} bo'sh yoki yo'q — harness/.env ni to'ldiring.`);
+    console.error(`\n${missingKeyHint(config.keyEnv, 'src/diag-llm.ts')}`);
     process.exit(1);
   }
 

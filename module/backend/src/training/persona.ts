@@ -52,6 +52,11 @@ export type PersonaObjection = z.infer<typeof personaObjectionSchema>;
 export const personaCardSchema = z.object({
   name: z.string().min(2).max(60),
   age: z.number().int().min(14).max(99),
+  /**
+   * Ovoz tanlash uchun (TTS: erkak/ayol ovozi). IXTIYORIY — eski sessiyalarda
+   * yo'q; yangi persona'da model to'ldiradi.
+   */
+  gender: z.enum(['male', 'female']).optional(),
   role: z.string().min(2).max(120),
   speakingStyle: z.string().min(3).max(300),
   language: personaLanguageSchema,
@@ -64,9 +69,16 @@ export const personaCardSchema = z.object({
   hiddenFacts: z.array(z.string().min(3).max(300)).min(1).max(3),
   hiddenNeed: z.string().min(3).max(300).nullable(),
   openingLine: z.string().min(2).max(300),
+  /** Faqat ssenariy: TTS ovoz profili va asosiy uslub (kod qo'yadi, model emas). */
+  voice: z
+    .object({ profile: z.string().min(1).max(40), baseStyle: z.string().max(300) })
+    .optional(),
 });
 
 export type PersonaCard = z.infer<typeof personaCardSchema>;
+
+/** Model yaratadigan qism (strukturali chiqish sxemasi): `voice` ni kod qo'yadi. */
+export const personaOutputSchema = personaCardSchema.omit({ voice: true });
 
 export interface PersonaConstraints {
   archetype: Archetype;
@@ -214,6 +226,10 @@ export interface GeneratePersonaInput {
   random?: () => number;
   /** Yozuv tekshiruvi tuzatilmasa — ogohlantirish shu yerga. */
   logger?: TrainingLogger;
+  /** Qo'shimcha MAJBURIY cheklovlar (masalan ssenariy) — user prompt oxiriga. */
+  extraConstraints?: readonly string[];
+  /** Model natijasidan KEYIN kod qo'yadigan qiymatlar (ism, yosh, jins, ovoz). */
+  overrides?: Partial<Pick<PersonaCard, 'name' | 'age' | 'gender' | 'voice'>>;
 }
 
 /** Persona matnlari — tahrirlanadigan ko'rinishda (til himoyasi uchun). */
@@ -289,6 +305,8 @@ export async function generatePersonaCard({
   language = 'uz',
   random = Math.random,
   logger,
+  extraConstraints,
+  overrides,
 }: GeneratePersonaInput): Promise<PersonaCard> {
   const resolvedDirection = resolveDirection(profile, random, direction);
   const constraints: PersonaConstraints = {
@@ -303,13 +321,17 @@ export async function generatePersonaCard({
   let lastError: unknown;
 
   const request = (correctionText?: string) => {
-    const promptInput = { ...constraints, correction: correctionText };
+    const promptInput = {
+      ...constraints,
+      correction: correctionText,
+      ...(extraConstraints ? { extraConstraints } : {}),
+    };
     return llm.completeJson({
       stage: 'training.persona',
       system: buildPersonaSystemPrompt(promptInput),
       user: buildPersonaUserPrompt(promptInput),
       schema,
-      outputSchema: personaCardSchema,
+      outputSchema: personaOutputSchema,
     });
   };
 
@@ -359,7 +381,8 @@ export async function generatePersonaCard({
       correction = `Your previous JSON was rejected: ${issuesToText(err)}. Fix exactly these problems and return the full JSON again.`;
       continue;
     }
-    return await checkScript(card);
+    const checked = await checkScript(card);
+    return overrides ? { ...checked, ...overrides } : checked;
   }
 
   throw new PersonaGenerationError(
