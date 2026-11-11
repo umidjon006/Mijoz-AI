@@ -57,6 +57,8 @@ export const trainingStateSchema = z.object({
       revealed: z.boolean().optional(),
       /** Haqiqiy e'tiroz yechilganmi (qiyin ssenariylarda rozilik sharti). */
       objectionAddressed: z.boolean().optional(),
+      /** Sotuvchi tanlagan daraja (Oson/O'rta/Qiyin). Berilmasa — medium. */
+      level: z.enum(['easy', 'medium', 'hard']).optional(),
     })
     .optional(),
 });

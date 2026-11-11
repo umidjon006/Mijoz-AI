@@ -21,15 +21,27 @@ import {
   isWhitelistedInsult,
 } from './scenario/content.js';
 import { HANGUP_CLOSING_LINE, HANGUP_WARNING_LINE_SEN, NEUTRAL_FALLBACK_LINES } from './scenario/content-rules.js';
-import { applyEmotionStep, applyPatience, decideFormality, emotionTone, insultAllowed } from './scenario/emotion.js';
+import {
+  applyEmotionStep,
+  applyPatience,
+  decideFormality,
+  emotionTone,
+  insultAllowed,
+  maxEmotionStep,
+  questionsNeeded,
+} from './scenario/emotion.js';
+import { DIFFICULTY_LEVELS } from './scenario/content-rules.js';
+import { computeDeterministicItems, computeScenarioReport } from './scoring/scenario-report.js';
+import type { ScoringTurn } from './scoring/metrics.js';
 import { SCENARIO_JSON_SCHEMA } from './scenario/json-schema.js';
-import { buildScenarioTurnSystemPrompt } from './scenario/prompt.js';
+import { buildScenarioTurnSystemPrompt, withoutHiddenReason } from './scenario/prompt.js';
 import { runScenarioTurn } from './scenario/scenario-turn.js';
 import {
   contentFlag,
   effectiveBehavior,
   resolveThresholds,
   scenarioArchetype,
+  sanitizeName,
   scenarioObjectSchema,
   scenarioSchema,
   scenarioWarnings,
@@ -412,28 +424,55 @@ await checkAsync(report, "may_hang_up=false -> jahl 100 bo'lsa ham go'shak yo'q"
   assertEqual(r.meta.hangup, null, "go'shak yo'q");
 });
 
-await checkAsync(report, "sabr: takror/ma'ruza kamaytiradi, xatosiz navbat tiklaydi", async () => {
-  assertEqual(applyPatience(50, ['repeated', 'lectured']), 23, '15+12');
-  assertEqual(applyPatience(10, ['ignored_question']), 0, '0 dan past emas');
-  assertEqual(applyPatience(50, []), 54, '+4');
+await checkAsync(report, "sabr: jarimalar (-8/-8/-5), aniq javob +5, hamdardlik +3; daraja koeffitsienti", async () => {
+  assertEqual(applyPatience(50, ['repeated', 'lectured']), 37, '8+5');
+  assertEqual(applyPatience(5, ['ignored_question']), 0, '0 dan past emas');
+  assertEqual(applyPatience(50, []), 50, "signalsiz o'zgarmaydi");
+  assertEqual(applyPatience(50, [], { answeredExactly: true, empathy: true }), 58, '+5+3');
+  assertEqual(applyPatience(50, ['ignored_question'], {}, 'easy'), 45, 'oson: 8 x 0.6');
+  assertEqual(applyPatience(50, ['ignored_question'], {}, 'hard'), 39, 'qiyin: 8 x 1.4');
   const s = makeScenario();
   const llm = new FakeTrainerLlm([turnJson({ sellerMistakes: ['repeated'] })]);
   const r = await base(s, stateFor(s, 60, 'siz', { patience: 30 }), llm, male);
-  assertEqual(r.state.patience, 15, 'holatda');
+  assertEqual(r.state.patience, 22, 'holatda');
   assertDeepEqual(r.meta.mistakes, ['repeated'], 'xatolar');
 });
 
-await checkAsync(report, "yashirin sabab: qiyinlik 4 -> 3 ta dolzarb savol + ishonch >= 50; erta aytilsa hisoblanmaydi", async () => {
-  const s = makeScenario(); // qiyinlik 4
-  const early = await base(s, stateFor(s, 40, 'siz', { trust: 60, goodQuestions: 0 }), new FakeTrainerLlm([turnJson({ needRevealed: true, askedRelevantQuestion: true })]), male);
+check(report, "daraja jadvali: qadam, savollar soni, e'tiroz qat'iyligi", () => {
+  assertEqual(maxEmotionStep('fast', 'medium'), 20, 'fast medium');
+  assertEqual(maxEmotionStep('fast', 'easy'), 15, 'fast easy');
+  assertEqual(maxEmotionStep('fast', 'hard'), 26, 'fast hard');
+  assertEqual(questionsNeeded(1, 'easy'), 1, 'kamida 1');
+  assertEqual(questionsNeeded(3, 'hard'), 4, 'qiyin +1');
+  assertEqual(DIFFICULTY_LEVELS.easy.objectionRequiredFromDifficulty, 4, 'oson');
+  assertEqual(DIFFICULTY_LEVELS.hard.objectionRequiredFromDifficulty, 1, 'qiyin — har doim');
+});
+
+check(report, "ismlar: 'Rustam aka' -> 'Rustam' (ogohlantirish bilan); faqat murojaat so'zi — olib tashlanadi", () => {
+  const raw = { ...makeScenario(), persona: { ...makeScenario().persona, name_pool: ['Rustam aka', 'Buvi', 'Saodat opa', 'Hoji Ismoil'] } };
+  const v = validateScenario(raw);
+  assert(v.ok, 'yaroqli');
+  if (v.ok) {
+    assertDeepEqual(v.scenario.persona.name_pool, ['Rustam', 'Saodat', 'Ismoil'], 'tozalandi');
+    assert(v.warnings.some((w) => w.includes('"Rustam aka" -> "Rustam"')), v.warnings.join('|'));
+    assert(v.warnings.some((w) => w.includes('"Buvi" ism emas')), 'faqat murojaat');
+  }
+  assertEqual(sanitizeName("Ulug'bek"), "Ulug'bek", "'bek' — ism qismi, o'chirilmaydi");
+});
+
+await checkAsync(report, "yashirin sabab: matni shart bajarilmaguncha promptda YO'Q; bajarilgan navbatda kiritiladi", async () => {
+  const s = makeScenario(); // qiyinlik 4 -> 3 ta savol (medium)
+  const earlyLlm = new FakeTrainerLlm([turnJson({ needRevealed: true, askedRelevantQuestion: true })]);
+  const early = await base(s, stateFor(s, 40, 'siz', { trust: 60, goodQuestions: 2 }), earlyLlm, male);
+  assert(!(earlyLlm.calls[0]?.system.includes(s.hidden_reason) ?? true), "sabab matni promptda yo'q");
+  assert(earlyLlm.calls[0]?.system.includes('private concern you are NOT ready to share') ?? false, 'faqat umumiy ishora');
   assert(early.meta.revealTooEarly && !early.meta.revealedNow, 'erta');
-  assertEqual(early.state.emotion?.goodQuestions, 1, 'savol sanaldi');
-  const llm = new FakeTrainerLlm([turnJson({ needRevealed: true, askedRelevantQuestion: true, emotion: { anger: 30, trust: 60, interest: 50, reason: 'x' } })]);
-  const ok = await base(s, stateFor(s, 40, 'siz', { trust: 60, goodQuestions: 2 }), llm, male);
+  assertEqual(early.state.emotion?.goodQuestions, 3, 'savol sanaldi');
+  const llm = new FakeTrainerLlm([turnJson({ needRevealed: true, emotion: { anger: 30, trust: 60, interest: 50, reason: 'x' } })]);
+  const ok = await base(s, stateFor(s, 40, 'siz', { trust: 60, goodQuestions: 3 }), llm, male);
+  assert(llm.calls[0]?.system.includes(s.hidden_reason) ?? false, 'endi promptda');
   assert(ok.meta.revealedNow && ok.state.emotion?.revealed === true, 'ochildi');
-  assert(llm.calls[0]?.system.includes('You MAY admit your hidden reason') ?? false, 'promptda ruxsat');
-  const hidden = await base(s, stateFor(s, 40, 'siz', { trust: 60, goodQuestions: 0 }), new FakeTrainerLlm([turnJson()]), male);
-  void hidden;
+  assertDeepEqual(withoutHiddenReason(['Aslida hali ham qiziqadi.', 'Ishda band'], 'Aslida hali ham qiziqadi.'), ['Ishda band'], 'fakt filtri');
 });
 
 await checkAsync(report, "rozilik: qiyinlik >= 3 da haqiqiy e'tiroz yechilmagan bo'lsa -> 'continue'", async () => {
@@ -469,6 +508,63 @@ await checkAsync(report, "'siz' paytida 'sen' olmoshi -> qayta so'raladi", async
   const r = await base(s, stateFor(s, 50), llm, male);
   assert(r.meta.corrections.includes('formality'), r.meta.corrections.join(','));
   assertEqual(r.meta.formalityUsed, 'siz', 'aniqlangan forma');
+});
+
+// ---------------------------------------------------------------------------
+section('[5b] ssenariy hisobot kartasi');
+
+function reportTurns(): ScoringTurn[] {
+  const st = (anger: number, extra: Record<string, unknown> = {}, objection = false) => ({
+    emotion: { anger, objectionAddressed: objection },
+    meta: { scenario: { mistakes: [], ...extra } },
+  });
+  return [
+    { seq: 1, speaker: 'seller', text: 'Assalomu alaykum, kecha bezovta qilganimiz uchun uzr.' },
+    { seq: 2, speaker: 'customer', text: 'Uch marta qo\'ng\'iroq qildinglar-ku!', stateAfter: st(70, { formality: 'sen', style: 'sarcastic' }) },
+    { seq: 3, speaker: 'seller', text: 'Haqsiz, bu bizning xatomiz. Sizni nima ko\'proq bezovta qildi?' },
+    { seq: 4, speaker: 'customer', text: 'Tartib yo\'q, lekin aslida qiziqaman.', stateAfter: st(50, { revealedNow: true }) },
+    { seq: 5, speaker: 'seller', text: 'Endi arizangiz faqat menda, shanba soat 10 da qo\'ng\'iroq qilsam bo\'ladimi?' },
+    { seq: 6, speaker: 'customer', text: 'Mayli, shanba kuni qo\'ng\'iroq qiling.', stateAfter: st(30, {}, true) },
+  ];
+}
+
+check(report, 'karta (kod qismi): sabab qaysi navbatda, e\'tiroz, jahl traektoriyasi, keyingi qadam', () => {
+  const det = computeDeterministicItems({ scenario: makeScenario(), turns: reportTurns(), outcome: 'won', endReason: 'next_step_agreed' });
+  assertEqual(det.items.get('hidden_reason')?.status, 'pass', 'sabab');
+  assertEqual(det.items.get('hidden_reason')?.turnSeq, 3, '3-navbatdagi savol');
+  assertEqual(det.items.get('real_objection')?.status, 'pass', "e'tiroz");
+  assertEqual(det.items.get('de_escalation')?.status, 'pass', 'jahl 60 -> 70 -> 30');
+  assertEqual(det.items.get('next_step')?.status, 'pass', 'keyingi qadam');
+  assertDeepEqual(det.pressureTurns, [2], 'bosim navbati');
+});
+
+await checkAsync(report, "karta (LLM qismi): iqtibos navbat matnida bo'lmasa — tashlanadi; ball va maslahat", async () => {
+  const llm = new FakeTrainerLlm([
+    {
+      polite_under_pressure: { status: 'pass', detail: 'Kinoyaga xotirjam javob berdi.' },
+      address: { status: 'partial', detail: '"Aka" demadi, lekin "siz" bilan gapirdi.' },
+      moments: [
+        { turnSeq: 3, quote: 'Haqsiz, bu bizning xatomiz', note: 'Xatoni tan oldi.' },
+        { turnSeq: 5, quote: "Bu matnda yo'q iqtibos", note: 'soxta' },
+      ],
+      tip: 'Mijozga "aka" deb murojaat qiling: "Sherzod aka, sizni tushunaman".',
+      summary: 'Sotuvchi jahlni pasaytirdi va keyingi qadamga keldi.',
+    },
+  ]);
+  const r = await computeScenarioReport({
+    llm,
+    scenario: makeScenario(),
+    persona,
+    seller: male,
+    turns: reportTurns(),
+    outcome: 'won',
+    endReason: 'next_step_agreed',
+    level: 'medium',
+  });
+  assertEqual(r.report.moments.length, 1, 'soxta iqtibos tashlandi');
+  assertEqual(r.report.items.length, 7, '7 band');
+  assertEqual(r.report.score, 93, '6.5/7');
+  assert(r.report.tip.includes('aka'), 'maslahat');
 });
 
 // ---------------------------------------------------------------------------

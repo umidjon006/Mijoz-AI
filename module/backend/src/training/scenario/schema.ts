@@ -14,6 +14,7 @@ import {
   EMOTION_THRESHOLDS,
   MAX_INSULT_LEVEL,
   MAX_TRAITS,
+  NAME_HONORIFICS,
   TRAIT_CONFLICTS,
   TRAIT_KEYS,
   TRAITS,
@@ -140,15 +141,52 @@ export const scenarioObjectSchema = z
         profile: z.string().regex(/^(auto|[a-z]+_[a-z]+)$/),
         /** Asosiy gapirish uslubi (TTS uchun, inglizcha yoki o'zbekcha). */
         base_style: z.string().trim().min(3).max(300),
+        /** Mos ovoz yo'q (masalan bola) — UI matnli rejimni tavsiya qiladi. */
+        text_mode_recommended: z.boolean().optional(),
       })
       .strict(),
   })
   .strict();
 
+/** Ismdan murojaat/qarindoshlik so'zlarini olib tashlaydi: "Rustam aka" -> "Rustam". */
+export function sanitizeName(name: string): string {
+  const honor = new Set(NAME_HONORIFICS.map((h) => h.toLowerCase()));
+  return name
+    .split(/\s+/)
+    .filter((t) => t && !honor.has(t.toLowerCase().replace(/[ʻʼ’‘`´]/g, "'").replace(/[.,]$/, '')))
+    .join(' ')
+    .trim();
+}
+
+/** name_pool ni tozalaydi; o'zgarganlari uchun ogohlantirishlar (o'zbekcha). */
+export function sanitizeNamePool(pool: unknown): { pool: unknown; warnings: string[] } {
+  if (!Array.isArray(pool)) return { pool, warnings: [] };
+  const warnings: string[] = [];
+  const out: unknown[] = [];
+  for (const n of pool) {
+    if (typeof n !== 'string') {
+      out.push(n);
+      continue;
+    }
+    const clean = sanitizeName(n);
+    if (clean !== n.trim()) {
+      warnings.push(
+        clean
+          ? `Ismdan murojaat so'zi olib tashlandi: "${n.trim()}" -> "${clean}" (murojaatni tizim o'zi tanlaydi).`
+          : `"${n.trim()}" ism emas (faqat murojaat so'zi) — olib tashlandi.`,
+      );
+    }
+    if (clean && !out.includes(clean)) out.push(clean);
+  }
+  return { pool: out, warnings };
+}
+
 /** Part 1 shaklini yangi shaklga o'tkazadi (eski fayllar va sessiya nusxalari uchun). */
 export function normalizeScenarioInput(raw: unknown): unknown {
   if (raw === null || typeof raw !== 'object') return raw;
   const s = structuredClone(raw) as Record<string, unknown>;
+  const persona = s.persona as Record<string, unknown> | undefined;
+  if (persona && typeof persona === 'object') persona.name_pool = sanitizeNamePool(persona.name_pool).pool;
   const e = s.emotion as Record<string, unknown> | undefined;
   if (e && typeof e === 'object') {
     if (typeof e.volatility === 'string' && LEGACY_VOLATILITY[e.volatility]) e.volatility = LEGACY_VOLATILITY[e.volatility];
@@ -280,6 +318,8 @@ export interface ContentFlag {
   allowSen: boolean;
   /** O'zbekcha ogohlantirish matni (harsh bo'lsa). */
   warning: string | null;
+  /** Mos ovoz yo'q — matnli rejim tavsiya etiladi. */
+  textModeRecommended: boolean;
 }
 
 export function contentFlag(s: Scenario): ContentFlag {
@@ -295,6 +335,7 @@ export function contentFlag(s: Scenario): ContentFlag {
     insultLevel: b.insultLevel,
     sarcasm: b.sarcasm,
     allowSen: b.allowSen,
+    textModeRecommended: s.voice.text_mode_recommended === true,
     warning: harsh
       ? `Bu ssenariyda mijoz qo'pol bo'lishi mumkin: ${parts.join(', ')}. Mashqni istalgan payt "Tugatish" bilan to'xtatishingiz mumkin.`
       : null,
@@ -420,8 +461,14 @@ export type ScenarioValidation =
 
 /** Tekshiradi; xato bo'lsa — har bir muammo "manba: yo'l (nomi): sabab" ko'rinishida (o'zbekcha). */
 export function validateScenario(raw: unknown, source = 'scenario'): ScenarioValidation {
+  const nameWarnings =
+    raw && typeof raw === 'object' && (raw as { persona?: { name_pool?: unknown } }).persona
+      ? sanitizeNamePool((raw as { persona: { name_pool?: unknown } }).persona.name_pool).warnings
+      : [];
   const parsed = scenarioSchema.safeParse(raw);
-  if (parsed.success) return { ok: true, scenario: parsed.data, warnings: scenarioWarnings(parsed.data) };
+  if (parsed.success) {
+    return { ok: true, scenario: parsed.data, warnings: [...nameWarnings, ...scenarioWarnings(parsed.data)] };
+  }
   const issues: ScenarioIssue[] = parsed.error.issues.map((i) => ({
     path: i.path.join('.') || '(ildiz)',
     field: labelOf(i.path),

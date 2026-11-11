@@ -188,8 +188,8 @@ va qanday ovozda. Fayllar: `harness/scenarios/*.json` (server startda tekshiradi
   kam_gapiradigan, iliq; zid juftliklar rad etiladi yoki ogohlantiriladi), o'zgaruvchanlik
   (slow/medium/fast: navbatiga ko'pi bilan 8/12/20), `may_hang_up`. Jahl tufayli go'shakdan
   OLDIN mijoz bir marta ochiq ogohlantiradi. Yashirin sabab faqat yetarli dolzarb savoldan
-  (qiyinlik 1-2: 1, 3: 2, 4-5: 3) va ishonch >= 50 dan keyin; qiyinlik >= 3 da rozilik uchun
-  haqiqiy e'tiroz yechilgan bo'lishi shart. Hamma qoidalar — `scenario/content-rules.ts`.
+  (O'rta darajada qiyinlik 1-2: 1, 3: 2, 4-5: 3; daraja ±1) va ishonch >= 50 dan keyin; O'rta
+  darajada qiyinlik >= 3 da rozilik uchun haqiqiy e'tiroz yechilgan bo'lishi shart (Part 3 ga qarang). Hamma qoidalar — `scenario/content-rules.ts`.
 - Rollar: rahbar / sotuvchi (`HARNESS_MANAGER_USER_IDS`; ruxsat `training:scenario:manage`).
   Faqat rahbar ssenariy yaratadi, tahrirlaydi, nusxalaydi, arxivlaydi; sotuvchi faqat o'ynaydi.
 - "Ssenariy yaratish" sahifasi (navigatsiyada, faqat rahbarga): Mijoz / Vaziyat / Emotsiya /
@@ -198,6 +198,27 @@ va qanday ovozda. Fayllar: `harness/scenarios/*.json` (server startda tekshiradi
 - API: `GET /me`, `GET /scenarios/manage`, `GET|PUT /scenarios/:id`, `POST /scenarios`,
   `POST /scenarios/validate|ai-draft|try`, `POST /scenarios/:id/duplicate|archive`.
 - Sinov: `cd harness && npm run e2e:builder` (server o'zi ishga tushadi).
+
+**Part 3 — darajalar, tayyor ssenariylar, ssenariy kartasi.**
+- Sabr: e'tiborsiz savol -8, takror -8, ma'ruza -5; aniq javob +5, hamdardlik +3
+  (`PATIENCE_RULES`). Yashirin sabab matni shart bajarilmaguncha promptga UMUMAN kirmaydi
+  (faqat "shaxsiy xavotiri bor"); shart bajarilgan navbatda qo'shiladi. Ism ro'yxatidagi
+  murojaat so'zlari ("Rustam aka" -> "Rustam") tekshiruvda olib tashlanadi, ogohlantirish bilan.
+- Daraja (sessiya boshida: Oson / O'rta / Qiyin) — jadval `DIFFICULTY_LEVELS`
+  (`scenario/content-rules.ts`): emotsiya qadami ×0.75/×1/×1.3, sabr jarimasi ×0.6/×1/×1.4,
+  tiklanish ×1.4/×1/×0.7, sabab uchun savollar -1/0/+1, haqiqiy e'tiroz majburiy bo'ladigan
+  qiyinlik >=4 / >=3 / >=1. API: `POST /sessions { scenarioId, level }`.
+- Tayyor kutubxona: `harness/scenarios/*.json` — 12 ta (3 asosiy + 9 yangi);
+  `npm run scenarios:check`. Ssenariyda `voice.text_mode_recommended: true` bo'lsa, Mashq
+  sahifasi matn rejimini tavsiya qiladi (mos ovoz bo'lmagan holatlar uchun).
+- Ssenariy kartasi (baholashga qo'shimcha, `scoring/scenario-report.ts`): yashirin sabab
+  (qaysi navbatda), haqiqiy e'tiroz, jahlni pasaytirish, bosim ostida xushmuomalalik, to'g'ridan
+  javob, aniq keyingi qadam, to'g'ri murojaat + 2-3 iqtibosli lahza va BITTA maslahat.
+  `coaching.scenarioReport` da saqlanadi; Natija sahifasida karta, Tarixda "karta N".
+- Kalibrovka: `cd harness && npm run e2e:calibrate` — sotuvchini ham Gemini o'ynaydi
+  (YAXSHI/O'RTA/YOMON), har ssenariy O'rta darajada, 12 navbatgacha, faqat matn;
+  `--only <id>`, `--styles good,bad`, `--budget 3` (taxminiy jami oshsa to'xtaydi).
+  Natija: `tts_test_output/e2e_calibrate/` (git'ga kirmaydi).
 
 ### DB: dockersiz lokal klaster
 

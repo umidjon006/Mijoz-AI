@@ -187,7 +187,7 @@ export function TarixPage({ api, canViewAll = false, onOpenResult }: TarixPagePr
               {sessions.map((session) => (
                 <tr key={session.id}>
                   <td className="mq-small">{formatDate(session.startedAt)}</td>
-                  <td className="mq-small">{session.archetypeKey}</td>
+                  <td className="mq-small">{session.scenarioTitle ?? session.archetypeKey}</td>
                   <td className="mq-mono">{session.turnCount}</td>
                   <td>
                     <OutcomeBadge outcome={session.status === 'active' ? null : session.outcome} />
@@ -195,6 +195,9 @@ export function TarixPage({ api, canViewAll = false, onOpenResult }: TarixPagePr
                   <td className="mq-mono">
                     {session.skillScore === null ? '—' : Math.round(session.skillScore)}
                     {session.resultQuality === 'low' ? ' ⚠' : ''}
+                    {session.scenarioScore !== null && session.scenarioScore !== undefined ? (
+                      <span className="mq-small mq-muted" title="Ssenariy kartasi"> · karta {session.scenarioScore}</span>
+                    ) : null}
                   </td>
                   <td>
                     <button

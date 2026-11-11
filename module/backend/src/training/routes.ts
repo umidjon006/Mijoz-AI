@@ -165,6 +165,8 @@ const startSessionBody = z
     scenarioId: z.string().regex(/^[a-z][a-z0-9_]{2,60}$/).optional(),
     /** Sotuvchi profili: ism, jins, yosh — formadan; ovozdan/ismdan taxmin qilinmaydi. */
     seller: sellerProfileSchema.optional(),
+    /** Ssenariy darajasi: easy (Oson) | medium (O'rta) | hard (Qiyin). */
+    level: z.enum(['easy', 'medium', 'hard']).optional(),
     direction: z.enum(['inbound', 'outbound']).optional(),
     language: z.enum(['uz', 'ru', 'mixed']).optional(),
   })
@@ -494,6 +496,7 @@ export async function registerTrainingRoutes(
         ...(body.archetypeKey ? { archetypeKey: body.archetypeKey } : {}),
         ...(body.scenarioId ? { scenarioId: body.scenarioId } : {}),
         ...(body.seller ? { seller: body.seller } : {}),
+        ...(body.level ? { level: body.level } : {}),
         ...(body.direction ? { direction: body.direction } : {}),
         ...(body.language ? { language: body.language } : {}),
       });
@@ -523,6 +526,7 @@ export async function registerTrainingRoutes(
         sessions: rows.map((row) => ({
           ...row,
           skillScore: row.skillScore === null ? null : Number(row.skillScore),
+          scenarioScore: row.scenarioScore === null ? null : Number(row.scenarioScore),
         })),
       };
     }),

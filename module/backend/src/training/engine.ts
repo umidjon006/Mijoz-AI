@@ -67,6 +67,7 @@ import {
 import { clampTone, type VoiceTone } from './voice/tone.js';
 import { scenarioPersonaConstraints } from './scenario/prompt.js';
 import { draftScenarioWithLlm, type DraftResult } from './scenario/draft.js';
+import type { DifficultyLevel } from './scenario/content-rules.js';
 import * as scenarioRepo from './scenario/repo.js';
 import { runScenarioTurn, type ScenarioTurnMeta, type ScenarioTurnOutcome } from './scenario/scenario-turn.js';
 import {
@@ -88,6 +89,8 @@ export interface StartSessionInput {
   scenarioId?: string;
   /** Sotuvchi profili — ssenariy rejimida MAJBURIY (taxmin qilinmaydi). */
   seller?: SellerProfile;
+  /** Ssenariy rejimi: sotuvchi tanlagan daraja (Oson/O'rta/Qiyin). Default — medium. */
+  level?: DifficultyLevel;
   direction?: PersonaDirection;
   language?: PersonaLanguage;
 }
@@ -159,6 +162,7 @@ export interface TryScenarioTurnInput {
   state?: unknown;
   transcript: TranscriptTurn[];
   sellerText: string;
+  level?: DifficultyLevel;
 }
 
 export interface TryScenarioTurnResult {
@@ -208,14 +212,26 @@ function parseTurnJson(raw: unknown): TurnResult {
 const turnResultParser = { parse: parseTurnJson };
 
 /** Ssenariy sessiyasining boshlang'ich holati (emotsiya, sabr, hisoblagichlar). */
-export function scenarioInitialState(base: TrainingState, scenario: Scenario): TrainingState {
+export function scenarioInitialState(
+  base: TrainingState,
+  scenario: Scenario,
+  level: DifficultyLevel = 'medium',
+): TrainingState {
   const b = scenario.emotion.baseline;
   return {
     ...base,
     trust: b.trust,
     interest: b.interest,
     patience: b.patience,
-    emotion: { anger: b.anger, formality: 'siz', warned: false, goodQuestions: 0, revealed: false, objectionAddressed: false },
+    emotion: {
+      anger: b.anger,
+      formality: 'siz',
+      warned: false,
+      goodQuestions: 0,
+      revealed: false,
+      objectionAddressed: false,
+      level,
+    },
   };
 }
 
@@ -301,7 +317,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
         : await generateScenarioPersona(scenario, profile);
       const state: TrainingState = input.state
         ? trainingStateSchema.parse(input.state)
-        : scenarioInitialState(initState(archetype, persona), scenario);
+        : scenarioInitialState(initState(archetype, persona), scenario, input.level ?? 'medium');
       const openingLine =
         !input.persona && scenario.call_direction === 'inbound' ? persona.openingLine : null;
       const transcript = [...input.transcript];
@@ -390,7 +406,7 @@ export function createTrainingEngine(deps: TrainingDeps): TrainingEngine {
           });
 
       const base = initState(archetype, persona);
-      const state: TrainingState = scenario ? scenarioInitialState(base, scenario) : base;
+      const state: TrainingState = scenario ? scenarioInitialState(base, scenario, input.level ?? 'medium') : base;
       const startedAt = now();
 
       const sessionId = await withTenant(ctx.businessId, async (tx) => {

@@ -191,13 +191,81 @@ export const HANGUP_WARNING_CUES: readonly string[] = [
 // 3b. Sabr (patience)
 // ---------------------------------------------------------------------------
 export const PATIENCE_RULES = {
-  /** Sotuvchi shu xatolardan har biri uchun sabr shuncha kamayadi. */
-  drop: { repeated: 15, lectured: 12, ignored_question: 15, pressured: 10, interrupted: 10 },
-  /** Xatosiz navbatda sabr shuncha tiklanadi. */
-  recover: 4,
+  /** Sotuvchi shu xatolardan har biri uchun sabr shuncha kamayadi (daraja koeffitsienti bilan). */
+  drop: { repeated: 8, lectured: 5, ignored_question: 8, pressured: 6, interrupted: 5 },
+  /** Tiklanish: so'ralgan narsaga ANIQ javob +5, samimiy hamdardlik +3 (birga +8). */
+  recover: { answered_exactly: 5, empathy: 3 },
   /** Shundan past — "sabri tugagan": juda qisqa, toqatsiz javoblar. */
   lowAt: 20,
 } as const;
+
+// ---------------------------------------------------------------------------
+// 3a. Sotuvchi tanlaydigan daraja (ssenariyning o'z qiyinligi USTIGA)
+// ---------------------------------------------------------------------------
+export const DIFFICULTY_LEVELS = {
+  easy: {
+    label: 'Oson',
+    /** Emotsiya qadami chegarasi koeffitsienti (VOLATILITY_MAX_STEP x). */
+    volatilityScale: 0.75,
+    /** Sabr jarimalari koeffitsienti. */
+    patienceDropScale: 0.6,
+    /** Sabr tiklanishi koeffitsienti. */
+    patienceRecoverScale: 1.4,
+    /** Yashirin sababni ochish uchun kerakli dolzarb savollar soniga qo'shimcha (min 1). */
+    revealQuestionsDelta: -1,
+    /** Shu ssenariy qiyinligidan boshlab rozilikdan oldin haqiqiy e'tiroz yechilishi SHART. */
+    objectionRequiredFromDifficulty: 4,
+  },
+  medium: {
+    label: "O'rta",
+    volatilityScale: 1,
+    patienceDropScale: 1,
+    patienceRecoverScale: 1,
+    revealQuestionsDelta: 0,
+    objectionRequiredFromDifficulty: 3,
+  },
+  hard: {
+    label: 'Qiyin',
+    volatilityScale: 1.3,
+    patienceDropScale: 1.4,
+    patienceRecoverScale: 0.7,
+    revealQuestionsDelta: 1,
+    objectionRequiredFromDifficulty: 1,
+  },
+} as const;
+
+export type DifficultyLevel = keyof typeof DIFFICULTY_LEVELS;
+export const DIFFICULTY_LEVEL_KEYS = Object.keys(DIFFICULTY_LEVELS) as DifficultyLevel[];
+
+// ---------------------------------------------------------------------------
+// 3a'. Ismlardan olib tashlanadigan murojaat/qarindoshlik so'zlari ("Rustam aka" -> "Rustam").
+// Murojaat so'zini address qoidalari tanlaydi, ismga "yopishtirilmaydi".
+// ---------------------------------------------------------------------------
+export const NAME_HONORIFICS: readonly string[] = [
+  'aka',
+  'akajon',
+  'opa',
+  'opajon',
+  'xonim',
+  'buvi',
+  'buvijon',
+  'bobo',
+  'bobojon',
+  'uka',
+  'ukajon',
+  'singlim',
+  'singil',
+  'ota',
+  'ona',
+  'hoji',
+  'domla',
+  'janob',
+  'xola',
+  'amaki',
+  "tog'a",
+  'ustoz',
+  'momo',
+];
 
 // ---------------------------------------------------------------------------
 // 3c. Yashirin sabab va rozilik ("oson taslim bo'lmaslik")
@@ -207,8 +275,6 @@ export const REVEAL_RULES = {
   questionsByDifficulty: { 1: 1, 2: 1, 3: 2, 4: 3, 5: 3 } as Record<number, number>,
   /** Va ishonch kamida shuncha bo'lishi kerak. */
   minTrust: 50,
-  /** Shu qiyinlikdan boshlab rozilikdan oldin haqiqiy e'tiroz yechilgan bo'lishi shart. */
-  objectionRequiredFromDifficulty: 3,
 } as const;
 
 // ---------------------------------------------------------------------------

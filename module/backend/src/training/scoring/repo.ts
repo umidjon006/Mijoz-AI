@@ -203,6 +203,10 @@ export interface SessionListRow {
   skillScore: string | null;
   resultStatus: string | null;
   resultQuality: string | null;
+  /** Ssenariy sessiyasi: nomi va hisobot kartasi bali (0..100). */
+  scenarioId: string | null;
+  scenarioTitle: string | null;
+  scenarioScore: string | null;
 }
 
 /** Foydalanuvchining sessiyalari + har biriga oxirgi tugallangan natija balli. */
@@ -243,6 +247,16 @@ export async function listSessionsWithScore(
       skillScore: latestField('skill_score'),
       resultStatus: latestField('status'),
       resultQuality: latestField('quality'),
+      scenarioId: trainingSession.scenarioId,
+      scenarioTitle: sql<string | null>`(${sql.raw('"training_session"."scenario"')} ->> 'title_uz')`,
+      scenarioScore: sql<string | null>`(
+        select r.coaching -> 'scenarioReport' ->> 'score'
+          from training_result r
+         where r.session_id = ${sessionIdRef}
+           and r.status = 'done'
+         order by r.version desc
+         limit 1
+      )`,
     })
     .from(trainingSession)
     .where(eq(trainingSession.userId, userId))

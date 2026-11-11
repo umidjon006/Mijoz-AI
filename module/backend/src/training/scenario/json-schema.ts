@@ -127,6 +127,7 @@ export const SCENARIO_JSON_SCHEMA = {
       properties: {
         profile: { type: 'string', pattern: '^(auto|[a-z]+_[a-z]+)$' },
         base_style: str(3, 300),
+        text_mode_recommended: { type: 'boolean' },
       },
     },
   },

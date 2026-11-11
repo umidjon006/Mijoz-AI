@@ -2,6 +2,7 @@
  * Baholash natijasining shakllari (DB jsonb ustunlari uchun yagona manba).
  * LLM javobining sxemasi `scoring.ts` da; bu yerda SAQLANADIGAN natija.
  */
+import type { ScenarioReport } from './scenario-report.js';
 import { z } from 'zod';
 
 import { type EvidenceRejectReason } from './evidence.js';
@@ -92,6 +93,8 @@ export interface CoachingResult {
   priceCheck?: 'checked' | 'skipped_no_data';
   /** Sotuvchi aytgan, profilda yo'q narxlar (mexanik tekshiruv; faqat `priceCheck: 'checked'`). */
   priceMismatches?: Array<{ turnSeq: number; figure: number }>;
+  /** Faqat ssenariy sessiyasida: hisobot kartasi (yashirin sabab, e'tiroz, jahl, murojaat ...). */
+  scenarioReport?: ScenarioReport;
 }
 
 export interface KeyMomentResult {

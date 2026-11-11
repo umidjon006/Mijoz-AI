@@ -42,6 +42,10 @@ export const scenarioTurnOutputSchema = z.object({
   askedRelevantQuestion: z.boolean(),
   /** Sotuvchi haqiqiy e'tirozingizga aniq javob berdimi. */
   realObjectionAddressed: z.boolean(),
+  /** Sotuvchi aynan so'ralgan narsaga aniq javob berdi (sabr +5). */
+  answeredExactly: z.boolean(),
+  /** Sotuvchi samimiy hamdardlik bildirdi (sabr +3). */
+  showedEmpathy: z.boolean(),
   objectionRaisedKey: z.string().min(1).nullable(),
   objectionsResolvedKeys: z.array(z.string().min(1)),
   needRevealed: z.boolean(),
@@ -73,6 +77,8 @@ export function coerceScenarioTurn(raw: unknown): unknown {
     : [];
   if (typeof o.askedRelevantQuestion !== 'boolean') o.askedRelevantQuestion = false;
   if (typeof o.realObjectionAddressed !== 'boolean') o.realObjectionAddressed = false;
+  if (typeof o.answeredExactly !== 'boolean') o.answeredExactly = false;
+  if (typeof o.showedEmpathy !== 'boolean') o.showedEmpathy = false;
   if (o.objectionRaisedKey === undefined || o.objectionRaisedKey === '') o.objectionRaisedKey = null;
   if (o.nextStep === undefined || o.nextStep === '') o.nextStep = null;
   if (!Array.isArray(o.objectionsResolvedKeys)) o.objectionsResolvedKeys = [];
@@ -117,12 +123,14 @@ export const SCENARIO_STATIC_PREFIX = [
   ' "emotion": {"anger": int, "trust": int, "interest": int, "reason": string},',
   ' "style": "plain"|"sarcastic"|"insult", "insult": string|null, "hangupConditionMet": boolean,',
   ` "sellerMistakes": (${SELLER_MISTAKES.map((m) => `"${m}"`).join('|')})[], "askedRelevantQuestion": boolean, "realObjectionAddressed": boolean,`,
+  ' "answeredExactly": boolean, "showedEmpathy": boolean,',
   ' "objectionRaisedKey": string|null, "objectionsResolvedKeys": string[], "needRevealed": boolean, "nextStep": string|null}',
   '- style/insult: "insult" only with an allowed phrase (then copy it into "insult"), else null.',
   '- hangupConditionMet: true only if your hang-up condition just happened; then intent "ends_call" and a short final line.',
   '- intent "agrees"/"agrees_next_step" only when your success condition is met AND "Can you agree" says you may.',
   '- sellerMistakes: what the seller did wrong in THIS message ([] if nothing). askedRelevantQuestion: a genuine question about your situation or concern.',
   '- realObjectionAddressed: the seller answered your real objection concretely. needRevealed: true only if you just admitted your hidden reason.',
+  '- answeredExactly: the seller answered exactly what you asked. showedEmpathy: genuine empathy (not a stock phrase).',
   '- objection keys: only from "Your concerns".',
 ].join('\n');
 
@@ -141,6 +149,8 @@ export interface ScenarioPromptInput {
   insultNow: boolean;
   /** Yashirin sababni aytishga ruxsat (kod hisoblagan: savollar soni + ishonch). */
   revealAllowed?: boolean;
+  /** Navbatlik emotsiya qadami chegarasi (volatillik x daraja). */
+  maxStep?: number;
   correction?: string;
 }
 
@@ -153,11 +163,35 @@ const ROLE_HINT: Record<Scenario['persona']['role'], string> = {
   businessman: 'a busy business owner',
 };
 
+/** Yashirin sababga o'xshash faktlarni olib tashlaydi (so'z ustma-ustligi >= 40%). */
+export function withoutHiddenReason(facts: readonly string[], hiddenReason: string): string[] {
+  const words = (t: string): string[] =>
+    t
+      .toLowerCase()
+      .replace(/[ʻʼ’‘`´]/g, "'")
+      .split(/[^\p{L}']+/u)
+      .filter((w) => w.length >= 4)
+      .map((w) => w.slice(0, 5));
+  const target = new Set(words(hiddenReason));
+  if (target.size === 0) return [...facts];
+  const kept = facts.filter((f) => {
+    const ws = new Set(words(f));
+    let hit = 0;
+    for (const w of target) if (ws.has(w)) hit += 1;
+    return hit / target.size < 0.4;
+  });
+  return kept.length > 0 ? kept : ['(nothing special)'];
+}
+
 export function buildScenarioTurnSystemPrompt(input: ScenarioPromptInput): string {
   const { scenario: s, persona, seller, behavior, thresholds, state, readiness } = input;
   const anger = state.emotion?.anger ?? s.emotion.baseline.anger;
-  const step = VOLATILITY_MAX_STEP[s.emotion.volatility];
+  const step = input.maxStep ?? VOLATILITY_MAX_STEP[s.emotion.volatility];
   const t = s.emotion.triggers;
+
+  // Ochilmagan yashirin sabab persona matnidan ham sizib chiqmasin.
+  const leaks = (text: string): boolean =>
+    !input.revealAllowed && withoutHiddenReason([text], s.hidden_reason)[0] !== text;
 
   // --- 2. Sessiya davomida o'zgarmaydi -------------------------------------
   const sections: string[] = [
@@ -169,21 +203,21 @@ export function buildScenarioTurnSystemPrompt(input: ScenarioPromptInput): strin
     '## Who you are',
     `${persona.name}, ${persona.age}, ${persona.gender === 'female' ? 'woman' : 'man'} — ${ROLE_HINT[s.persona.role]}. ${persona.role}.`,
     `How you speak: ${persona.speakingStyle}`,
-    `Your situation: ${persona.situation}`,
-    `What you want: ${persona.goal}`,
+    `Your situation: ${leaks(persona.situation) ? s.persona.backstory : persona.situation}`,
+    `What you want: ${leaks(persona.goal) ? 'to decide whether this is worth it for you' : persona.goal}`,
     `The thing being discussed (name only): ${offerTopic(persona.focusOffer)}`,
     `Call direction: ${persona.direction === 'inbound' ? 'you called them' : 'they called you'}`,
     '',
     `## Scenario: ${s.title_uz}`,
     s.persona.backstory,
-    `HIDDEN reason: ${s.hidden_reason}`,
     `Your real objection: ${s.real_objection}`,
     `Success condition (only then agree or accept a next step): ${s.success_condition}`,
     `Hang-up condition: ${s.hangup_condition}`,
     ...(s.behavior.randomization_notes.length ? [`Variety: ${s.behavior.randomization_notes.join('; ')}`] : []),
     '',
     '## Private facts (only if it comes up)',
-    formatList(persona.hiddenFacts),
+    // Yashirin sabab ochilmaguncha unga o'xshash faktlar ham promptga kirmaydi (sizib chiqmasin).
+    formatList(input.revealAllowed ? persona.hiddenFacts : withoutHiddenReason(persona.hiddenFacts, s.hidden_reason)),
     '',
     '## The seller',
     ...addressPromptLines(persona.age, seller),
@@ -225,11 +259,12 @@ export function buildScenarioTurnSystemPrompt(input: ScenarioPromptInput): strin
     '## How you feel right now (never say the numbers)',
     `anger=${anger}, trust=${state.trust}, interest=${state.interest}, patience=${state.patience}${em?.reason ? ` (last change: ${em.reason})` : ''}`,
     ...(state.patience < PATIENCE_RULES.lowAt ? ['Your patience is gone: answer in very short, impatient phrases.'] : []),
-    input.revealAllowed
+    // Yashirin sabab matni FAQAT ochilish sharti bajarilganda kiritiladi.
+    ...(input.revealAllowed
       ? em?.revealed
-        ? 'You have already told your hidden reason.'
-        : 'You MAY admit your hidden reason now if the seller asks about it.'
-      : 'Keep your hidden reason to yourself for now — if asked, deflect; the seller has not earned it yet.',
+        ? [`Your hidden reason (already told): ${s.hidden_reason}`]
+        : [`Your HIDDEN reason: ${s.hidden_reason}`, 'You MAY admit it now if the seller asks about your situation.']
+      : ['You have a private concern you are NOT ready to share yet. Do not hint at what it is; if asked, deflect.']),
     hangRule,
     input.formality === 'sen'
       ? 'You are angry: address the seller with "sen" (informal) this turn.'
@@ -264,7 +299,7 @@ export function scenarioPersonaConstraints(s: Scenario, picked: { name: string; 
     `- role: ${ROLE_HINT[s.persona.role]} — write "role" in Uzbek accordingly.`,
     `- situation must follow this backstory: ${s.persona.backstory}`,
     `- One objection must express this real objection: ${s.real_objection}`,
-    `- hiddenFacts must include: ${s.hidden_reason}`,
+    `- Do NOT write this hidden reason (or any hint of it) into ANY field — the system reveals it later: ${s.hidden_reason}`,
     `- speakingStyle must fit the age and role (${s.persona.role}).`,
     `- direction: "${s.call_direction}".`,
   ];

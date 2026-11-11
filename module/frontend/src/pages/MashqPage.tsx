@@ -72,6 +72,7 @@ export function MashqPage({
   // Jins oldindan TANLANMAYDI — sotuvchi o'zi belgilaydi.
   const [seller, setSeller] = useState<Partial<SellerProfile>>(() => loadSeller());
   const [ack, setAck] = useState(false);
+  const [level, setLevel] = useState<'easy' | 'medium' | 'hard'>('medium');
   const [direction, setDirection] = useState<'auto' | 'inbound' | 'outbound'>('auto');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +116,7 @@ export function MashqPage({
     setError(null);
     try {
       const started = scenario
-        ? await api.startSession({ scenarioId: scenario.id, seller: seller as SellerProfile })
+        ? await api.startSession({ scenarioId: scenario.id, seller: seller as SellerProfile, level })
         : await api.startSession({
             archetypeKey: selected as string,
             ...(direction === 'auto' ? {} : { direction }),
@@ -237,6 +238,17 @@ export function MashqPage({
               />
             </label>
           </div>
+          <label className="mq-small" style={{ display: 'block', marginTop: 8 }}>
+            Daraja:{' '}
+            <select value={level} onChange={(e) => setLevel(e.target.value as 'easy' | 'medium' | 'hard')}>
+              <option value="easy">Oson</option>
+              <option value="medium">O'rta</option>
+              <option value="hard">Qiyin</option>
+            </select>
+          </label>
+          {scenario.content.textModeRecommended ? (
+            <Notice kind="info">Bu mijoz uchun mos ovoz yo'q — matnli rejimda mashq qilish tavsiya etiladi.</Notice>
+          ) : null}
           {scenario.content.harsh && scenario.content.warning ? (
             <Notice kind="warn">
               {scenario.content.warning}{' '}

@@ -8,6 +8,8 @@
  *
  * LLM hech qachon umumiy ballni ham, sessiya natijasini ham aniqlamaydi.
  */
+import { computeScenarioReport } from './scenario-report.js';
+import { parseScenario, sellerProfileSchema } from '../scenario/schema.js';
 import { z } from 'zod';
 
 import { getArchetype } from '../archetypes.js';
@@ -568,6 +570,9 @@ interface Reservation {
   archetype: ReturnType<typeof getArchetype>;
   metrics: SessionMetrics;
   candidates: KeyMomentCandidate[];
+  session: ScoringSession;
+  scenario: unknown;
+  seller: unknown;
 }
 
 interface ExistingRun {
@@ -608,6 +613,9 @@ interface LoadedSession {
   session: ScoringSession;
   persona: PersonaCard;
   turns: ScoringTurn[];
+  /** Ssenariy sessiyasi: boshlanishdagi nusxa va sotuvchi profili (xom). */
+  scenario: unknown;
+  seller: unknown;
 }
 
 export function createScoringService(deps: ScoringDeps): ScoringService {
@@ -643,6 +651,8 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
         },
         persona: personaCardSchema.parse(row.personaCard),
         turns,
+        scenario: row.scenario ?? null,
+        seller: row.sellerProfile ?? null,
       };
     });
   }
@@ -660,7 +670,7 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
     ctx: TrainingContext,
     sessionId: string,
   ): Promise<Reservation | ExistingRun> {
-    const { session, persona, turns } = await load(ctx, sessionId);
+    const { session, persona, turns, scenario, seller } = await load(ctx, sessionId);
     const archetype = getArchetype(session.archetypeKey);
     const metrics: SessionMetrics = computeMetrics(session, turns, archetype, persona);
     const candidates = keyMomentCandidates(turns, persona);
@@ -696,6 +706,9 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
         archetype,
         metrics,
         candidates,
+        session,
+        scenario,
+        seller,
       };
     });
   }
@@ -879,6 +892,31 @@ export function createScoringService(deps: ScoringDeps): ScoringService {
           turnSeq: m.turnSeq,
           figure: m.figure,
         }));
+      }
+      // Ssenariy hisobot kartasi (xato bo'lsa — asosiy natija buzilmaydi, faqat logga).
+      if (r.scenario) {
+        try {
+          const scenario = parseScenario(r.scenario, `session:${sessionId}`);
+          const sellerParsed = sellerProfileSchema.safeParse(r.seller);
+          const lastState = [...turns].reverse().find((t) => t.speaker === 'customer')?.stateAfter as
+            | { emotion?: { level?: string } }
+            | undefined;
+          const rep = await computeScenarioReport({
+            llm,
+            priceCall,
+            scenario,
+            persona,
+            seller: sellerParsed.success ? sellerParsed.data : null,
+            turns,
+            outcome: r.session.outcome,
+            endReason: r.session.endReason,
+            level: lastState?.emotion?.level ?? 'medium',
+          });
+          costUsd += rep.costUsd;
+          processed.coaching.scenarioReport = rep.report;
+        } catch (err) {
+          deps.logger?.warn({ err, sessionId }, 'ssenariy hisobot kartasi yaratilmadi');
+        }
       }
       processed.coaching.lowQualityReasons = [
         ...(evidenceLow ? (['evidence'] as const) : []),

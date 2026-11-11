@@ -413,6 +413,9 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 300
+        },
+        "text_mode_recommended": {
+          "type": "boolean"
         }
       }
     }

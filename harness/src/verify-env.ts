@@ -568,6 +568,7 @@ async function main(): Promise<void> {
     'stt-start',
     'e2e-scenarios',
     'e2e-builder',
+    'e2e-calibrate',
     'scenarios-check',
   ];
 

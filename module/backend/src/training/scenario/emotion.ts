@@ -6,7 +6,13 @@
  * Forma (siz/sen), haqoratga ruxsat va go'shak qo'yish ham shu yerda.
  */
 import type { VoiceTone } from '../voice/tone.js';
-import { PATIENCE_RULES, VOLATILITY_MAX_STEP, type TraitKey } from './content-rules.js';
+import {
+  DIFFICULTY_LEVELS,
+  PATIENCE_RULES,
+  VOLATILITY_MAX_STEP,
+  type DifficultyLevel,
+  type TraitKey,
+} from './content-rules.js';
 import type { Formality } from './content.js';
 import type { EffectiveBehavior, Thresholds, Volatility } from './schema.js';
 
@@ -19,12 +25,18 @@ export interface EmotionValues {
 const clamp = (v: number): number => (Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : 0);
 
 /** Taklif -> qo'llanadigan qiymat: [0,100] va |qadam| <= volatillik. */
+/** Navbatlik qadam chegarasi: volatillik x daraja koeffitsienti. */
+export function maxEmotionStep(volatility: Volatility, level: DifficultyLevel = 'medium'): number {
+  return Math.max(1, Math.round(VOLATILITY_MAX_STEP[volatility] * DIFFICULTY_LEVELS[level].volatilityScale));
+}
+
 export function applyEmotionStep(
   prev: EmotionValues,
   proposed: EmotionValues,
   volatility: Volatility,
+  level: DifficultyLevel = 'medium',
 ): { next: EmotionValues; limited: Array<keyof EmotionValues> } {
-  const max = VOLATILITY_MAX_STEP[volatility];
+  const max = maxEmotionStep(volatility, level);
   const limited: Array<keyof EmotionValues> = [];
   const step = (k: keyof EmotionValues): number => {
     const want = clamp(proposed[k]) - prev[k];
@@ -65,15 +77,36 @@ export function angerHangup(anger: number, t: Pick<Thresholds, 'hangupAt'>): boo
 export const SELLER_MISTAKES = ['repeated', 'lectured', 'ignored_question', 'pressured', 'interrupted'] as const;
 export type SellerMistake = (typeof SELLER_MISTAKES)[number];
 
+export interface PatienceSignals {
+  /** Sotuvchi so'ralgan narsaga aniq javob berdi. */
+  answeredExactly?: boolean;
+  /** Samimiy hamdardlik bildirdi. */
+  empathy?: boolean;
+}
+
 /**
  * Sabr: sotuvchi takrorlasa, ma'ruza o'qisa, savolni e'tiborsiz qoldirsa,
- * bosim qilsa yoki gapni bo'lsa — kamayadi; xatosiz navbatda biroz tiklanadi.
+ * bosim qilsa yoki gapni bo'lsa — kamayadi; aniq javob (+5) va samimiy
+ * hamdardlik (+3) tiklaydi. Hammasi daraja koeffitsienti bilan.
  */
-export function applyPatience(prev: number, mistakes: readonly SellerMistake[]): number {
-  const unique = [...new Set(mistakes)];
-  if (unique.length === 0) return clamp(prev + PATIENCE_RULES.recover);
-  const drop = unique.reduce((s, m) => s + PATIENCE_RULES.drop[m], 0);
-  return clamp(prev - drop);
+export function applyPatience(
+  prev: number,
+  mistakes: readonly SellerMistake[],
+  signals: PatienceSignals = {},
+  level: DifficultyLevel = 'medium',
+): number {
+  const lv = DIFFICULTY_LEVELS[level];
+  const drop = [...new Set(mistakes)].reduce((s, m) => s + PATIENCE_RULES.drop[m], 0) * lv.patienceDropScale;
+  const recover =
+    ((signals.answeredExactly ? PATIENCE_RULES.recover.answered_exactly : 0) +
+      (signals.empathy ? PATIENCE_RULES.recover.empathy : 0)) *
+    lv.patienceRecoverScale;
+  return clamp(prev - drop + recover);
+}
+
+/** Yashirin sabab uchun kerakli dolzarb savollar (ssenariy qiyinligi + daraja; kamida 1). */
+export function questionsNeeded(byDifficulty: number, level: DifficultyLevel = 'medium'): number {
+  return Math.max(1, byDifficulty + DIFFICULTY_LEVELS[level].revealQuestionsDelta);
 }
 
 /** Javob qanday "rang"da — model aytadi, kod tekshiradi. */

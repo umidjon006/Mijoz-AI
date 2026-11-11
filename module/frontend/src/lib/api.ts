@@ -50,6 +50,8 @@ export interface ContentFlag {
   sarcasm: number;
   allowSen: boolean;
   warning: string | null;
+  /** Mos ovoz yo'q (masalan bola) — matnli rejim tavsiya etiladi. */
+  textModeRecommended?: boolean;
 }
 
 export interface ScenarioInfo {
@@ -298,6 +300,7 @@ export interface ResultPayload {
     priceCheck?: 'checked' | 'skipped_no_data';
     /** Sotuvchi aytgan, profilda yo'q narxlar. */
     priceMismatches?: Array<{ turnSeq: number; figure: number }>;
+    scenarioReport?: ScenarioReport;
   } | null;
   keyMoments: Array<{ turnSeq: number; kind: string; explanation: string }>;
   model: string | null;
@@ -346,6 +349,26 @@ export interface SessionListItem {
   skillScore: number | null;
   resultStatus: string | null;
   resultQuality: string | null;
+  /** Ssenariy sessiyasi: nomi va hisobot kartasi bali (0..100). */
+  scenarioId?: string | null;
+  scenarioTitle?: string | null;
+  scenarioScore?: number | null;
+}
+
+/** Ssenariy hisobot kartasi (backend `scoring/scenario-report.ts`). */
+export interface ScenarioReport {
+  scenarioId: string;
+  title: string;
+  level: string;
+  items: Array<{ key: string; label: string; status: 'pass' | 'partial' | 'fail' | 'na'; detail: string; turnSeq?: number }>;
+  score: number;
+  passed: number;
+  total: number;
+  angerPath: number[];
+  moments: Array<{ turnSeq: number; quote: string; note: string }>;
+  tip: string;
+  summary: string;
+  partialOnly?: boolean;
 }
 
 export interface StatsResponse {
@@ -392,6 +415,7 @@ export interface TrainingApi {
     archetypeKey?: string;
     scenarioId?: string;
     seller?: SellerProfile;
+    level?: 'easy' | 'medium' | 'hard';
     direction?: 'inbound' | 'outbound';
   }): Promise<StartSessionResponse>;
   getSession(sessionId: string): Promise<SessionDetail>;

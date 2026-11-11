@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { mashq } from '../lugat/mashq.js';
 import { errorText } from '../lib/api-error.js';
 import { usePresentation } from '../lib/presentation.js';
-import type { ResultResponse, TrainingApi } from '../lib/api.js';
+import type { ResultResponse, ScenarioReport, TrainingApi } from '../lib/api.js';
 import { canOfferRescore, scoringRunState } from '../lib/rescore.js';
 import {
   EmptyState,
@@ -230,6 +230,10 @@ export function NatijaPage({
         </Notice>
       ) : null}
 
+      {result.coaching?.scenarioReport ? (
+        <ScenarioReportCard report={result.coaching.scenarioReport} onQuoteClick={jumpToTurn} />
+      ) : null}
+
       {result.coaching?.priceCheck === 'skipped_no_data' ? (
         <Notice kind="info">
           <span data-testid="price-check-skipped">{mashq.priceCheckSkipped}</span>
@@ -364,5 +368,66 @@ export function NatijaPage({
         ) : null}
       </div>
     </div>
+  );
+}
+
+const STATUS_ICON: Record<string, string> = { pass: '✅', partial: '🟡', fail: '❌', na: '—' };
+const LEVEL_LABEL: Record<string, string> = { easy: 'Oson', medium: "O'rta", hard: 'Qiyin' };
+
+/** Ssenariy hisobot kartasi: 7 band, 2-3 iqtibos (navbat raqami bilan) va BITTA maslahat. */
+function ScenarioReportCard({
+  report,
+  onQuoteClick,
+}: {
+  report: ScenarioReport;
+  onQuoteClick: (turnSeq: number) => void;
+}): JSX.Element {
+  return (
+    <section className="mq-panel" style={{ marginBottom: 16 }} data-testid="scenario-report">
+      <h2 className="mq-h2">
+        Ssenariy kartasi: {report.title} · {LEVEL_LABEL[report.level] ?? report.level} — {report.score}/100
+      </h2>
+      {report.summary ? <p className="mq-small">{report.summary}</p> : null}
+      <table className="mq-table">
+        <tbody>
+          {report.items.map((item) => (
+            <tr key={item.key}>
+              <td style={{ width: 28 }}>{STATUS_ICON[item.status]}</td>
+              <td>
+                <b>{item.label}</b>
+                <div className="mq-small mq-muted">
+                  {item.detail}
+                  {item.turnSeq ? (
+                    <>
+                      {' '}
+                      <button type="button" className="mq-quote" onClick={() => onQuoteClick(item.turnSeq as number)}>
+                        #{item.turnSeq}
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mq-small mq-muted">Jahl: {report.angerPath.join(' → ')}</p>
+      {report.moments.length ? (
+        <div className="mq-small">
+          <b>Muhim lahzalar:</b>
+          {report.moments.map((m) => (
+            <div key={`${m.turnSeq}-${m.quote}`}>
+              <button type="button" className="mq-quote" onClick={() => onQuoteClick(m.turnSeq)}>
+                #{m.turnSeq}: «{m.quote}»
+              </button>{' '}
+              — {m.note}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <Notice kind="info">
+        <b>Bitta maslahat:</b> {report.tip}
+      </Notice>
+    </section>
   );
 }

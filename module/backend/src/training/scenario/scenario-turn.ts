@@ -40,6 +40,7 @@ import {
 import {
   HANGUP_CLOSING_LINE,
   HANGUP_WARNING_LINE,
+  DIFFICULTY_LEVELS,
   HANGUP_WARNING_LINE_SEN,
   NEUTRAL_FALLBACK_LINES,
   REVEAL_RULES,
@@ -48,6 +49,8 @@ import {
   angerHangup,
   applyEmotionStep,
   applyPatience,
+  maxEmotionStep,
+  questionsNeeded,
   decideFormality,
   emotionTone,
   insultAllowed,
@@ -138,12 +141,14 @@ export async function runScenarioTurn(input: ScenarioTurnInput): Promise<Scenari
   const insultNow = insultAllowed(prev.anger, thresholds, behavior);
   const rule = addressRule(persona.age, seller);
   const em = state.emotion;
+  const level = em?.level ?? 'medium';
+  const lv = DIFFICULTY_LEVELS[level];
   const goodBefore = em?.goodQuestions ?? 0;
-  const needQuestions = REVEAL_RULES.questionsByDifficulty[scenario.difficulty] ?? 2;
-  // Joriy gap ham dolzarb savol bo'lishi mumkin — shuning uchun "needQuestions - 1".
+  const needQuestions = questionsNeeded(REVEAL_RULES.questionsByDifficulty[scenario.difficulty] ?? 2, level);
+  // Sabab matni promptga FAQAT shart OLDINGI navbatlarda bajarilgan bo'lsa kiradi (sizib chiqmasin).
   const revealAllowed =
-    (em?.revealed ?? false) || (goodBefore >= needQuestions - 1 && state.trust >= REVEAL_RULES.minTrust);
-  const objectionRequired = scenario.difficulty >= REVEAL_RULES.objectionRequiredFromDifficulty;
+    (em?.revealed ?? false) || (goodBefore >= needQuestions && state.trust >= REVEAL_RULES.minTrust);
+  const objectionRequired = scenario.difficulty >= lv.objectionRequiredFromDifficulty;
   const scenarioReadiness: Readiness =
     objectionRequired && !(em?.objectionAddressed ?? false)
       ? {
@@ -191,6 +196,7 @@ export async function runScenarioTurn(input: ScenarioTurnInput): Promise<Scenari
       formality: mild ? 'siz' : formality,
       insultNow: mild ? false : insultNow,
       revealAllowed,
+      maxStep: maxEmotionStep(scenario.emotion.volatility, level),
       ...(correction ? { correction } : {}),
     });
     const req = { stage: 'training.turn', system, user: input.user, schema: scenarioTurnParser, outputSchema: scenarioTurnOutputSchema };
@@ -220,6 +226,8 @@ export async function runScenarioTurn(input: ScenarioTurnInput): Promise<Scenari
       sellerMistakes: [],
       askedRelevantQuestion: false,
       realObjectionAddressed: false,
+      answeredExactly: false,
+      showedEmpathy: false,
       objectionRaisedKey: null,
       objectionsResolvedKeys: [],
       needRevealed: false,
@@ -347,7 +355,7 @@ export async function runScenarioTurn(input: ScenarioTurnInput): Promise<Scenari
   const proposed: EmotionValues = { anger: out.emotion.anger, trust: out.emotion.trust, interest: out.emotion.interest };
   const stepped = meta.fallback
     ? { next: { ...prev }, limited: [] as Array<keyof EmotionValues> }
-    : applyEmotionStep(prev, proposed, scenario.emotion.volatility);
+    : applyEmotionStep(prev, proposed, scenario.emotion.volatility, level);
   const next = { ...stepped.next };
   meta.proposed = proposed;
   meta.limited = stepped.limited;
@@ -361,12 +369,14 @@ export async function runScenarioTurn(input: ScenarioTurnInput): Promise<Scenari
 
   // Sabr, dolzarb savollar, yashirin sabab, haqiqiy e'tiroz — KOD hisoblaydi.
   const mistakes = meta.fallback ? [] : [...new Set(out.sellerMistakes)];
-  const patience = meta.fallback ? state.patience : applyPatience(state.patience, mistakes);
+  const patience = meta.fallback
+    ? state.patience
+    : applyPatience(state.patience, mistakes, { answeredExactly: out.answeredExactly, empathy: out.showedEmpathy }, level);
   const goodQuestions = goodBefore + (out.askedRelevantQuestion && !meta.fallback ? 1 : 0);
-  const revealConditions = goodQuestions >= needQuestions && Math.max(prev.trust, next.trust) >= REVEAL_RULES.minTrust;
   const revealedBefore = em?.revealed ?? false;
-  const revealedNow = !revealedBefore && out.needRevealed && revealConditions;
-  meta.revealTooEarly = !revealedBefore && out.needRevealed && !revealConditions;
+  // Sabab faqat promptga kiritilgan navbatda (revealAllowed) ochilgan deb hisoblanadi.
+  const revealedNow = !revealedBefore && out.needRevealed && revealAllowed;
+  meta.revealTooEarly = !revealedBefore && out.needRevealed && !revealAllowed;
   const objectionAddressed = (em?.objectionAddressed ?? false) || (out.realObjectionAddressed && !meta.fallback);
   Object.assign(meta, { patience, mistakes, goodQuestions, revealedNow, objectionAddressed });
   if (meta.revealTooEarly) {
@@ -442,6 +452,7 @@ export async function runScenarioTurn(input: ScenarioTurnInput): Promise<Scenari
       goodQuestions,
       revealed: revealedBefore || revealedNow,
       objectionAddressed,
+      level,
     },
   };
 

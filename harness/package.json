@@ -54,7 +54,8 @@
     "scenarios:check": "tsx --env-file-if-exists=.env src/scenarios-check.ts",
     "e2e:scenarios": "tsx --env-file-if-exists=.env src/e2e-scenarios.ts",
     "verify:training:scenarios": "tsx --env-file-if-exists=.env ../module/backend/src/training/verify-training-scenarios.ts",
-    "e2e:builder": "tsx --env-file-if-exists=.env src/e2e-builder.ts"
+    "e2e:builder": "tsx --env-file-if-exists=.env src/e2e-builder.ts",
+    "e2e:calibrate": "tsx --env-file-if-exists=.env src/e2e-calibrate.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",
